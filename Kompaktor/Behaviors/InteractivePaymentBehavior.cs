@@ -3,7 +3,9 @@ using System.Text;
 using Kompaktor.Contracts;
 using Kompaktor.Models;
 using Kompaktor.Utils;
-using Microsoft.Extensions.Logging;
+using System.Threading;
+using System.Threading.Tasks;
+using Kompaktor.Models;
 using NBitcoin;
 using NBitcoin.Payment;
 using NBitcoin.RPC;
@@ -24,6 +26,28 @@ public class InteractivePaymentBehaviorTrait : KompaktorClientBaseBehaviorTrait
         _logger = logger;
         _outboundPaymentManager = outboundPaymentManager;
         _communicationApi = communicationApi;
+        Client.StatusChanged += OnStatusChanged;
+        await HandleInteractivePayments(CancellationToken.None);
+    }
+
+    private async Task HandleInteractivePayments(CancellationToken cancellationToken)
+    {
+        foreach (var payment in _toFulfill.OfType<InteractivePendingPayment>())
+        {
+            var flow = new InteractivePendingPaymentSenderFlow(payment, _communicationApi);
+            await flow.SignalIntentPay(cancellationToken);
+            await flow.SendPayment(cancellationToken);
+            await flow.WaitUntilReady(cancellationToken);
+
+            if (flow.Proof != null)
+            {
+                _logger.LogInformation("Payment {0} completed successfully.", payment.Id);
+            }
+            else
+            {
+                _logger.LogWarning("Payment {0} failed to complete.", payment.Id);
+            }
+        }
     }
 
 
