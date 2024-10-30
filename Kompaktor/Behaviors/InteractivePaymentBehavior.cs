@@ -24,23 +24,6 @@ public class InteractivePaymentBehaviorTrait : KompaktorClientBaseBehaviorTrait
         _logger = logger;
         _outboundPaymentManager = outboundPaymentManager;
         _communicationApi = communicationApi;
-        Client.StatusChanged += OnStatusChanged;
-        // Handle different phases of the payment process
-        switch (phase)
-        {
-            case KompaktorStatus.CoinSelection:
-                _logger.LogInformation("Coin selection phase started.");
-                break;
-            case KompaktorStatus.PaymentCommitment:
-                _logger.LogInformation("Payment commitment phase started.");
-                break;
-            case KompaktorStatus.RoundCompletion:
-                _logger.LogInformation("Round completion phase started.");
-                break;
-            default:
-                _logger.LogInformation("Unknown phase: {0}", phase);
-                break;
-        }
     }
 
 
