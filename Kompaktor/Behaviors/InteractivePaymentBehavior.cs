@@ -19,12 +19,11 @@ public class InteractivePaymentBehaviorTrait : KompaktorClientBaseBehaviorTrait
     private readonly IKompaktorPeerCommunicationApi _communicationApi;
 
     public InteractivePaymentBehaviorTrait(ILogger logger, IOutboundPaymentManager outboundPaymentManager,
-        IKompaktorPeerCommunicationApi communicationApi, IAesEncryption aesEncryption)
+        IKompaktorPeerCommunicationApi communicationApi)
     {
         _logger = logger;
         _outboundPaymentManager = outboundPaymentManager;
         _communicationApi = communicationApi;
-        _aesEncryption = aesEncryption;
     }
 
 
@@ -139,17 +138,16 @@ public class InteractivePaymentBehaviorTrait : KompaktorClientBaseBehaviorTrait
             return;
         }
         CancellationTokenSource cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-        var signalTasks = computed.SelectedPayments
-            .ToDictionary(payment => payment,payment => SignalIntentToPay(payment, cts.Token));
-        await Task.WhenAll(signalTasks.Values.ToArray());
-   
-        // Remove failed signals that are not urgent
-        var pendingPayments = computed.SelectedPayments.Where(payment => signalTasks[payment].Result.proceed).Select().ToArray();
+     
+        // make use of InteractivePendingPaymentSenderFlow to signal intent to pay if the payment is interactive
+        // otherwise just use it as normal
+        // if it is interactive but urgent, do it as normal payment
+        // we can check if signalling failed (because it is not interactive or because the eceiver is offfline by checking if the P3 is null)
         
+        // clean up the computed payments  list, and see 
+        // if we can add more payments to the list due to reduction of payments and excess coins
+        //TODO:!
         
-        
-        computed = await ComputePendingPayments(ccc.Values.ToArray(),
-            pendingPayments, false);
         // Allocate selected coins to the client
         foreach (var effectiveValue in computed.Item2)
         {
@@ -157,38 +155,8 @@ public class InteractivePaymentBehaviorTrait : KompaktorClientBaseBehaviorTrait
             ccc.Remove(coin);
             Client.AllocatedSelectedCoins.TryAdd(coin, this);
         }
-
         _toFulfill = computed.Item1;
     }
-
-    private async Task<(bool proceed, ECXOnlyPubKey? nextComm)> SignalIntentToPay(PendingPayment pendingPayment,
-        CancellationToken token)
-    {
-        try
-        {
-            if(pendingPayment is not InteractivePendingPayment interactivePendingPayment)
-                return (true, null);
-           
-            var k  = ECPrivKey.Create(RandomUtils.GetBytes(32));
-            var msg = interactivePendingPayment.IntentPay(k.CreateXOnlyPubKey());
-
-            await _communicationApi.SendMessageAsync(msg);
-            await foreach (var receivedMessage in _communicationApi.Messages(token))
-            {
-              //TODO: match the message to the expected message
-            }
-        }
-        catch (OperationCanceledException)
-        {
-        }
-        catch (Exception e)
-        {
-            _logger.LogException("Failed to signal intent to pay", e);
-        }
-
-        return false;
-    }
-
 
 
     protected virtual async Task OnStatusChanged(object sender, KompaktorStatus phase)
