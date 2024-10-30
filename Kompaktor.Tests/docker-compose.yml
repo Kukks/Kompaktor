@@ -1,0 +1,31 @@
+version: "3"
+
+# Run `docker-compose up dev` for bootstrapping your development environment
+# Doing so will expose NBXplorer, Bitcoind RPC and postgres port to the host so that tests can Run,
+# The Visual Studio launch setting `Docker-regtest` is configured to use this environment.
+services:
+  bitcoind:
+    restart: unless-stopped
+    image: btcpayserver/bitcoin:26.0
+    environment:
+      BITCOIN_NETWORK: regtest
+      BITCOIN_WALLETDIR: "/data/wallets"
+      BITCOIN_EXTRA_ARGS: |-
+        rpcuser=ceiwHEbqWI83
+        rpcpassword=DwubwWsoo3
+        rpcport=43782
+        rpcbind=0.0.0.0:43782
+        rpcallowip=0.0.0.0/0
+        port=39388
+        whitelist=0.0.0.0/0
+        zmqpubrawblock=tcp://0.0.0.0:28332
+        zmqpubrawtx=tcp://0.0.0.0:28333
+        deprecatedrpc=signrawtransaction
+        fallbackfee=0.0002
+    ports:
+      - "53782:43782"
+    expose:
+      - "43782" # RPC
+      - "39388" # P2P
+      - "28332" # ZMQ
+      - "28333" # ZMQ

@@ -1,0 +1,25 @@
+﻿using WabiSabi.Crypto;
+using WabiSabi.Crypto.Randomness;
+
+namespace Kompaktor.Credentials;
+
+public static class CredentialTypeConstants
+{
+
+	public static CredentialIssuer CredentialIssuer(this CredentialType credentialType, CredentialIssuerSecretKey secretKey, WasabiRandom random)
+	{
+		return new CredentialIssuer(secretKey, random, credentialType.MaxAmountValue());
+	}
+	public static CredentialIssuer CredentialIssuer(this CredentialType credentialType,  WasabiRandom random)
+	{
+		return credentialType.CredentialIssuer(new CredentialIssuerSecretKey(random), random);
+	}
+	
+    public static long MaxAmountValue(this CredentialType credentialType) => credentialType switch
+    {
+        CredentialType.Amount => 4_300_000_000_000L,
+        _ => throw new NotSupportedException()
+    };
+
+	
+}

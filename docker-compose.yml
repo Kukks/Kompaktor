@@ -1,0 +1,12 @@
+﻿services:
+  kompaktor.tests:
+    image: kompaktor.tests
+    build:
+      context: .
+      dockerfile: Kompaktor.Tests/Dockerfile
+
+  kompaktor.tests-1:
+    image: kompaktor.tests-1
+    build:
+      context: .
+      dockerfile: Kompaktor.Tests/Dockerfile
