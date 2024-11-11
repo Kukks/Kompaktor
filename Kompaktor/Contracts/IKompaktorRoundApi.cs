@@ -1,6 +1,5 @@
 ﻿using Kompaktor.Credentials;
 using Kompaktor.Models;
-using WabiSabi.CredentialRequesting;
 
 namespace Kompaktor.Contracts;
 
@@ -14,8 +13,3 @@ public interface IKompaktorRoundApi
     Task<KompaktorRoundEventSignaturePosted> Sign(SignRequest request);
     Task ReadyToSign(ReadyToSignRequest request);
 }
-
-public record RegisterInputRequest(string Secret, ICredentialsRequest CredentialsRequest);
-public record ReadyToSignRequest(string Secret);
-
-public record InputRegistrationQuoteResponse(string Secret, CredentialsResponse CredentialsResponse, long CredentialAmount);

@@ -1,23 +1,8 @@
 ﻿using System.Collections.Concurrent;
 using NBitcoin;
-using WabiSabi.Crypto.ZeroKnowledge;
 
 namespace Kompaktor.Utils;
 
-public static class CredentialHelper
-{
-
-
-    public static byte[] ToBytes(this long val)
-    {
-        var bytes = BitConverter.GetBytes(val);
-        return BitConverter.IsLittleEndian ? bytes : bytes.Reverse().ToArray();
-    }
-    public static byte[] ToBytes(this Credential credential)
-    {
-        return credential.Mac.ToBytes().Concat(credential.Randomness.ToBytes()).Concat(credential.Value.ToBytes()).ToArray();
-    }
-}
 public static class FeeHelper
 {
     public static ScriptType GetScriptType(this Script script)

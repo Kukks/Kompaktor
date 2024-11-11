@@ -8,18 +8,18 @@ namespace Kompaktor.Behaviors;
 
 public class StaticPaymentBehaviorTrait : KompaktorClientBaseBehaviorTrait
 {
-    private readonly ILogger _logger;
+    private ILogger Logger => Client.Logger;
     private readonly IOutboundPaymentManager _outboundPaymentManager;
 
-    public StaticPaymentBehaviorTrait(ILogger logger, IOutboundPaymentManager outboundPaymentManager)
+    public StaticPaymentBehaviorTrait( IOutboundPaymentManager outboundPaymentManager)
     {
-        _logger = logger;
         _outboundPaymentManager = outboundPaymentManager;
     }
 
 
     public override void Start(KompaktorRoundClient client)
     {
+        
         base.Start(client);
         Client.StartCoinSelection += OnStartCoinSelection;
         Client.FinishedCoinRegistration += OnFinishedCoinRegistration;
@@ -47,8 +47,7 @@ public class StaticPaymentBehaviorTrait : KompaktorClientBaseBehaviorTrait
             committedPayments.Add(payment);
             Client.AllocatedPlannedOutputs.TryAdd(payment.TxOut(), this);
         }
-        //TODO: Try and see if we can add in some more payments if we have leftover due to failure to commit or extra coins added from other traits without an exclusive trait
-
+      
         while (Client.AllocatedSelectedCoins.FirstOrDefault(pair => pair.Value == this) is
                {Key: not null, Value: not null} pair)
         {
@@ -56,7 +55,7 @@ public class StaticPaymentBehaviorTrait : KompaktorClientBaseBehaviorTrait
         }
 
         Committed = committedPayments.ToArray();
-        _logger.LogInformation("Committed to handling {0} payments", Committed.Length);
+        Logger.LogInformation("Committed to handling {0} payments", Committed.Length);
     }
 
     /// <summary>
@@ -108,7 +107,7 @@ public class StaticPaymentBehaviorTrait : KompaktorClientBaseBehaviorTrait
             }
         }
 
-        _logger.LogInformation("Selected {0} payments to fulfill with {1} coins", toFulfill.Count, selectedCoins.Count);
+        Logger.LogInformation("Selected {0} payments to fulfill with {1} coins", toFulfill.Count, selectedCoins.Count);
         return (toFulfill.ToArray(), selectedCoins.ToArray());
     }
 
@@ -137,6 +136,7 @@ public class StaticPaymentBehaviorTrait : KompaktorClientBaseBehaviorTrait
             ccc.Remove(coin);
             Client.AllocatedSelectedCoins.TryAdd(coin, this);
         }
+        
 
         _toFulfill = computed.Item1;
         

@@ -7,13 +7,12 @@ namespace Kompaktor.Behaviors;
 
 public class SelfSendChangeBehaviorTrait : KompaktorClientBaseBehaviorTrait
 {
-    private readonly ILogger _logger;
+    private ILogger Logger => Client.Logger;
     private readonly Func<Script> _changeAddressFetcher;
     private readonly TimeSpan _timeBeforeOutputTimeout;
 
-    public SelfSendChangeBehaviorTrait(ILogger logger,Func<Script> changeAddressFetcher, TimeSpan timeBeforeOutputTimeout)
+    public SelfSendChangeBehaviorTrait(Func<Script> changeAddressFetcher, TimeSpan timeBeforeOutputTimeout)
     {
-        _logger = logger;
         _changeAddressFetcher = changeAddressFetcher;
         _timeBeforeOutputTimeout = timeBeforeOutputTimeout;
     }
@@ -23,7 +22,7 @@ public class SelfSendChangeBehaviorTrait : KompaktorClientBaseBehaviorTrait
         base.Start(client);
         Client.FinishedOutputRegistration += OnOutputTimeout;
         _cts = new CancellationTokenSource();
-        Client.DoNotSignKillSwitches.Add(this, true);
+        Client.DoNotSignKillSwitches.AddOrReplace(this, true);
     }
 
     private CancellationTokenSource _cts;
@@ -56,7 +55,7 @@ public class SelfSendChangeBehaviorTrait : KompaktorClientBaseBehaviorTrait
         if (
             Client.Round.RoundEventCreated.OutputAmount.Contains(txout.Value))
         {
-            _logger.LogInformation("Adding change output {txout} to the transaction", txout.Value);
+            Logger.LogInformation($"Adding change output {txout.Value} to the transaction" );
             Client.AllocatedPlannedOutputs.TryAdd(txout, this);
             
         }

@@ -1,8 +1,8 @@
 ﻿using System.Collections.Concurrent;
 using System.Text;
+using Kompaktor.Models;
 using Microsoft.Extensions.Logging;
 using WabiSabi.Crypto.Randomness;
-using Range = Kompaktor.Models.Range;
 
 namespace Kompaktor.Utils;
 
@@ -151,7 +151,7 @@ public static class DependencyGraph2
                         if (!(node is RootNode))
                         {
                             // Generate a random delay within the allowed range
-                            var delayMilliseconds = random.GetInt(0, Math.Max(1, (int) maxDelay.TotalMilliseconds));
+                            var delayMilliseconds = 0;//random.GetInt(0, Math.Max(1, (int) maxDelay.TotalMilliseconds));
 
                             // Log the scheduling
                             logger.LogInformation($"Scheduling node {node.Id} after {delayMilliseconds} ms delay.");
@@ -239,7 +239,7 @@ public static class DependencyGraph2
         }
 
 
-        public Node(ILogger logger, Range? input, Range? output, Output[] outs, Output outputRegistered,
+        public Node(ILogger logger, IntRange? input, IntRange? output, Output[] outs, Output outputRegistered,
             Dictionary<Node, Output[]> parents)
         {
             if (input is not null && !input.Contains(parents.SelectMany(pair => pair.Value).Count()))
@@ -507,7 +507,7 @@ public static class DependencyGraph2
         }
     }
 
-    public static Node Compute(ILogger logger, long[] ins, long[] outs, Range input, Range output)
+    public static Node Compute(ILogger logger, long[] ins, long[] outs, IntRange input, IntRange output)
     {
         // Convert ins and outs to Output objects
         var insOutputs = ins.Select(amount => new Output(amount)).ToArray();
@@ -515,9 +515,10 @@ public static class DependencyGraph2
 
         var rootNode = new RootNode(logger, insOutputs);
 
+        
         if (ins.Sum() != outs.Sum())
         {
-            throw new InvalidOperationException("The sum of the inputs must be equal to the sum of the outputs.");
+            throw new InvalidOperationException($"The sum of the inputs must be equal to the sum of the outputs. {ins.Sum()} != {outs.Sum()}");
         }
         logger.LogInformation($"Computing reissuance graph for inputs {string.Join(",", ins)} and outputs {string.Join(",", outs)}.");;
 
@@ -548,7 +549,7 @@ public static class DependencyGraph2
                 if(smallerAmts.Sum(x => x.Item2.Amount) < remaining.Amount)
                     continue;
 
-                var match =  FindBestMatch(smallerAmts, remaining.Amount, input, true);
+                var match =  FindBestMatchThroughGreedy(smallerAmts, remaining.Amount, input, true);
                 
                 
                 if (match is not null && match.Sum(x => x.Item2.Amount) == remaining.Amount)
@@ -578,7 +579,7 @@ public static class DependencyGraph2
                     .OrderByDescending(tuple => tuple.Item2.Amount)
                     .ToArray();
 
-                var match = FindBestMatch(amts, remaining.Amount, new Range(input.Min, input.Max*4), false);
+                var match = FindBestMatchThroughGreedy(amts, remaining.Amount, new IntRange(input.Min, input.Max*50), false);
 
                 if (match is not null && match.Sum(x => x.Item2.Amount) >= remaining.Amount)
                 {
@@ -652,8 +653,54 @@ public static class DependencyGraph2
 
         return rootNode;
     }
-    private static (Node, Output)[]? FindBestMatch(
-        (Node, Output)[] amtsAvailable, long target, Range inRange, bool equalOnly)
+    
+    private static (Node, Output)[]? FindBestMatchThroughGreedy(
+        (Node, Output)[] amtsAvailable, long target, IntRange inRange, bool equalOnly)
+    {
+        // Sort the available amounts based on shallower depth and larger amounts
+        var sortedAmts = amtsAvailable
+            .OrderByDescending(tuple => tuple.Item2.Amount)       // Prefer larger amounts
+            .ThenBy(tuple => tuple.Item1.GetDepth(tuple.Item1))
+            .ToList();
+
+        var selectedOutputs = new List<(Node, Output)>();
+        long totalSum = 0;
+
+        foreach (var (node, output) in sortedAmts)
+        {
+            if (selectedOutputs.Count >= inRange.Max)
+            {
+                break; // Reached the maximum number of inputs allowed
+            }
+
+            // Skip outputs that have already been selected
+            if (selectedOutputs.Any(o => o.Item2.Id == output.Id))
+            {
+                continue;
+            }
+
+            selectedOutputs.Add((node, output));
+            totalSum += output.Amount;
+
+            if (equalOnly && totalSum == target && selectedOutputs.Count >= inRange.Min)
+            {
+                // Exact match found within input range
+                return selectedOutputs.ToArray();
+            }
+            else if (!equalOnly && totalSum >= target && selectedOutputs.Count >= inRange.Min)
+            {
+                // Target met or exceeded within input range
+                return selectedOutputs.ToArray();
+            }
+        }
+
+        // If we didn't meet the target, or didn't have enough inputs, return null
+        return null;
+    }
+
+    
+    private static (Node, Output)[]? FindBestMatchThroughDynamicProgramming(
+        (Node, Output)[] amtsAvailable, long target, IntRange inRange, bool equalOnly)
     {
         var sumToComb = new Dictionary<long, List<(List<int> Indices, int Count)>>();
 

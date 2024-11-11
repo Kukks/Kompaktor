@@ -1,7 +1,7 @@
 ﻿#if !NETSTANDARD
 using System.Security.Cryptography;
 
-namespace NNostr.Client.Crypto;
+namespace Kompaktor.Crypto;
 
 /// <summary>
 /// Uses the native AES implementation provided by the OS.

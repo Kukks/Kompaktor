@@ -1,9 +1,13 @@
 ﻿using System.Collections.Concurrent;
+using System.Security.Cryptography;
+using Kompaktor.Behaviors.InteractivePayments;
 using Kompaktor.Contracts;
+using Kompaktor.Mapper;
 using Kompaktor.Models;
 using Microsoft.Extensions.Logging;
 using NBitcoin;
 using NBitcoin.BIP322;
+using NBitcoin.Secp256k1;
 
 namespace Kompaktor.Tests;
 
@@ -18,6 +22,7 @@ public class Wallet : IOutboundPaymentManager, IKompaktorWalletInterface, IInbou
 
     ConcurrentDictionary<string, PendingPayment> PendingOutboundPayments = new();
     ConcurrentDictionary<string, PendingPayment> PendingInboundPayments = new();
+    public readonly ConcurrentDictionary<string,KompaktorOffchainPaymentProof> PaymentProofs = new();
     private readonly SemaphoreSlim _lock = new(1, 1);
     private Dictionary<uint256, Transaction> History { get; } = new();
 
@@ -80,22 +85,40 @@ public class Wallet : IOutboundPaymentManager, IKompaktorWalletInterface, IInbou
         try
         {
             _lock.Wait();
-            foreach (var output in transaction.Outputs.Where(output => PendingOutboundPayments
-                         .OrderBy(pair => pair.Value.Reserved).Where(pending =>
+            foreach (var unused in transaction.Outputs.Where(output => PendingOutboundPayments
+                         .OrderByDescending(pair => pair.Value.Reserved).Where(pending =>
                              pending.Value.Destination.ScriptPubKey == output.ScriptPubKey &
-                             pending.Value.Amount == output.Value)
+                             pending.Value.Amount >= output.Value)
                          .Any(pending => PendingOutboundPayments.Remove(pending.Key, out _))))
             {
                 matched = true;
             }
-            
-            foreach (var input in transaction.Outputs.Where(output => PendingInboundPayments
-                         .OrderBy(pair => pair.Value.Reserved).Where(pending =>
+
+            foreach (var unused in transaction.Outputs.Where(output => PendingInboundPayments
+                         .OrderByDescending(pair => pair.Value.Reserved).Where(pending =>
                              pending.Value.Destination.ScriptPubKey == output.ScriptPubKey &
-                             pending.Value.Amount == output.Value)
+                             pending.Value.Amount <= output.Value)
                          .Any(pending => PendingInboundPayments.Remove(pending.Key, out _))))
             {
                 matched = true;
+            }
+
+            var completedPayments = PaymentProofs.Where(proof => proof.Value.TxId == transaction.GetHash()).Select(pair => pair.Key).ToArray();
+            if (completedPayments.Any())
+            {
+                foreach (var key in completedPayments)
+                {
+                    if (PendingInboundPayments.TryRemove(key, out _))
+                    {
+                        matched = true;
+                    }
+
+                    if (PendingOutboundPayments.TryRemove(key, out _))
+                    {
+                        matched = true;
+                    };
+                }
+                
             }
         }
         finally
@@ -114,6 +137,19 @@ public class Wallet : IOutboundPaymentManager, IKompaktorWalletInterface, IInbou
     {
         var id = Guid.NewGuid().ToString();
         PendingOutboundPayments.TryAdd(id, new PendingPayment(id, amount, destination, false));
+    }   
+    public async Task SchedulePayment(BitcoinAddress destination, Money amount, XPubKey kompaktorKey, bool urgent, string id = null )
+    {
+        id ??= Guid.NewGuid().ToString();
+        PendingOutboundPayments.TryAdd(id, new InteractivePendingPayment(id, amount, destination, false, kompaktorKey, urgent));
+    }    
+    public async Task<InteractiveReceiverPendingPayment> RequestPayment(Money amount,string id = null)
+    {
+        id ??= Guid.NewGuid().ToString();
+        var key =ECPrivKey.Create(RandomNumberGenerator.GetBytes(32));
+        var interactiveReceiverPendingPayment = new InteractiveReceiverPendingPayment(id, amount, GetAddress(),false, key);
+        PendingInboundPayments.TryAdd(id, interactiveReceiverPendingPayment);
+        return interactiveReceiverPendingPayment;
     }
 
 
@@ -152,8 +188,16 @@ public class Wallet : IOutboundPaymentManager, IKompaktorWalletInterface, IInbou
         {
             await _lock.WaitAsync();
 
-            return PendingOutboundPayments.TryGetValue(pendingPaymentId, out var pending) && !pending.Reserved &&
-                   PendingOutboundPayments.TryUpdate(pendingPaymentId, pending with {Reserved = true}, pending);
+            if (PendingInboundPayments.TryGetValue(pendingPaymentId, out var p1))
+            {
+                return !p1.Reserved &&
+                       PendingInboundPayments.TryUpdate(pendingPaymentId, p1 with {Reserved = true}, p1);
+            } else if (PendingOutboundPayments.TryGetValue(pendingPaymentId, out var p2))
+            {
+                return !p2.Reserved &&
+                       PendingOutboundPayments.TryUpdate(pendingPaymentId, p2 with {Reserved = true}, p2);
+            }
+            return false;
         }
         finally
         {
@@ -175,6 +219,12 @@ public class Wallet : IOutboundPaymentManager, IKompaktorWalletInterface, IInbou
         {
             _lock.Release();
         }
+    }
+
+
+    public async Task AddProof(string pendingPaymentId, KompaktorOffchainPaymentProof proof)
+    {
+        PaymentProofs.TryAdd(pendingPaymentId,proof);
     }
 
     public async Task<Coin[]> GetCoins()

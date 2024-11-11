@@ -2,6 +2,13 @@
 
 public class ConsolidationBehaviorTrait : KompaktorClientBaseBehaviorTrait
 {
+    private readonly int _consolidationThreshold;
+
+    public ConsolidationBehaviorTrait(int consolidationThreshold = 10)
+    {
+        _consolidationThreshold = consolidationThreshold;
+    }
+    
     public override void Start(KompaktorRoundClient client)
     {
         base.Start(client);
@@ -10,11 +17,13 @@ public class ConsolidationBehaviorTrait : KompaktorClientBaseBehaviorTrait
 
     private Task ClientOnStartCoinSelection(object sender)
     {
-        if(Client.RemainingCoinCandidates!.Value.Length + Client.AllocatedSelectedCoins.Count< 2)
+        if(Client.AllocatedSelectedCoins.Count > _consolidationThreshold || Client.RemainingCoinCandidates!.Value.Length  == 0)
             return Task.CompletedTask;
-        foreach (var coinCandidate in Client.RemainingCoinCandidates)
+
+        while (Client.AllocatedSelectedCoins.Count < _consolidationThreshold &&
+               Client.RemainingCoinCandidates!.Value.Length > 0)
         {
-            Client.AllocatedSelectedCoins.TryAdd(coinCandidate,
+            Client.AllocatedSelectedCoins.TryAdd(Client.RemainingCoinCandidates.Value.First(),
                 null); //dont subscribe as this is only meant to consolidate
         }
 

@@ -1,4 +1,4 @@
-﻿namespace NNostr.Client.Crypto;
+﻿namespace Kompaktor.Crypto;
 
 /// <summary>
 /// Allows pluggable AES-256-CBC implementation.

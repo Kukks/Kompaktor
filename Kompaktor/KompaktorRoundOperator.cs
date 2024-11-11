@@ -177,13 +177,13 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
 
 
         var miningFee = RoundEventCreated.FeeRate.GetFee(request.Output.GetSerializedSize());
-        var outputAmount = credentialAmount - miningFee;
+        var outputAmount = credentialAmount - miningFee.Satoshi;
         if (outputAmount < Money.Zero) throw new InvalidOperationException("Output uneconomic");
 
         var creds =  (await Task.WhenAll(request.CredentialsRequest.Select(async pair =>
         {
             var issuer = CredentialIssuers[pair.Key];
-
+           if( issuer.Balance - outputAmount < 0) throw new InvalidOperationException($"Insufficient balance for {issuer.Balance - outputAmount < 0}");
             try
             {
 
@@ -193,6 +193,7 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
             catch (Exception e)
             {
                 _logger.LogException($"Failed to reissue {pair.Key}", e);
+                throw;
                 return (pair.Key, null);
             }
         }))).Where(x => x.Item2 is not null).ToDictionary(x => x.Item1, x => x.Item2!);
@@ -205,7 +206,7 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
         if (Status != KompaktorStatus.Signing) throw new InvalidOperationException("Round is not in signing phase");
 
         // Check if we have this index already
-        if (_events.OfType<KompaktorRoundEventSignaturePosted>().Any(x => x.Request.OutPoint == request.OutPoint))
+        if (Events.OfType<KompaktorRoundEventSignaturePosted>().Any(x => x.Request.OutPoint == request.OutPoint))
             throw new InvalidOperationException("Signature already provided");
 
         // verify signature
@@ -215,7 +216,7 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
 
         _logger.LogDebug($"api:Signing input {inputToSign.Index} for id: {tx.GetHash()}");
 
-        var inputRegistration = _events.OfType<KompaktorRoundEventInputRegistered>()
+        var inputRegistration = Events.OfType<KompaktorRoundEventInputRegistered>()
             .Single(input => input.Coin.Outpoint == request.OutPoint);
         var allowedVsize = inputRegistration.QuoteRequest.Signature.FundProofs[0].GetSize();
 
@@ -251,7 +252,7 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
 
     public void Start(KompaktorRoundEventCreated created, Dictionary<CredentialType, CredentialIssuer> issuers)
     {
-        if (_events.Count != 0)
+        if (Events.Count != 0)
             throw new InvalidOperationException("Round already started");
         CredentialIssuers = issuers;
         AddEvent(created);
@@ -263,11 +264,11 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
         try
         {
             if (e is KompaktorRoundEventStatusUpdate statusUpdate)
-                HandleStatusChange(statusUpdate.Status);
+                _ = HandleStatusChange(statusUpdate.Status);
             else if (Status == KompaktorStatus.OutputRegistration && NotReadyToSign.IsEmpty)
                 UpdateStatus(KompaktorStatus.Signing);
             else if (Status == KompaktorStatus.Signing && e is KompaktorRoundEventSignaturePosted &&
-                     _events.OfType<KompaktorRoundEventSignaturePosted>().Count() == Inputs.Count)
+                     Events.OfType<KompaktorRoundEventSignaturePosted>().Count() == Inputs.Count)
                 UpdateStatus(KompaktorStatus.Broadcasting);
         }
 
@@ -296,10 +297,12 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
                             return;
                         }
 
+                        _logger.LogDebug("Input registration completed with {0} inputs and {1} remaining quotes", Inputs.Count,ActiveQuotes.Count);
                         UpdateStatus(KompaktorStatus.OutputRegistration);
                     });
                 break;
             case KompaktorStatus.OutputRegistration:
+                _logger.LogDebug("Output registration started (expires in {0})", created.OutputTimeout);
                 Task.Delay(created.OutputTimeout, _cts.Token)
                     .ContinueWith(_ =>
                     {
@@ -341,7 +344,11 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
                     }
                     catch (Exception e)
                     {
-                        _logger.LogException("Failed to broadcast transaction", e);
+                        
+                        _logger.LogException($"Failed to broadcast transaction (fee:{GetTransaction(_network).GetFee(Inputs.ToArray())}", e);
+                        
+                        
+                        
                         UpdateStatus(KompaktorStatus.Failed);
                     }
                 });
