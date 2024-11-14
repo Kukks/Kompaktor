@@ -9,5 +9,6 @@ public record KompaktorRoundEventInputRegistered(
     Coin Coin)
     : KompaktorRoundEvent
 {
+
     public override string ToString() => $"Input Registered: {Coin.Outpoint} -> {Coin.Amount}";
 }

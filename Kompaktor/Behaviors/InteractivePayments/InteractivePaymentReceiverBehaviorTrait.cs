@@ -51,6 +51,17 @@ public class InteractivePaymentReceiverBehaviorTrait : KompaktorClientBaseBehavi
                 }
 
                 break;
+            
+            
+            case KompaktorStatus.Completed:
+            {
+                foreach (var interactivePendingPaymentReceiverFlow in _flows)
+                {
+                    await _inboundPaymentManager.AddProof(interactivePendingPaymentReceiverFlow.Payment.Id,
+                        interactivePendingPaymentReceiverFlow.Proof);
+                }
+                break;
+            }
             case > KompaktorStatus.Signing:
                 await _flowCts.CancelAsync();
                 break;
@@ -64,15 +75,15 @@ public class InteractivePaymentReceiverBehaviorTrait : KompaktorClientBaseBehavi
                 payment => (XPubKey) payment.KompaktorKey!.Key.CreateXOnlyPubKey(),
                 payment => new InteractivePendingPaymentReceiverFlow(Logger, payment, _kompaktorPeerCommunicationApi,
                     Reissue, WaitUntilReady));
-        await foreach (var msg in _kompaktorPeerCommunicationApi.Messages(_flowCts.Token))
+        await foreach (var msg in _kompaktorPeerCommunicationApi.Messages(true, _flowCts.Token, new()))
         {
             if (msg.Length != 64 || !ECXOnlyPubKey.TryCreate(msg[..32], out var p1) ||
-                !pp.TryGetValue(p1, out var flow))
+                !pp.Remove(p1, out var flow))
             {
                 continue;
             }
 
-            Logger.LogInformation("Received message for intent of payment");
+            Logger.LogInformation($"Received message for intent of payment {flow.Payment.Id}");
             var p2 = ECXOnlyPubKey.Create(msg[32..]);
 
             if (await _inboundPaymentManager.Commit(flow.Payment.Id))

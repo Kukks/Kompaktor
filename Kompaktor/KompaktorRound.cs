@@ -1,26 +1,36 @@
-﻿using Kompaktor.Models;
+﻿using System.Collections.Concurrent;
+using System.Diagnostics;
+using System.Threading.Channels;
+using Kompaktor.Models;
 using Kompaktor.Utils;
 using NBitcoin;
 
 namespace Kompaktor;
 
+
+
+
 public class KompaktorRound : IDisposable
 {
-    private readonly LinkedList<KompaktorRoundEvent> _events = new();
+    private readonly ConcurrentQueue<KompaktorRoundEvent> _events = new();
 
-    protected LinkedList<KompaktorRoundEvent> Events
+    protected IEnumerable<KompaktorRoundEvent> Events
     {
         get
         {
-            lock (lockObj)
+            _lock.Wait();
+            try
             {
-                return new(_events);
+                return _events.ToArray();
+            }
+            finally
+            {
+                _lock.Release();
             }
         }
     }
 
-
-    public EventHandler<KompaktorRoundEvent>? NewEvent;
+    public event AsyncEventHandler<KompaktorRoundEvent>? NewEvent;
     public KompaktorStatus Status => Events.OfType<KompaktorRoundEventStatusUpdate>().Last().Status;
     // public KompaktorRoundEvent[] Events => _events.ToArray();
 
@@ -80,17 +90,17 @@ public class KompaktorRound : IDisposable
         return transaction;
     }
 
-    private object lockObj = new object();
+    private SemaphoreSlim _lock = new(1, 1);
 
-    protected virtual T AddEvent<T>(T @event) where T : KompaktorRoundEvent
+    protected virtual async Task<T> AddEvent<T>(T @event) where T : KompaktorRoundEvent
     {
-        lock (lockObj)
-        {
-            _events.AddLast(@event);
-        }
-
-        NewEvent?.Invoke(this, @event);
-        return @event;
+       
+            _events.Enqueue(@event);
+            await  NewEvent.InvokeIfNotNullAsync(this, @event);
+            
+            return @event;
+      
+     
     }
 
     public KompaktorRoundEventCreated RoundEventCreated

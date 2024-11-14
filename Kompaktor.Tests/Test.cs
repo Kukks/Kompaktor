@@ -115,12 +115,7 @@ public class Test
             _loggerFactory.CreateLogger<KompaktorRoundOperator>());
         ConcurrentBag<KompaktorRoundEvent> roundEvents = new();
 
-        void NewEvent(object? sender, KompaktorRoundEvent e)
-        {
-            roundEvents.Add(e);
-        }
-
-        roundOperator.NewEvent += NewEvent;
+        roundOperator.NewEvent += (sender, args) => { roundEvents.Add(args); return Task.CompletedTask; };
 
         Dictionary<CredentialType, CredentialIssuer> issuers = new()
         {
@@ -130,18 +125,18 @@ public class Test
         };
 
 
-        roundOperator.Start(new KompaktorRoundEventCreated(
-            Guid.NewGuid().ToString(),
-            new FeeRate(1m),
-            TimeSpan.FromSeconds(5),
-            TimeSpan.FromSeconds(5),
-            TimeSpan.FromSeconds(5),
-            new IntRange(1, 5),
-            new MoneyRange(Money.Satoshis(10000), Money.Coins(100)),
-            new IntRange(1, 100),
-            new MoneyRange(Money.Satoshis(10000), Money.Coins(100)),
-            issuers.ToDictionary(pair => pair.Key, pair => pair.Key.CredentialConfiguration(pair.Value))),
-        issuers);
+        await roundOperator.Start(new KompaktorRoundEventCreated(
+                Guid.NewGuid().ToString(),
+                new FeeRate(1m),
+                TimeSpan.FromSeconds(5),
+                TimeSpan.FromSeconds(5),
+                TimeSpan.FromSeconds(5),
+                new IntRange(1, 5),
+                new MoneyRange(Money.Satoshis(10000), Money.Coins(100)),
+                new IntRange(1, 100),
+                new MoneyRange(Money.Satoshis(10000), Money.Coins(100)),
+                issuers.ToDictionary(pair => pair.Key, pair => pair.Key.CredentialConfiguration(pair.Value))),
+            issuers);
 
         Eventually(() =>
             Assert.IsType<KompaktorRoundEventCreated>(Assert.Single(roundEvents)));
@@ -151,8 +146,7 @@ public class Test
                 @event is KompaktorRoundEventStatusUpdate {Status: KompaktorStatus.Failed}));
         });
     }
-    
-    
+
 
     [Fact]
     public async Task CanUseRounds()
@@ -177,13 +171,7 @@ public class Test
         {
             ConcurrentBag<KompaktorRoundEvent> roundEvents = new();
 
-            void NewEvent(object? sender, KompaktorRoundEvent e)
-            {
-                roundEvents.Add(e);
-            }
-
-            roundOperator.NewEvent += NewEvent;
-
+            roundOperator.NewEvent += (sender, args) => { roundEvents.Add(args); return Task.CompletedTask; };
             Dictionary<CredentialType, CredentialIssuer> issuers = new()
             {
                 {
@@ -192,7 +180,7 @@ public class Test
                 }
             };
 
-            roundOperator.Start(new KompaktorRoundEventCreated(
+            await roundOperator.Start(new KompaktorRoundEventCreated(
                     Guid.NewGuid().ToString(),
                     new FeeRate(2m),
                     TimeSpan.FromSeconds(10),
@@ -202,7 +190,6 @@ public class Test
                     new MoneyRange(Money.Satoshis(10000), Money.Coins(100)),
                     new IntRange(1, 100),
                     new MoneyRange(Money.Satoshis(10000), Money.Coins(100)),
-                    
                     issuers.ToDictionary(pair => pair.Key, pair => pair.Key.CredentialConfiguration(pair.Value))),
                 issuers);
 
@@ -270,13 +257,7 @@ public class Test
         {
             ConcurrentBag<KompaktorRoundEvent> roundEvents = new();
 
-            void NewEvent(object? sender, KompaktorRoundEvent e)
-            {
-                roundEvents.Add(e);
-            }
-
-            roundOperator.NewEvent += NewEvent;
-
+            roundOperator.NewEvent += (sender, args) => { roundEvents.Add(args); return Task.CompletedTask; };
             Dictionary<CredentialType, CredentialIssuer> issuers = new()
             {
                 {
@@ -284,7 +265,7 @@ public class Test
                 }
             };
 
-            roundOperator.Start(new KompaktorRoundEventCreated(
+            await roundOperator.Start(new KompaktorRoundEventCreated(
                     Guid.NewGuid().ToString(),
                     new FeeRate(2m),
                     TimeSpan.FromSeconds(10),
@@ -310,7 +291,7 @@ public class Test
                     TimeSpan.FromMinutes(1)),
             };
 
-            var pr = await wallet2.RequestPayment( Money.Coins(0.1m));
+            var pr = await wallet2.RequestPayment(Money.Coins(0.1m));
             await wallet.SchedulePayment(pr.Destination, pr.Amount);
 
             using var coinjoinClient = new KompaktorRoundClient(
@@ -348,11 +329,10 @@ public class Test
         }
     }
 
-[Fact]
+    [Fact]
     public async Task CanDoInteractivePayments()
     {
-        
-         List<Wallet> wallets = new();
+        List<Wallet> wallets = new();
 
 
         var wallet = new Wallet(Network, new Mnemonic(Wordlist.English, WordCount.Twelve),
@@ -368,20 +348,15 @@ public class Test
         await RPC.GenerateAsync(1);
 
         var interactivePayment = await wallet2.RequestPayment(Money.Coins(0.1m));
-        await wallet.SchedulePayment(interactivePayment.Destination, interactivePayment.Amount, interactivePayment.KompaktorKey, false);
-        
+        await wallet.SchedulePayment(interactivePayment.Destination, interactivePayment.Amount,
+            interactivePayment.KompaktorKey.ToXPubKey(), false);
+
         using (var roundOperator = new KompaktorRoundOperator(Network, RPC, SecureRandom.Instance,
                    _loggerFactory.CreateLogger<KompaktorRoundOperator>()))
         {
             ConcurrentBag<KompaktorRoundEvent> roundEvents = new();
 
-            void NewEvent(object? sender, KompaktorRoundEvent e)
-            {
-                roundEvents.Add(e);
-            }
-
-            roundOperator.NewEvent += NewEvent;
-
+            roundOperator.NewEvent += (sender, args) => { roundEvents.Add(args); return Task.CompletedTask; };
             Dictionary<CredentialType, CredentialIssuer> issuers = new()
             {
                 {
@@ -390,7 +365,7 @@ public class Test
                 }
             };
 
-            roundOperator.Start(new KompaktorRoundEventCreated(
+            await roundOperator.Start(new KompaktorRoundEventCreated(
                     Guid.NewGuid().ToString(),
                     new FeeRate(2m),
                     TimeSpan.FromSeconds(10),
@@ -400,7 +375,6 @@ public class Test
                     new MoneyRange(Money.Satoshis(10000), Money.Coins(100)),
                     new IntRange(1, 100),
                     new MoneyRange(Money.Satoshis(10000), Money.Coins(100)),
-                    
                     issuers.ToDictionary(pair => pair.Key, pair => pair.Key.CredentialConfiguration(pair.Value))),
                 issuers);
 
@@ -408,7 +382,9 @@ public class Test
                 Assert.IsType<KompaktorRoundEventCreated>(Assert.Single(roundEvents)));
 
             var kompaktorRoundApiFactory = new LocalKompaktorRoundApiFactory(roundOperator);
-            var messagingApi = new KompaktorMessagingApi(roundOperator, roundOperator);
+
+            var w1Logger = _loggerFactory.CreateLogger("Sender");
+            var w2Logger = _loggerFactory.CreateLogger("Receiver");
 
             using var wallet1CoinjoinClient = new KompaktorRoundClient(
                 SecureRandom.Instance,
@@ -416,35 +392,36 @@ public class Test
                 roundOperator,
                 kompaktorRoundApiFactory,
                 [
-                    new InteractivePaymentSenderBehaviorTrait(wallet, messagingApi),
+                    new InteractivePaymentSenderBehaviorTrait(wallet,
+                        new KompaktorMessagingApi(w1Logger, roundOperator, roundOperator)),
                     new ConsolidationBehaviorTrait(),
                     new SelfSendChangeBehaviorTrait(
                         () => wallet.GetAddress().ScriptPubKey,
                         TimeSpan.FromMinutes(1))
-
                 ],
-                wallet, _loggerFactory.CreateLogger("Wallet1"));
+                wallet, w1Logger);
             using var wallet2CoinjoinClient = new KompaktorRoundClient(
                 SecureRandom.Instance,
                 Network,
                 roundOperator,
                 kompaktorRoundApiFactory,
                 [
-                    new InteractivePaymentReceiverBehaviorTrait( wallet2, messagingApi),
+                    new InteractivePaymentReceiverBehaviorTrait(wallet2,
+                        new KompaktorMessagingApi(w2Logger, roundOperator, roundOperator)),
                     new ConsolidationBehaviorTrait(),
                     new SelfSendChangeBehaviorTrait(
                         () => wallet2.GetAddress().ScriptPubKey,
                         TimeSpan.FromMinutes(1))
-
                 ],
-                wallet2, _loggerFactory.CreateLogger("Wallet2"));
+                wallet2, w2Logger);
 
             await Eventually(async () =>
             {
                 if (wallet1CoinjoinClient.PhasesTask.IsFaulted || wallet1CoinjoinClient.PhasesTask.IsCompleted)
                 {
                     await wallet1CoinjoinClient.PhasesTask;
-                }  
+                }
+
                 if (wallet2CoinjoinClient.PhasesTask.IsFaulted || wallet2CoinjoinClient.PhasesTask.IsCompleted)
                 {
                     await wallet1CoinjoinClient.PhasesTask;
@@ -477,12 +454,14 @@ public class Test
                 }
             }, 60_000);
         }
+        Assert.Empty(await wallet.GetOutboundPendingPayments(true));
+        Assert.Empty(await wallet2.GetInboundPendingPayments(true));
         
     }
-    
+
     
     [Fact]
-public async Task CanDoInteractivePaymentsAtScale()
+public async Task  CanDoInteractivePaymentsAtScale_WithRandomAmounts()
 {
     List<Wallet> wallets = new();
 
@@ -491,8 +470,8 @@ public async Task CanDoInteractivePaymentsAtScale()
         _loggerFactory.CreateLogger<Wallet>());
     wallets.Add(receiverWallet);
 
-    var scale = 10;
-    
+    var scale = 25;
+
     // Create 700 sender wallets
     for (int i = 0; i < scale; i++)
     {
@@ -501,20 +480,28 @@ public async Task CanDoInteractivePaymentsAtScale()
         wallets.Add(senderWallet);
     }
 
-    // Fund each sender wallet with 1 BTC
+    var random = new Random();
+
+    // Fund each sender wallet with multiple UTXOs (random amounts)
     foreach (var senderWallet in wallets.Skip(1)) // Skip receiver wallet at index 0
     {
-        await CashCow(RPC, senderWallet.GetAddress(), Money.Coins(1), wallets);
+        var utxoCount = random.Next(3, 7); // Random number of UTXOs per wallet
+        for (int j = 0; j < utxoCount; j++)
+        {
+            var amount = Money.Satoshis(random.Next(100_000, 1_000_000)); // Random amounts between 0.001 BTC to 0.01 BTC
+            await CashCow(RPC, senderWallet.GetAddress(), amount, wallets);
+        }
     }
 
     await RPC.GenerateAsync(1);
 
-    // Receiver requests payments
+    // Receiver requests payments with random amounts
     List<InteractiveReceiverPendingPayment> interactivePayments = new();
 
     for (int i = 0; i < scale; i++)
     {
-        var interactivePayment = await receiverWallet.RequestPayment(Money.Coins(0.1m));
+        var randomAmount = Money.Satoshis(random.Next(50_000, 200_000)); // Random payment amounts between 0.0005 BTC and 0.002 BTC
+        var interactivePayment = await receiverWallet.RequestPayment(randomAmount);
         interactivePayments.Add(interactivePayment);
     }
 
@@ -523,7 +510,8 @@ public async Task CanDoInteractivePaymentsAtScale()
     foreach (var senderWallet in wallets.Skip(1)) // Skip receiver wallet at index 0
     {
         var interactivePayment = interactivePayments[index];
-        await senderWallet.SchedulePayment(interactivePayment.Destination, interactivePayment.Amount, interactivePayment.KompaktorKey, false, interactivePayment.Id);
+        await senderWallet.SchedulePayment(interactivePayment.Destination, interactivePayment.Amount,
+            interactivePayment.KompaktorKey.ToXPubKey(), false, interactivePayment.Id);
         index++;
     }
 
@@ -532,12 +520,7 @@ public async Task CanDoInteractivePaymentsAtScale()
     {
         ConcurrentBag<KompaktorRoundEvent> roundEvents = new();
 
-        void NewEvent(object? sender, KompaktorRoundEvent e)
-        {
-            roundEvents.Add(e);
-        }
-
-        roundOperator.NewEvent += NewEvent;
+        roundOperator.NewEvent += (sender, args) => { roundEvents.Add(args); return Task.CompletedTask; };
 
         Dictionary<CredentialType, CredentialIssuer> issuers = new()
         {
@@ -548,25 +531,24 @@ public async Task CanDoInteractivePaymentsAtScale()
         };
 
         // Adjust the parameters to accommodate 700 participants
-        roundOperator.Start(new KompaktorRoundEventCreated(
+        await roundOperator.Start(new KompaktorRoundEventCreated(
                 Guid.NewGuid().ToString(),
                 new FeeRate(2m),
                 TimeSpan.FromSeconds(30),
-                TimeSpan.FromSeconds(30),
+                TimeSpan.FromSeconds(75),
                 TimeSpan.FromSeconds(30),
                 new IntRange(1, 300), // Adjusted for the number of participants
                 new MoneyRange(Money.Satoshis(10000), Money.Coins(100)),
                 new IntRange(1, 300), // Adjusted for the number of participants
                 new MoneyRange(Money.Satoshis(10000), Money.Coins(100)),
-
                 issuers.ToDictionary(pair => pair.Key, pair => pair.Key.CredentialConfiguration(pair.Value))),
             issuers);
 
         Eventually(() =>
             Assert.IsType<KompaktorRoundEventCreated>(Assert.Single(roundEvents)));
 
+        var receiverWalletLogger = _loggerFactory.CreateLogger("ReceiverWallet");
         var kompaktorRoundApiFactory = new LocalKompaktorRoundApiFactory(roundOperator);
-        var messagingApi = new KompaktorMessagingApi(roundOperator, roundOperator);
 
         // Create a KompaktorRoundClient for the receiver
         using var receiverCoinjoinClient = new KompaktorRoundClient(
@@ -575,11 +557,13 @@ public async Task CanDoInteractivePaymentsAtScale()
             roundOperator,
             kompaktorRoundApiFactory,
             [
-                new InteractivePaymentReceiverBehaviorTrait(receiverWallet, messagingApi),
+                new InteractivePaymentReceiverBehaviorTrait(receiverWallet,
+                    new KompaktorMessagingApi(receiverWalletLogger, roundOperator, roundOperator)),
                 new ConsolidationBehaviorTrait(),
-                new SelfSendChangeBehaviorTrait(() => receiverWallet.GetAddress().ScriptPubKey, TimeSpan.FromSeconds(10))
+                new SelfSendChangeBehaviorTrait(() => receiverWallet.GetAddress().ScriptPubKey,
+                    TimeSpan.FromSeconds(30))
             ],
-            receiverWallet, _loggerFactory.CreateLogger("ReceiverWallet"));
+            receiverWallet, receiverWalletLogger);
 
         // Create KompaktorRoundClients for each sender
         var senderClients = new List<KompaktorRoundClient>();
@@ -587,17 +571,20 @@ public async Task CanDoInteractivePaymentsAtScale()
         var i = 0;
         foreach (var senderWallet in wallets.Skip(1)) // Skip receiver wallet at index 0
         {
+            var senderWalletLogger = _loggerFactory.CreateLogger($"SenderWallet_{i}");
             var senderClient = new KompaktorRoundClient(
                 SecureRandom.Instance,
                 Network,
                 roundOperator,
                 kompaktorRoundApiFactory,
                 [
-                    new InteractivePaymentSenderBehaviorTrait(senderWallet, messagingApi),
+                    new InteractivePaymentSenderBehaviorTrait(senderWallet,
+                        new KompaktorMessagingApi(senderWalletLogger, roundOperator, roundOperator)),
                     new ConsolidationBehaviorTrait(),
-                    new SelfSendChangeBehaviorTrait(() => senderWallet.GetAddress().ScriptPubKey, TimeSpan.FromSeconds(10))
+                    new SelfSendChangeBehaviorTrait(() => senderWallet.GetAddress().ScriptPubKey,
+                        TimeSpan.FromSeconds(20))
                 ],
-                senderWallet, _loggerFactory.CreateLogger($"SenderWallet_{i}"));
+                senderWallet, senderWalletLogger);
 
             senderClients.Add(senderClient);
             i++;
@@ -621,15 +608,15 @@ public async Task CanDoInteractivePaymentsAtScale()
             }
 
             // Verify that all inputs and outputs are registered
-            Assert.Equal(scale+1, roundEvents.Count(@event => @event is KompaktorRoundEventInputRegistered));
+            Assert.Equal(scale, roundEvents.Count(@event => @event is KompaktorRoundEventInputRegistered));
             Assert.NotNull(roundEvents.SingleOrDefault(@event =>
                 @event is KompaktorRoundEventStatusUpdate { Status: KompaktorStatus.OutputRegistration }));
-            Assert.Equal(scale+1, roundEvents.Count(@event => @event is KompaktorRoundEventOutputRegistered));
+            Assert.Equal(scale + 1, roundEvents.Count(@event => @event is KompaktorRoundEventOutputRegistered));
 
             Assert.NotNull(roundEvents.SingleOrDefault(@event =>
                 @event is KompaktorRoundEventStatusUpdate { Status: KompaktorStatus.Signing }));
 
-            Assert.Equal(scale+1, roundEvents.Count(@event => @event is KompaktorRoundEventSignaturePosted));
+            Assert.Equal(scale, roundEvents.Count(@event => @event is KompaktorRoundEventSignaturePosted));
 
             Assert.NotNull(roundEvents.SingleOrDefault(@event =>
                 @event is KompaktorRoundEventStatusUpdate { Status: KompaktorStatus.Broadcasting }));
@@ -646,6 +633,174 @@ public async Task CanDoInteractivePaymentsAtScale()
     }
 }
 
+    
+
+    [Fact]
+    public async Task CanDoInteractivePaymentsAtScale()
+    {
+        List<Wallet> wallets = new();
+
+        // Create receiver wallet
+        var receiverWallet = new Wallet(Network, new Mnemonic(Wordlist.English, WordCount.Twelve),
+            _loggerFactory.CreateLogger<Wallet>());
+        wallets.Add(receiverWallet);
+
+        var scale = 25;
+
+        // Create 700 sender wallets
+        for (int i = 0; i < scale; i++)
+        {
+            var senderWallet = new Wallet(Network, new Mnemonic(Wordlist.English, WordCount.Twelve),
+                _loggerFactory.CreateLogger<Wallet>());
+            wallets.Add(senderWallet);
+        }
+
+        // Fund each sender wallet with 1 BTC
+        foreach (var senderWallet in wallets.Skip(1)) // Skip receiver wallet at index 0
+        {
+            await CashCow(RPC, senderWallet.GetAddress(), Money.Coins(1), wallets);
+        }
+
+        await RPC.GenerateAsync(1);
+
+        // Receiver requests payments
+        List<InteractiveReceiverPendingPayment> interactivePayments = new();
+
+        for (int i = 0; i < scale; i++)
+        {
+            var interactivePayment = await receiverWallet.RequestPayment(Money.Coins(0.1m));
+            interactivePayments.Add(interactivePayment);
+        }
+
+        // Each sender schedules the payment
+        int index = 0;
+        foreach (var senderWallet in wallets.Skip(1)) // Skip receiver wallet at index 0
+        {
+            var interactivePayment = interactivePayments[index];
+            await senderWallet.SchedulePayment(interactivePayment.Destination, interactivePayment.Amount,
+                interactivePayment.KompaktorKey.ToXPubKey(), false, interactivePayment.Id);
+            index++;
+        }
+
+        using (var roundOperator = new KompaktorRoundOperator(Network, RPC, SecureRandom.Instance,
+                   _loggerFactory.CreateLogger<KompaktorRoundOperator>()))
+        {
+            ConcurrentBag<KompaktorRoundEvent> roundEvents = new();
+
+   
+            roundOperator.NewEvent += (sender, args) => { roundEvents.Add(args); return Task.CompletedTask; };
+
+            Dictionary<CredentialType, CredentialIssuer> issuers = new()
+            {
+                {
+                    CredentialType.Amount, new CredentialIssuer(new CredentialIssuerSecretKey(SecureRandom.Instance),
+                        SecureRandom.Instance, Money.Coins(1000m).Satoshi)
+                }
+            };
+
+            // Adjust the parameters to accommodate 700 participants
+            await roundOperator.Start(new KompaktorRoundEventCreated(
+                    Guid.NewGuid().ToString(),
+                    new FeeRate(2m),
+                    TimeSpan.FromSeconds(30),
+                    TimeSpan.FromSeconds(50),
+                    TimeSpan.FromSeconds(30),
+                    new IntRange(1, 300), // Adjusted for the number of participants
+                    new MoneyRange(Money.Satoshis(10000), Money.Coins(100)),
+                    new IntRange(1, 300), // Adjusted for the number of participants
+                    new MoneyRange(Money.Satoshis(10000), Money.Coins(100)),
+                    issuers.ToDictionary(pair => pair.Key, pair => pair.Key.CredentialConfiguration(pair.Value))),
+                issuers);
+
+            Eventually(() =>
+                Assert.IsType<KompaktorRoundEventCreated>(Assert.Single(roundEvents)));
+
+            var receiverWalletLogger = _loggerFactory.CreateLogger("ReceiverWallet");
+            var kompaktorRoundApiFactory = new LocalKompaktorRoundApiFactory(roundOperator);
+
+            // Create a KompaktorRoundClient for the receiver
+            using var receiverCoinjoinClient = new KompaktorRoundClient(
+                SecureRandom.Instance,
+                Network,
+                roundOperator,
+                kompaktorRoundApiFactory,
+                [
+                    new InteractivePaymentReceiverBehaviorTrait(receiverWallet,
+                        new KompaktorMessagingApi(receiverWalletLogger, roundOperator, roundOperator)),
+                    new ConsolidationBehaviorTrait(),
+                    new SelfSendChangeBehaviorTrait(() => receiverWallet.GetAddress().ScriptPubKey,
+                        TimeSpan.FromSeconds(60))
+                ],
+                receiverWallet, receiverWalletLogger);
+
+            // Create KompaktorRoundClients for each sender
+            var senderClients = new List<KompaktorRoundClient>();
+
+            var i = 0;
+            foreach (var senderWallet in wallets.Skip(1)) // Skip receiver wallet at index 0
+            {
+                var senderWalletLogger = _loggerFactory.CreateLogger($"SenderWallet_{i}");
+                var senderClient = new KompaktorRoundClient(
+                    SecureRandom.Instance,
+                    Network,
+                    roundOperator,
+                    kompaktorRoundApiFactory,
+                    [
+                        new InteractivePaymentSenderBehaviorTrait(senderWallet,
+                            new KompaktorMessagingApi(senderWalletLogger, roundOperator, roundOperator)),
+                        new ConsolidationBehaviorTrait(),
+                        new SelfSendChangeBehaviorTrait(() => senderWallet.GetAddress().ScriptPubKey,
+                            TimeSpan.FromSeconds(20))
+                    ],
+                    senderWallet, senderWalletLogger);
+
+                senderClients.Add(senderClient);
+                i++;
+            }
+
+            // Wait for the coinjoin process to complete
+            await Eventually(async () =>
+            {
+                // Check if any client has faulted
+                foreach (var client in senderClients)
+                {
+                    if (client.PhasesTask.IsFaulted || client.PhasesTask.IsCompleted)
+                    {
+                        await client.PhasesTask; // This will throw if the task is faulted
+                    }
+                }
+
+                if (receiverCoinjoinClient.PhasesTask.IsFaulted || receiverCoinjoinClient.PhasesTask.IsCompleted)
+                {
+                    await receiverCoinjoinClient.PhasesTask;
+                }
+
+                // Verify that all inputs and outputs are registered
+                Assert.Equal(scale, roundEvents.Count(@event => @event is KompaktorRoundEventInputRegistered));
+                Assert.NotNull(roundEvents.SingleOrDefault(@event =>
+                    @event is KompaktorRoundEventStatusUpdate {Status: KompaktorStatus.OutputRegistration}));
+                Assert.Equal(scale + 1, roundEvents.Count(@event => @event is KompaktorRoundEventOutputRegistered));
+
+                Assert.NotNull(roundEvents.SingleOrDefault(@event =>
+                    @event is KompaktorRoundEventStatusUpdate {Status: KompaktorStatus.Signing}));
+
+                Assert.Equal(scale, roundEvents.Count(@event => @event is KompaktorRoundEventSignaturePosted));
+
+                Assert.NotNull(roundEvents.SingleOrDefault(@event =>
+                    @event is KompaktorRoundEventStatusUpdate {Status: KompaktorStatus.Broadcasting}));
+
+                var txid = receiverCoinjoinClient.Round.GetTransaction(Network).GetHash();
+                var operatorTxId = roundOperator.GetTransaction(Network).GetHash();
+                Assert.Equal(txid, operatorTxId);
+                var tx = await RPC.GetRawTransactionAsync(txid);
+                foreach (var wallet in wallets)
+                {
+                    wallet.AddTransaction(tx);
+                }
+            }, 120_000); // Increase timeout if necessary
+        }
+    }
+
 
     private async Task<Transaction> CashCow(RPCClient rpcClient, BitcoinAddress address, Money amount,
         IEnumerable<Wallet> wallets)
@@ -654,7 +809,6 @@ public async Task CanDoInteractivePaymentsAtScale()
         retry:
         try
         {
-
             var tx = await rpcClient.SendToAddressAsync(address, amount);
             var result = await rpcClient.GetRawTransactionAsync(tx);
             foreach (var wallet in wallets)
@@ -675,7 +829,6 @@ public async Task CanDoInteractivePaymentsAtScale()
 
             throw;
         }
-
     }
 
     internal void Eventually(Action act, int ms = 20_000)
@@ -740,7 +893,7 @@ public async Task CanDoInteractivePaymentsAtScale()
             .LogInformation(result.GenerateGraphviz(new long[] {30, 40, 10, 7, 3, 10, 5}));
         _loggerFactory.CreateLogger("ascii").LogInformation(result.GenerateAscii(new long[] {30, 40, 10, 7, 3, 10, 5}));
 
-        
+
         // generate random sets of inputs and outputs
         for (int i = 0; i < 10; i++)
         {

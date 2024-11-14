@@ -1,5 +1,6 @@
 ﻿using System.Collections.Concurrent;
 using System.Collections.Immutable;
+using System.ComponentModel;
 using System.Threading.Channels;
 using Kompaktor.Behaviors;
 using Kompaktor.Contracts;
@@ -27,7 +28,7 @@ public class KompaktorRoundClient : IDisposable
     private readonly List<KompaktorClientBaseBehaviorTrait> _behaviorTraits;
     private readonly IKompaktorWalletInterface _walletInterface;
     public readonly ILogger Logger;
-    private readonly CancellationTokenSource _cts = new();
+    private readonly CancellationTokenSource _cts;
     private readonly IKompaktorRoundApiFactory _factory;
     private readonly WasabiRandom _random;
     private readonly Network _network;
@@ -56,10 +57,19 @@ public class KompaktorRoundClient : IDisposable
         Logger.LogInformation($"{_behaviorTraits.Count} behavior traits started");
         _statusChannel =
             Channel.CreateBounded<KompaktorStatus>(Enum.GetValues<KompaktorStatus>().Length);
-
-        round.NewEvent += OnNewEvent;
+        _cts = new CancellationTokenSource();
+        // round.NewEvent
+        // _ = HandleEvents(round.Subscribe(_cts.Token));
+        round.NewEvent += RoundOnNewEvent;
         StatusChanged += OnStatusChanged;
         PhasesTask = ProcessStatuses();
+    }
+
+    private Task RoundOnNewEvent(object sender, KompaktorRoundEvent roundEvent)
+    {
+        if (roundEvent is KompaktorRoundEventStatusUpdate statusUpdate)
+            StatusChanged?.Invoke(this, statusUpdate.Status);
+        return Task.CompletedTask;
     }
 
     public Task PhasesTask { get; }
@@ -170,7 +180,7 @@ public class KompaktorRoundClient : IDisposable
         foreach (var behaviorTrait in _behaviorTraits) behaviorTrait.Dispose();
 
         _cts.Cancel();
-        Round.NewEvent -= OnNewEvent;
+        Round.NewEvent -= RoundOnNewEvent;
         StatusChanged = null;
     }
 
@@ -198,10 +208,6 @@ public class KompaktorRoundClient : IDisposable
         await _statusChannel.Writer.WriteAsync(e);
     }
 
-    private void OnNewEvent(object? sender, KompaktorRoundEvent e)
-    {
-        if (e is KompaktorRoundEventStatusUpdate statusUpdate) StatusChanged?.Invoke(this, statusUpdate.Status);
-    }
 
     public event AsyncEventHandler<KompaktorStatus>? StatusChanged;
     public event AsyncEventHandler? StartCoinSelection;
@@ -276,11 +282,21 @@ public class KompaktorRoundClient : IDisposable
         }
     }
 
-    // private string lstMsg = "";
+    private string lstMsg = "";
+
     public bool ShouldSign()
     {
+        var msg = $"Should sign: " +
+                  $"{DoNotSignKillSwitches.Count(kvp => kvp.Value)} kill switches on" +
+                  $"{RemainingPlannedOutputs().Length} O left, {AvailableCredentials.Sum(credential => credential.Value)} C left";
         if (DoNotSignKillSwitches.Any(kvp => kvp.Value))
         {
+            if (lstMsg != msg)
+            {
+                lstMsg = msg;
+                Logger.LogInformation(msg);
+            }
+
             return false;
         }
 
@@ -293,7 +309,20 @@ public class KompaktorRoundClient : IDisposable
         // if (msg != lstMsg) 
         //  _logger.LogInformation(lstMsg);
         //  lstMsg = msg;
-        return RemainingPlannedOutputs().Length == 0 && AvailableCredentials.Sum(credential => credential.Value) == 0;
+        var res = RemainingPlannedOutputs().Length == 0 &&
+                  AvailableCredentials.Sum(credential => credential.Value) == 0;
+        if (res)
+        {
+            msg = "SIGN!";
+        }
+
+        if (msg != lstMsg)
+        {
+            lstMsg = msg;
+            Logger.LogInformation(msg);
+        }
+
+        return res;
         // _logger.LogInformation("SIGN!");
     }
 
@@ -312,13 +341,14 @@ public class KompaktorRoundClient : IDisposable
         {
             Logger.LogInformation("Subset signing");
             var notSignalled = inputIdentities.Where(identity => !identity.SignalledReady).ToList();
-            if (notSignalled.Count == 0)
+            switch (notSignalled.Count)
             {
-                inputIdentities.RemoveAt(Random.Shared.Next(inputIdentities.Count - 1));
-            }
-            else
-            {
-                inputIdentities.Remove(notSignalled[Random.Shared.Next(notSignalled.Count - 1)]);
+                case 0 when inputIdentities.Count > 1:
+                    inputIdentities.RemoveAt(Random.Shared.Next(inputIdentities.Count - 1));
+                    break;
+                case > 0:
+                    inputIdentities.Remove(notSignalled[Random.Shared.Next(notSignalled.Count - 1)]);
+                    break;
             }
         }
 
@@ -585,7 +615,8 @@ public class KompaktorRoundClient : IDisposable
             }
 
             var credentialClient = GetWabiSabiClient(CredentialType.Amount);
-Logger.LogInformation($"Issuing {string.Join(", ", creds.Select(cred => cred.Mac.Serial()))} to {string.Join(", ", node.Outs.Select(output => output.Amount))}");
+            Logger.LogInformation(
+                $"Issuing {string.Join(", ", creds.Select(cred => cred.Mac.Serial()))} to {string.Join(", ", node.Outs.Select(output => output.Amount))}");
             var credentialsRequest =
                 credentialClient.CreateRequest(node.Outs.Select(output => output.Amount), creds, cancellationToken);
             var credRequest = new System.Collections.Generic.Dictionary<CredentialType, ICredentialsRequest>()

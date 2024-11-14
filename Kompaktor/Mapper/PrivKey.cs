@@ -34,9 +34,9 @@ public class PrivKey: IEquatable<PrivKey>
     {
         return privKey.Key;
     } 
-    public static implicit operator XPubKey(PrivKey privKey)
+    public XPubKey ToXPubKey()
     {
-        return privKey.Key.CreateXOnlyPubKey();
+        return  new XPubKey(Key.CreateXOnlyPubKey());
     }
 
     public bool Equals(PrivKey? other)

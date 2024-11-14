@@ -4,6 +4,6 @@ public record KompaktorRoundEventMessage(MessageRequest Request) : KompaktorRoun
 {
     public override string ToString()
     {
-        return $"Message";
+        return null;
     }
 }

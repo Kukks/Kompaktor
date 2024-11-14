@@ -18,7 +18,7 @@ public class XPubKey : IEquatable<XPubKey>
         Key = bytes.ToXPubKey();
     }
 
-    private XPubKey(ECXOnlyPubKey ecPubKey)
+    public XPubKey(ECXOnlyPubKey ecPubKey)
     {
         Key = ecPubKey;
     }

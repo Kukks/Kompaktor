@@ -20,6 +20,7 @@ public class InteractivePaymentSenderBehaviorTrait : KompaktorClientBaseBehavior
     }
 
     private CancellationTokenSource _cts = new();
+    private CancellationTokenSource paymentEndCts = new();
 
     public override void Start(KompaktorRoundClient client)
     {
@@ -31,13 +32,13 @@ public class InteractivePaymentSenderBehaviorTrait : KompaktorClientBaseBehavior
 
     private async Task OnStartSigning(object sender)
     {
+        Client.DoNotSignKillSwitches.AddOrReplace(this, Committed.Any(flow => !flow.CanSign));
         foreach (var interactivePendingPaymentSenderFlow in Committed)
         {
             interactivePendingPaymentSenderFlow.TxId = Client.GetTransaction().GetHash();
         }
         _logger.LogInformation("interactive payment sender can sign: {0}",
             Committed.All(flow => flow.CanSign));
-        Client.DoNotSignKillSwitches.AddOrReplace(this, Committed.Any(flow => !flow.CanSign));
         await Task.WhenAll(Committed.Select(flow => flow.WaitUntilOkToSign(_cts.Token)));
 
         Client.DoNotSignKillSwitches.AddOrReplace(this, Committed.Any(flow => !flow.CanSign));
@@ -122,7 +123,7 @@ public class InteractivePaymentSenderBehaviorTrait : KompaktorClientBaseBehavior
             Client.AllocatedCredentials.TryAdd(zeroCredential.Mac.Serial(), this);
             flow.AssignedCredentials = new[] {credential, zeroCredential};
             
-            tasks.Add(flow.SendPayment(new CancellationTokenSource(TimeSpan.FromSeconds(20)).Token).ContinueWith(task =>
+            tasks.Add(flow.SendPayment(_cts.Token).ContinueWith(task =>
             {
                 if (flow.P5 is null)
                 {
@@ -141,7 +142,7 @@ public class InteractivePaymentSenderBehaviorTrait : KompaktorClientBaseBehavior
             Client!.AvailableCredentialsForTrait(this);
         credentialsAmounts = credentials.Select(credential => Money.Satoshis(credential.Value)).ToArray();
 
-        computed = await ComputePendingPayments(credentialsAmounts, processManuallyIfPossible.Keys.ToArray(), true);
+        computed = await ComputePendingPayments(credentialsAmounts, processManuallyIfPossible.Keys.ToArray(), false);
         foreach (var payment in processManuallyIfPossible)
         {
             if(computed.SelectedPayments.Contains(payment.Key))
@@ -288,12 +289,13 @@ public class InteractivePaymentSenderBehaviorTrait : KompaktorClientBaseBehavior
     }
 
 
-    protected virtual async Task OnStatusChanged(object sender, KompaktorStatus phase)
+    protected override async Task OnStatusChanged(object sender, KompaktorStatus phase)
     {
         switch (phase)
         {
             case KompaktorStatus.Failed:
             {
+                
                 foreach (var payment in Committed)
                 {
                     await _outboundPaymentManager.BreakCommitment(payment.Payment.Id);
@@ -317,9 +319,8 @@ public class InteractivePaymentSenderBehaviorTrait : KompaktorClientBaseBehavior
 
     public override void Dispose()
     {
-        Client.StatusChanged -= OnStatusChanged;
         Client.StartCoinSelection -= OnStartCoinSelection;
         Client.FinishedCoinRegistration -= OnFinishedCoinRegistration;
-        _cts?.Cancel();
+        _cts.Cancel();
     }
 }

@@ -1,4 +1,5 @@
 ﻿using System.Collections.Concurrent;
+using System.Threading.Channels;
 using Kompaktor.Contracts;
 using Kompaktor.Credentials;
 using Kompaktor.Models;
@@ -18,7 +19,7 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
     private readonly ILogger _logger;
     private readonly RPCClient _rpcClient;
 
-    private CancellationTokenSource _cts = new();
+    private CancellationTokenSource _cts;
 
     public KompaktorRoundOperator(Network network, RPCClient rpcClient, WasabiRandom random, ILogger logger)
     {
@@ -26,7 +27,22 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
         _rpcClient = rpcClient;
         _random = random;
         _logger = logger;
-        NewEvent += OnNewEvent;
+        _cts = new CancellationTokenSource();
+        NewEvent += HandleNewEvents;
+        
+    }
+
+    private async Task HandleNewEvents(object sender, KompaktorRoundEvent roundEvent)
+    {
+
+        if (roundEvent is KompaktorRoundEventStatusUpdate statusUpdate)
+            _ = HandleStatusChange(statusUpdate.Status);
+        else if (Status == KompaktorStatus.OutputRegistration && NotReadyToSign.IsEmpty)
+            _ =  UpdateStatus(KompaktorStatus.Signing);
+        else if (Status == KompaktorStatus.Signing && roundEvent is KompaktorRoundEventSignaturePosted &&
+                 Events.OfType<KompaktorRoundEventSignaturePosted>().Count() == Inputs.Count)
+            _ =  UpdateStatus(KompaktorStatus.Broadcasting);
+
     }
 
     public Dictionary<CredentialType, CredentialIssuer> CredentialIssuers { get; private set; }
@@ -39,8 +55,7 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
     {
         if (Status > KompaktorStatus.Signing)
             throw new InvalidOperationException("Round status does not allow sending messages");
-
-        return AddEvent(new KompaktorRoundEventMessage(request));
+        return await AddEvent(new KompaktorRoundEventMessage(request));
     }
 
     public async Task<InputRegistrationQuoteResponse> PreRegisterInput(RegisterInputQuoteRequest quoteRequest)
@@ -111,7 +126,7 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
             var credentialsResponse = await CredentialIssuers[CredentialType.Amount]
                 .HandleRequestAsync(request.CredentialsRequest, _cts.Token);
             if (NotReadyToSign.TryAdd(request.Secret, quote.coin.Outpoint))
-                return AddEvent(new KompaktorRoundEventInputRegistered(quote.Item1, credentialsResponse, quote.coin));
+                return await AddEvent(new KompaktorRoundEventInputRegistered(quote.Item1, credentialsResponse, quote.coin));
         }
 
         throw new InvalidOperationException("Invalid quote");
@@ -119,9 +134,10 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
 
     // private readonly SemaphoreSlim _eventSemaphore = new SemaphoreSlim(1, 1);
 
-    protected override T AddEvent<T>(T @event)
+    protected override Task<T> AddEvent<T>(T @event)
     {
-        _logger.LogDebug($"Adding event {@event} {@event.Timestamp}");
+        if(@event.ToString() is not null)
+         _logger.LogDebug($"Adding event {@event} {@event.Timestamp}");
         return base.AddEvent(@event);
     }
 
@@ -198,7 +214,7 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
             }
         }))).Where(x => x.Item2 is not null).ToDictionary(x => x.Item1, x => x.Item2!);
         
-        return AddEvent(new KompaktorRoundEventOutputRegistered(request, creds));
+        return await AddEvent(new KompaktorRoundEventOutputRegistered(request, creds));
     }
 
     public async Task<KompaktorRoundEventSignaturePosted> Sign(SignRequest request)
@@ -232,53 +248,32 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
             throw new InvalidOperationException($"Invalid signature: {error}");
         }
 
-        return AddEvent(new KompaktorRoundEventSignaturePosted(request));
+        return await AddEvent(new KompaktorRoundEventSignaturePosted(request));
     }
 
-    public Task ReadyToSign(ReadyToSignRequest request)
+    public async Task ReadyToSign(ReadyToSignRequest request)
     {
         if (Status != KompaktorStatus.OutputRegistration)
             throw new InvalidOperationException("Round is not in output phase");
         if (!NotReadyToSign.TryRemove(request.Secret, out var coin))
             throw new InvalidOperationException("Secret not found");
-        _logger.LogInformation($"Ready to sign on {coin} . Remaining: {NotReadyToSign.Count}");
+        var timeleft = this.Events.OfType<KompaktorRoundEventStatusUpdate>().First(x => x.Status == KompaktorStatus.OutputRegistration).Timestamp.Add(RoundEventCreated.OutputTimeout) - DateTimeOffset.UtcNow;
+        _logger.LogInformation($"Ready to sign on {coin} . Remaining: {NotReadyToSign.Count} time left: {timeleft}");
         if (NotReadyToSign.IsEmpty)
         {
-            UpdateStatus(KompaktorStatus.Signing);
+            await UpdateStatus(KompaktorStatus.Signing);
         }
-
-        return Task.CompletedTask;
     }
 
-    public void Start(KompaktorRoundEventCreated created, Dictionary<CredentialType, CredentialIssuer> issuers)
+    public async Task Start(KompaktorRoundEventCreated created, Dictionary<CredentialType, CredentialIssuer> issuers)
     {
-        if (Events.Count != 0)
+        if (Events.Count() != 0)
             throw new InvalidOperationException("Round already started");
         CredentialIssuers = issuers;
-        AddEvent(created);
+        await AddEvent(created);
     }
 
 
-    private void OnNewEvent(object? sender, KompaktorRoundEvent e)
-    {
-        try
-        {
-            if (e is KompaktorRoundEventStatusUpdate statusUpdate)
-                _ = HandleStatusChange(statusUpdate.Status);
-            else if (Status == KompaktorStatus.OutputRegistration && NotReadyToSign.IsEmpty)
-                UpdateStatus(KompaktorStatus.Signing);
-            else if (Status == KompaktorStatus.Signing && e is KompaktorRoundEventSignaturePosted &&
-                     Events.OfType<KompaktorRoundEventSignaturePosted>().Count() == Inputs.Count)
-                UpdateStatus(KompaktorStatus.Broadcasting);
-        }
-
-
-        catch (Exception exception)
-        {
-            Console.WriteLine(exception);
-            throw;
-        }
-    }
 
     private async Task HandleStatusChange(KompaktorStatus newStatus)
     {
@@ -287,60 +282,60 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
         {
             case KompaktorStatus.InputRegistration:
                 Task.Delay(created.InputTimeout, _cts.Token)
-                    .ContinueWith(_ =>
+                    .ContinueWith(async _ =>
                     {
                         if (Status != KompaktorStatus.InputRegistration) return;
                         if (!created.InputCount.Contains(Inputs.Count))
                         {
                             _logger.LogDebug("Input registration failed due to input count not met");
-                            UpdateStatus(KompaktorStatus.Failed);
+                            _ = UpdateStatus(KompaktorStatus.Failed);
                             return;
                         }
 
                         _logger.LogDebug("Input registration completed with {0} inputs and {1} remaining quotes", Inputs.Count,ActiveQuotes.Count);
-                        UpdateStatus(KompaktorStatus.OutputRegistration);
+                        _ =  UpdateStatus(KompaktorStatus.OutputRegistration);
                     });
                 break;
             case KompaktorStatus.OutputRegistration:
                 _logger.LogDebug("Output registration started (expires in {0})", created.OutputTimeout);
                 Task.Delay(created.OutputTimeout, _cts.Token)
-                    .ContinueWith(_ =>
+                    .ContinueWith(async _ =>
                     {
                         if (Status != KompaktorStatus.OutputRegistration) return;
                         if (!created.OutputCount.Contains(Outputs.Count))
                         {
                             _logger.LogDebug("Output registration failed due to output count not met");
-                            UpdateStatus(KompaktorStatus.Failed);
+                            _ =  UpdateStatus(KompaktorStatus.Failed);
                             return;
                         }
 
                         if (!NotReadyToSign.IsEmpty)
                         {
                             _logger.LogDebug("Output registration failed due to not all inputs signalled ready");
-                            UpdateStatus(KompaktorStatus.Failed);
+                            _ =  UpdateStatus(KompaktorStatus.Failed);
                             return;
                         }
 
-                        UpdateStatus(KompaktorStatus.Signing);
+                        await UpdateStatus(KompaktorStatus.Signing);
                     });
                 break;
             case KompaktorStatus.Signing:
                 Task.Delay(created.SigningTimeout, _cts.Token)
-                    .ContinueWith(_ =>
+                    .ContinueWith(async _ =>
                     {
                         if (Status != KompaktorStatus.Signing) return;
 
-                        UpdateStatus(KompaktorStatus.Failed);
+                        _ =  UpdateStatus(KompaktorStatus.Failed);
                     });
                 break;
             case KompaktorStatus.Broadcasting:
 
-                _rpcClient.SendRawTransactionAsync(GetTransaction(_network)).ContinueWith(res =>
+                _rpcClient.SendRawTransactionAsync(GetTransaction(_network)).ContinueWith(async res =>
                 {
                     try
                     {
                         if (Status != KompaktorStatus.Broadcasting) return;
-                        UpdateStatus(res.Result is not null ? KompaktorStatus.Completed : KompaktorStatus.Failed);
+                        _ =  UpdateStatus(res.Result is not null ? KompaktorStatus.Completed : KompaktorStatus.Failed);
                     }
                     catch (Exception e)
                     {
@@ -349,31 +344,27 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
                         
                         
                         
-                        UpdateStatus(KompaktorStatus.Failed);
+                        _ =  UpdateStatus(KompaktorStatus.Failed);
                     }
                 });
 
 
                 break;
-            default:
-
-                break;
-            // throw new ArgumentOutOfRangeException(nameof(newStatus), newStatus, null);
         }
     }
 
 
-    private SemaphoreSlim _statusSemaphore = new(1, 1);
+    private readonly SemaphoreSlim _statusSemaphore = new(1, 1);
 
-    private void UpdateStatus(KompaktorStatus status)
+    private async Task UpdateStatus(KompaktorStatus status)
     {
-        _statusSemaphore.Wait();
+        await _statusSemaphore.WaitAsync();
         try
         {
             if (status == Status) return;
             if (status < Status)
                 throw new InvalidOperationException("Cannot go back in status");
-            AddEvent(new KompaktorRoundEventStatusUpdate(status));
+            await AddEvent(new KompaktorRoundEventStatusUpdate(status));
         }
         finally
         {
@@ -386,6 +377,5 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
     {
         _cts.Cancel();
         base.Dispose();
-        _cts = new CancellationTokenSource();
     }
 }

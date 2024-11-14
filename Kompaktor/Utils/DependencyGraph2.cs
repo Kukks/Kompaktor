@@ -73,60 +73,84 @@ public static class DependencyGraph2
         /// <param name="logger">logger</param>
         /// <param name="issuanceTask">the action that will execute</param>
         /// <param name="cancellationToken">cancels</param>
-        public async Task Reissue(DateTimeOffset expiry, WasabiRandom random, ILogger logger,
-            Func<Node, CancellationToken, Task> issuanceTask, CancellationToken cancellationToken)
+       public async Task Reissue(
+    DateTimeOffset expiry,
+    WasabiRandom random,
+    ILogger logger,
+    Func<Node, CancellationToken, Task> issuanceTask,
+    CancellationToken cancellationToken)
+{
+    var ctsOnError = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+    var token = ctsOnError.Token;
+
+    try
+    {
+        // Build a list of all nodes and their dependencies
+        var allNodes = GetAllNodes(); // Implement a method to get all nodes in the graph
+        var dependencyCounts = new ConcurrentDictionary<Node, int>();
+        var nodeChildren = new ConcurrentDictionary<Node, List<Node>>();
+
+        // Initialize dependencies and child relationships
+        foreach (var node in allNodes)
         {
-            var ctsOnError = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            int dependencyCount = node.Parents.Keys.Count(parent => parent != node && !(parent is RootNode));
+            dependencyCounts[node] = dependencyCount;
 
-            // Build a list of all nodes and their dependencies
-            var allNodes = GetAllNodes(); // Implement a method to get all nodes in the graph
-            var dependencyCounts = new ConcurrentDictionary<Node, int>();
-            var nodeChildren = new ConcurrentDictionary<Node, List<Node>>();
-
-            // Initialize dependencies and child relationships
-            foreach (var node in allNodes)
+            foreach (var parent in node.Parents.Keys)
             {
-                int dependencyCount = node.Parents.Keys.Count(parent => parent != node && !(parent is RootNode));
-                dependencyCounts[node] = dependencyCount;
-
-                foreach (var parent in node.Parents.Keys)
+                if (parent == node || parent is RootNode)
                 {
-                    if (parent == node || parent is RootNode)
-                    {
-                        continue;
-                    }
-
-                    nodeChildren.AddOrUpdate(parent, new List<Node> { node }, (key, list) =>
-                    {
-                        list.Add(node);
-                        return list;
-                    });
+                    continue;
                 }
-            }
 
-            // Queue of nodes ready to process
-            var readyNodes = new ConcurrentQueue<Node>();
-
-            // Enqueue nodes with zero dependencies
-            foreach (var node in allNodes)
-            {
-                if (dependencyCounts[node] == 0)
+                nodeChildren.AddOrUpdate(parent, new List<Node> { node }, (key, list) =>
                 {
-                    readyNodes.Enqueue(node);
-                }
+                    list.Add(node);
+                    return list;
+                });
             }
+        }
 
-            var tasks = new List<Task>();
+        // Initialize a concurrent queue for ready nodes
+        var readyNodes = new ConcurrentQueue<Node>();
 
-            while (readyNodes.TryDequeue(out var node))
+        // Enqueue nodes with zero dependencies
+        foreach (var node in allNodes)
+        {
+            if (dependencyCounts[node] == 0)
             {
-                tasks.Add(Task.Run(async () =>
+                readyNodes.Enqueue(node);
+            }
+        }
+
+        // List to keep track of running tasks
+        var runningTasks = new ConcurrentBag<Task>();
+
+        // Semaphore to control access to the queue
+        var semaphore = new SemaphoreSlim(1, 1);
+
+        // Function to process nodes
+        async Task ProcessNodesAsync()
+        {
+            while (!token.IsCancellationRequested)
+            {
+                if (!readyNodes.TryDequeue(out var currentNode))
+                {
+                    // No nodes to process currently
+                    // Check if all tasks are done
+                    if (runningTasks.IsEmpty)
+                        break;
+
+                    // Wait briefly before retrying
+                    await Task.Delay(100, token).ConfigureAwait(false);
+                    continue;
+                }
+
+                // Start processing the node
+                var task = Task.Run(async () =>
                 {
                     try
                     {
-                        // Check for cancellation
-                        ctsOnError.Token.ThrowIfCancellationRequested();
-
                         // Recalculate the available time
                         var remainingTime = expiry - DateTimeOffset.UtcNow;
 
@@ -136,7 +160,7 @@ public static class DependencyGraph2
                         }
 
                         // Estimate the total time needed for all descendants
-                        int descendantCount = node.GetMaxDepth();
+                        int descendantCount = currentNode.GetMaxDepth();
                         // Estimate minimum time per node (processing time + average delay)
                         TimeSpan minTimePerNode = TimeSpan.FromSeconds(5); // Adjust based on your system
                         var minDescendantTime = TimeSpan.FromTicks(descendantCount * minTimePerNode.Ticks);
@@ -148,25 +172,25 @@ public static class DependencyGraph2
                             maxDelay = TimeSpan.Zero;
                         }
 
-                        if (!(node is RootNode))
+                        if (!(currentNode is RootNode))
                         {
                             // Generate a random delay within the allowed range
-                            var delayMilliseconds = 0;//random.GetInt(0, Math.Max(1, (int) maxDelay.TotalMilliseconds));
+                            var delayMilliseconds = 0; //random.GetInt(0, Math.Max(1, (int) maxDelay.TotalMilliseconds));
 
                             // Log the scheduling
-                            logger.LogInformation($"Scheduling node {node.Id} after {delayMilliseconds} ms delay.");
+                            // logger.LogInformation($"Scheduling node {currentNode.Id} after {delayMilliseconds} ms delay.");
                             // Introduce the randomized delay
-                            await Task.Delay(delayMilliseconds, ctsOnError.Token);
+                            await Task.Delay(delayMilliseconds, token).ConfigureAwait(false);
 
-                            logger.LogInformation($"Node {node.Id} running");
+                            // logger.LogInformation($"Node {currentNode.Id} running");
                             // Execute the issuance task
-                            await issuanceTask(node, ctsOnError.Token);
+                            await issuanceTask(currentNode, token).ConfigureAwait(false);
 
-                            logger.LogInformation($"Node {node.Id} completed");
+                            // logger.LogInformation($"Node {currentNode.Id} completed");
                         }
 
                         // Decrement dependency counts of child nodes
-                        if (nodeChildren.TryGetValue(node, out var children))
+                        if (nodeChildren.TryGetValue(currentNode, out var children))
                         {
                             foreach (var child in children)
                             {
@@ -180,15 +204,44 @@ public static class DependencyGraph2
                     catch (Exception ex)
                     {
                         // Log the error and cancel all tasks
-                        logger.LogException($"Error executing issuance task for node {node.Id}. Cancelling all tasks.", ex);
-                        ctsOnError.Cancel();
+                        logger.LogException( $"Error executing issuance task for node {currentNode.Id}. Cancelling all tasks.",ex);
+                        await ctsOnError.CancelAsync();
                         throw;
                     }
-                }, ctsOnError.Token));
-            }
+                }, token);
 
-            await Task.WhenAll(tasks);
+                runningTasks.Add(task);
+
+                // Remove completed tasks from the bag to prevent memory leaks
+                _ = task.ContinueWith(t => runningTasks.TryTake(out _), TaskContinuationOptions.OnlyOnRanToCompletion);
+            }
         }
+
+        // Start processing nodes
+        var processingTask = ProcessNodesAsync();
+
+        // Wait for processing to complete
+        await processingTask.ConfigureAwait(false);
+
+        // Wait for all running tasks to complete
+        await Task.WhenAll(runningTasks.ToArray()).ConfigureAwait(false);
+    }
+    catch (OperationCanceledException)
+    {
+        logger.LogWarning("Reissue operation was canceled.");
+        throw;
+    }
+    catch (Exception ex)
+    {
+        logger.LogException( "An unexpected error occurred during Reissue.", ex);
+        throw;
+    }
+    finally
+    {
+        ctsOnError.Dispose();
+    }
+}
+
 
 
         public int GetMaxDepth(Node? node = null)

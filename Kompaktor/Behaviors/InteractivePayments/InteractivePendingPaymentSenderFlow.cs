@@ -1,4 +1,5 @@
-﻿using Kompaktor.Contracts;
+﻿using System.Diagnostics;
+using Kompaktor.Contracts;
 using Kompaktor.Mapper;
 using Kompaktor.Models;
 using Kompaktor.Utils;
@@ -71,31 +72,16 @@ public class InteractivePendingPaymentSenderFlow
 
         P2 ??= ECPrivKey.Create(RandomUtils.GetBytes(32));
 
-        _logger.LogInformation($"Sending intent to pay {Payment.Id}");
-        await _communicationApi.SendMessageAsync(IntentPay());
+        var tcs = new TaskCompletionSource();
+        var receivedMessageTask = _communicationApi.WaitForMessage( P2.ToXPubKey().ToBytes(), cancellationToken,
+            $"intent to pay ack {Payment.Id}", tcs);
+await tcs.Task;
+        await _communicationApi.SendMessageAsync(IntentPay(), $"intent to pay {Payment.Id}");
         try
         {
-            await foreach (var receivedMessage in _communicationApi.Messages(cancellationToken))
-            {
-                if (receivedMessage.Length != 64)
-                {
-                    continue;
-                }
-
-//check that the first 32 bytes are a valid pubkey and is p2
-                if (!ECXOnlyPubKey.TryCreate(receivedMessage[..32], out var pkey2) || ((XPubKey) pkey2) != P2)
-                {
-                    continue;
-                }
-
-                _logger.LogInformation($"Response received. Continue with interactive payment {Payment.Id}");
-
-                if (ECXOnlyPubKey.TryCreate(receivedMessage[32..], out var pkey3))
-                {
-                    P3 = pkey3;
-                    return;
-                }
-            }
+            var receivedMessage = await receivedMessageTask;
+            
+            P3 = ECXOnlyPubKey.Create(receivedMessage[32..]);
         }
         catch (OperationCanceledException)
         {
@@ -107,31 +93,32 @@ public class InteractivePendingPaymentSenderFlow
     {
         if (P3 is null || AssignedCredentials.Sum(credential => credential.Value) != Payment.Amount.Satoshi)
         {
+            _logger.LogInformation($"Invalid credentials sum for payment {Payment.Id}");
             return;
         }
 
         P4 ??= ECPrivKey.Create(RandomUtils.GetBytes(32));
 
-        _logger.LogInformation($"Sending credential payment {Payment.Id}");
-        await _communicationApi.SendMessageAsync(Pay());
-        await foreach (var receivedMessage in _communicationApi.Messages(cancellationToken))
+        _logger.LogInformation($"P1={P1} P2={P2.ToXPubKey()} P3={P3} P4={P4.ToXPubKey()}");
+        var tcs = new TaskCompletionSource();
+        var receivedMessageTask = _communicationApi.WaitForMessage(P4.ToXPubKey().ToBytes(), cancellationToken,
+            $"Waiting for cred ack {Payment.Id}",tcs);
+        await tcs.Task.WithCancellation(cancellationToken);
+        await _communicationApi.SendMessageAsync(Pay(), $"credential payment {Payment.Id}");
+        try
         {
-            if (receivedMessage.Length != 64)
-            {
-                continue;
-            }
+           var receivedMessage = await receivedMessageTask;
+            P5 = ECXOnlyPubKey.Create(receivedMessage[32..]);
 
-            if (!ECXOnlyPubKey.TryCreate(receivedMessage[..32], out var pkey4) || (XPubKey) pkey4 != P4)
-            {
-                continue;
-            }
-
-            if (ECXOnlyPubKey.TryCreate(receivedMessage[32..], out var pkey5))
-            {
-                P5 = pkey5;
-                _logger.LogInformation($"Received cred ack {Payment.Id}");
-                return;
-            }
+            _logger.LogInformation($"Received cred ack {Payment.Id}");
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.LogInformation($"Timeout waiting for cred ack response {Payment.Id}");
+        }
+        catch (Exception e)
+        {
+            _logger.LogException( $"Error waiting for cred ack response {Payment.Id}", e);
         }
     }
 
@@ -142,26 +129,14 @@ public class InteractivePendingPaymentSenderFlow
             return;
         }
 
-        _logger.LogInformation($"Waiting for ready to sign {Payment.Id}");
-        await foreach (var receivedMessage in _communicationApi.Messages(cancellationToken))
-        {
-            if (receivedMessage.Length != 64)
-            {
-                continue;
-            }
+        var tcs = new TaskCompletionSource();
 
-            if (!ECXOnlyPubKey.TryCreate(receivedMessage[..32], out var p5) || P5 != p5)
-            {
-                continue;
-            }
-
-            _logger.LogInformation($"Received ready {Payment.Id}");
-            if (ECXOnlyPubKey.TryCreate(receivedMessage[32..], out var pkey6))
-            {
-                P6 = pkey6;
-                return;
-            }
-        }
+        var receivedMessageTask =  _communicationApi.WaitForMessage(P5.ToBytes(), cancellationToken,
+            $"Waiting for ready to sign {Payment.Id}", tcs);
+        await tcs.Task.WithCancellation(cancellationToken);
+        var receivedMessage = await receivedMessageTask;
+        _logger.LogInformation($"Received ready {Payment.Id}");
+        P6 = ECXOnlyPubKey.Create(receivedMessage[32..]);
     }
 
     public async Task WaitUntilOkToSign(CancellationToken cancellationToken)
@@ -176,45 +151,36 @@ public class InteractivePendingPaymentSenderFlow
         {
             return;
         }
-
-        _logger.LogInformation($"Sender:waiting for proof {Payment.Id}");
-
-        await foreach (var receivedMessage in _communicationApi.Messages(cancellationToken))
+var tcs = new TaskCompletionSource();
+        var receivedMessageTask =
+            _communicationApi.WaitForMessage(P6.ToBytes(), cancellationToken, $"waiting for proof {Payment.Id}", tcs);
+        await tcs.Task.WithCancellation(cancellationToken);
+        var receivedMessage = await receivedMessageTask;
+        if (SecpSchnorrSignature.TryCreate(receivedMessage[32..], out var sig))
         {
-            if (receivedMessage.Length != 96)
+            var proof = new KompaktorOffchainPaymentProof(TxId, Payment.Amount.Satoshi, P1, sig);
+            _logger.LogInformation(
+                $"Received proof for payment {Payment.Id} \n {Convert.ToHexString(proof.ProofMessage)}");
+            if (proof.Verify())
             {
-                continue;
-            }
-
-            if (!ECXOnlyPubKey.TryCreate(receivedMessage[..32], out var pkey6) || pkey6 != P6)
-            {
-                continue;
-            }
-
-            if (SecpSchnorrSignature.TryCreate(receivedMessage[32..], out var sig))
-            {
-                var proof = new KompaktorOffchainPaymentProof(TxId, Payment.Amount.Satoshi, P1, sig);
-                _logger.LogInformation(
-                    $"Received proof for payment {Payment.Id} \n {Convert.ToHexString(proof.ProofMessage)}");
-                if (proof.Verify())
-                {
-                    _logger.LogInformation($"Received proof for payment {Payment.Id}");
-                    Proof = sig;
-                    return;
-                }
+                _logger.LogInformation($"Received proof for payment {Payment.Id}");
+                Proof = sig;
+                return;
             }
         }
+
+        throw new Exception("Invalid proof");
     }
 
 
     private byte[] IntentPay()
     {
-        return P1!.ToBytes().Concat(((XPubKey) P2).ToBytes()).ToArray();
+        return P1!.ToBytes().Concat(P2.ToXPubKey().ToBytes()).ToArray();
     }
 
     private byte[] Pay()
     {
-        return P3.ToBytes().Concat(((XPubKey) P4).ToBytes())
+        return P3.ToBytes().Concat(P4.ToXPubKey().ToBytes())
             .Concat(AssignedCredentials.SelectMany(credential => credential.ToBytes())).ToArray();
     }
 }

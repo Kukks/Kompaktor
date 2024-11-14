@@ -1,4 +1,5 @@
-﻿using System.Security.Cryptography;
+﻿using System.Diagnostics;
+using System.Security.Cryptography;
 using Kompaktor.Contracts;
 using Kompaktor.Mapper;
 using Kompaktor.Utils;
@@ -20,7 +21,8 @@ public class InteractivePendingPaymentReceiverFlow
     private BlindedCredential[] _receivedCredentials;
 
     public InteractivePendingPaymentReceiverFlow(ILogger logger, InteractiveReceiverPendingPayment payment,
-        IKompaktorPeerCommunicationApi communicationApi, Func<Credential[], Task> reissue, Func<Task<bool>> waitUntilReady)
+        IKompaktorPeerCommunicationApi communicationApi, Func<Credential[], Task> reissue,
+        Func<Task<bool>> waitUntilReady)
     {
         _logger = logger;
         Payment = payment;
@@ -79,99 +81,93 @@ public class InteractivePendingPaymentReceiverFlow
 
     private byte[] IntentPayAck()
     {
-        return P2.ToBytes().Concat(((XPubKey) P3).ToBytes()).ToArray();
+        return P2.ToBytes().Concat(P3.ToXPubKey().ToBytes()).ToArray();
     }
 
     private byte[] CredReceiveAck()
     {
-        return P4.ToBytes().Concat(((XPubKey) P5).ToBytes()).ToArray();
+        return P4.ToBytes().Concat(P5.ToXPubKey().ToBytes()).ToArray();
     }
 
     private byte[] Ready()
     {
-        return ((XPubKey) P5).ToBytes().Concat(((XPubKey) P6).ToBytes()).ToArray();
+        return P5.ToXPubKey().ToBytes().Concat(P6.ToXPubKey().ToBytes()).ToArray();
     }
 
     private byte[] ProofMsg()
     {
         _logger.LogInformation($"Send Proof message: {Convert.ToHexString(Proof.ProofMessage)}");
-        return ((XPubKey) P6).ToBytes().Concat(Proof.Proof.ToBytes()).ToArray();
+        return P6.ToXPubKey().ToBytes().Concat(Proof.Proof.ToBytes()).ToArray();
     }
 
 
     public async Task Start(XPubKey p2, CancellationToken ct)
     {
-        _logger.LogInformation("Starting interactive payment receiver flow for payment {0}", Payment.Id);
         P2 = p2;
         P3 = ECPrivKey.Create(RandomNumberGenerator.GetBytes(32));
-        await _communicationApi.SendMessageAsync(IntentPayAck());
-        _logger.LogInformation("Sent intent pay ack for payment {0}", Payment.Id);
-        await foreach (var msg in _communicationApi.Messages(ct))
-        {
-            if (msg.Length <= 64)
-            {
-                continue;
-            }
-
-            var p3 = msg[..32].ToXPubKey();
-            if (p3 != P3)
-            {
-                continue;
-            }
-
-            _logger.LogInformation("Received creds for payment {0}", Payment.Id);
-            var p4 = msg[32..64].ToXPubKey();
+        _logger.LogInformation(($"P2={P2.ToString()} P3={ P3.ToXPubKey()}"));
+        var tcs = new TaskCompletionSource();
+        var msgTask = _communicationApi.WaitForMessage(P3.ToXPubKey().ToBytes(), ct, $"creds for payment {Payment.Id}", tcs);
+        await _communicationApi.SendMessageAsync(IntentPayAck(), $"intent to pay ack {Payment.Id}");
+    await tcs.Task.WithCancellation(ct);
+        var msg = await msgTask;
+        
+        _logger.LogInformation("Received creds for payment {0}", Payment.Id);
+        var p4 = msg[32..64].ToXPubKey();
 //grab every slice of 105 bytes from the message
-            var credentials = new List<Credential>();
-            var offset = 64;
-            while (offset < msg.Length)
-            {
-                var credential = CredentialHelper.CredFromBytes(msg[offset..(offset + 105)]);
-                credentials.Add(credential);
-                offset += 105;
-            }
-
-            // check if sum of all credential values is equal to the amount of the payment
-            if (credentials.Sum(c => c.Value) < Payment.Amount)
-            {
-                _logger.LogInformation($"Received creds for payment { Payment.Id} do not match the amount {credentials.Sum(c => c.Value)} not {Payment.Amount} ");
-                continue;
-            }
-
-            P4 = p4;
-            
-            ReceivedCredentials = credentials.Select(credential => new BlindedCredential(credential)).ToArray();
-            break;
-            
+        var credentials = new List<Credential>();
+        var offset = 64;
+        while (offset < msg.Length)
+        {
+            var credential = CredentialHelper.CredFromBytes(msg[offset..(offset + 105)]);
+            credentials.Add(credential);
+            offset += 105;
         }
+
+        // check if sum of all credential values is equal to the amount of the payment
+        if (credentials.Sum(c => c.Value) < Payment.Amount)
+        {
+            _logger.LogInformation(
+                $"Received creds for payment {Payment.Id} do not match the amount {credentials.Sum(c => c.Value)} not {Payment.Amount} ");
+            throw new Exception("Invalid credentials");
+        }
+
+        P4 = p4;
+
+        ReceivedCredentials = credentials.Select(credential => new BlindedCredential(credential)).ToArray();
+
+
+        var sw = Stopwatch.StartNew();
         P5 = ECPrivKey.Create(RandomNumberGenerator.GetBytes(32));
-        _logger.LogInformation($"Sending creds ack for payment {Payment.Id}");
-        await _communicationApi.SendMessageAsync(CredReceiveAck());
+        await _communicationApi.SendMessageAsync(CredReceiveAck(), $"creds ack for payment {Payment.Id}");
+
+        _logger.LogInformation($"Sent creds ack for payment {Payment.Id} (took {sw.ElapsedMilliseconds}ms)");
         await Reissued.Task.WaitAsync(ct);
 
-        _logger.LogInformation($"Reissued creds of payment {Payment.Id}");
+        _logger.LogInformation($"Reissued creds of payment {Payment.Id} {sw.ElapsedMilliseconds}ms)");
         P6 = ECPrivKey.Create(RandomNumberGenerator.GetBytes(32));
 
         if (!await _waitUntilReady())
         {
             _logger.LogInformation($"Payment {Payment.Id} was waiting for too long for us to get ready");
             return;
-        };
-        _logger.LogInformation($"Sending ready for payment {Payment.Id}");
-          
-        await _communicationApi.SendMessageAsync(Ready());
+        }
+
+
+        await _communicationApi.SendMessageAsync(Ready(), $"ready for payment {Payment.Id}");
         await TxIdSet.Task.WaitAsync(ct);
         _logger.LogInformation($"Received txid for payment {Payment.Id}");
-        var proof = new KompaktorOffchainPaymentProof(TxId, Payment.Amount.Satoshi, P1, null);
-
+        
         if (!await _waitUntilReady())
         {
+            _logger.LogInformation($"Payment {Payment.Id} was waiting for too long for us to get ready");
             return;
-        };
+        }
+
+        var proof = new KompaktorOffchainPaymentProof(TxId, Payment.Amount.Satoshi, P1.ToXPubKey(), null);
         _logger.LogInformation($"Send Proof message: {Convert.ToHexString(proof.ProofMessage)}");
         var sig = ((ECPrivKey) P1).SignBIP340(proof.ProofMessage);
         Proof = proof with {Proof = sig};
-        _logger.LogInformation($"Sending proof for payment {Payment.Id}");
-        await _communicationApi.SendMessageAsync(ProofMsg());
+        await _communicationApi.SendMessageAsync(ProofMsg(), $"proof for payment {Payment.Id}");
     }
 }
