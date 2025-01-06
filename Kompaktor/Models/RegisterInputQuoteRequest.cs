@@ -1,10 +1,15 @@
-﻿using NBitcoin.BIP322;
+﻿using System.Text.Json.Serialization;
+using Kompaktor.JsonConverters;
+using NBitcoin.BIP322;
 using WabiSabi.CredentialRequesting;
 
 namespace Kompaktor.Models;
 
 public record RegisterInputQuoteRequest
 {
-    public BIP322Signature.Full Signature { get; init; }
-    public ICredentialsRequest CredentialsRequest { get; init; }
+    [JsonConverter(typeof(SignatureJsonConverter))]
+    public required BIP322Signature.Full Signature { get; init; }
+    
+    [JsonConverter(typeof(CredentialsRequestJsonConverter))]
+    public required ICredentialsRequest CredentialsRequest { get; init; }
 }

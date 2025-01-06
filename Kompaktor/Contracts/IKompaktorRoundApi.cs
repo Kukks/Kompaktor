@@ -5,6 +5,7 @@ namespace Kompaktor.Contracts;
 
 public interface IKompaktorRoundApi
 {
+    public Task<KompaktorRoundEvent> GetEvents(string lastEventId);
     Task<KompaktorRoundEventMessage> SendMessage(MessageRequest request);
     Task<InputRegistrationQuoteResponse> PreRegisterInput(RegisterInputQuoteRequest quoteRequest);
     Task<KompaktorRoundEventInputRegistered> RegisterInput(RegisterInputRequest quoteRequest);

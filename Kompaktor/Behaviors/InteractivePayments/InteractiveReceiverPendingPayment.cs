@@ -4,12 +4,11 @@ using NBitcoin;
 
 namespace Kompaktor.Behaviors.InteractivePayments;
 
-public record InteractivePendingPayment(
+public record InteractiveReceiverPendingPayment(
     string Id,
     Money Amount,
     BitcoinAddress Destination,
     bool Reserved,
-    XPubKey? KompaktorPubKey,
-    bool Urgent) : PendingPayment(Id, Amount, Destination, Reserved)
+    PrivKey? KompaktorKey) : PendingPayment(Id, Amount, Destination, Reserved)
 {
 }

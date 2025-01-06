@@ -16,9 +16,9 @@ public static class ConvertUtils
         return ECPrivKey.Create(global::System.Convert.FromHexString(hex));
     }
 
-    public static string ToHex(this ECPrivKey key)
+    public static string ToHex(this byte[] bytes)
     {
-        return Convert.ToHexString(key.ToBytes()).ToLower();
+        return Convert.ToHexString(bytes).ToLowerInvariant();
     }
 
     public static byte[] ToBytes(this ECPrivKey key)

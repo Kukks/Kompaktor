@@ -11,7 +11,7 @@ public static  class TaskScheduler
     {
         if(tasks.Length == 0)
             return Task.CompletedTask;
-        var fromNow = Math.Max(0, (expiry - DateTimeOffset.UtcNow).TotalMilliseconds);
+        var fromNow = 0;// Math.Max(0, (expiry - DateTimeOffset.UtcNow).TotalMilliseconds);
         var delays = tasks.Select(task => random.GetInt(0, (int) fromNow+1)).ToArray();
         logger.LogInformation($"Scheduling {tasks.Length} {taskName} tasks to run at random times before {expiry}({fromNow} from now) (in {string.Join(",", delays)} ms)");
         var orderedTasks = tasks.Zip(delays, (task, delay) => (task, delay)).OrderBy(tuple => tuple.delay).Select(tuple => tuple.task.Invoke().WithCancellation(token)).ToArray();

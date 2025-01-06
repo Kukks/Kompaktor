@@ -256,18 +256,16 @@ public class KompaktorRoundClient : IDisposable
                     await FinishedOutputRegistration.InvokeIfNotNullAsync(this);
 
                     Logger.LogInformation($"Finished intital output registration");
-                    _ = Loop(RegisterOutputs, () => Round.Status != KompaktorStatus.OutputRegistration,
-                        nameof(RegisterOutputs));
-                    _ = Loop(ReadyToSign, () => Round.Status != KompaktorStatus.OutputRegistration,
-                        nameof(ReadyToSign));
+                    _ = TaskUtils.Loop(RegisterOutputs, () => Round.Status != KompaktorStatus.OutputRegistration,
+                        Logger, "RegisterOutputs", _cts.Token);
+                    _ = TaskUtils.Loop(ReadyToSign, () => Round.Status != KompaktorStatus.OutputRegistration,
+                        Logger, "ReadyToSign", _cts.Token);
                     break;
                 case KompaktorStatus.Signing:
                     await StartSigning.InvokeIfNotNullAsync(this);
                     await Sign();
                     break;
                 case KompaktorStatus.Broadcasting:
-
-                    Logger.LogInformation($"Tx fully signed, broadcasting {Round.GetTransaction(_network).GetHash()}");
                     break;
                 case KompaktorStatus.Completed:
 
@@ -284,14 +282,15 @@ public class KompaktorRoundClient : IDisposable
 
     private string lstMsg = "";
 
-    public bool ShouldSign()
+    public bool ShouldSign(bool verbose = false)
     {
+        var ksnames = DoNotSignKillSwitches.Where(kvp => kvp.Value).Select(kvp => kvp.Key.GetType().Name);
         var msg = $"Should sign: " +
-                  $"{DoNotSignKillSwitches.Count(kvp => kvp.Value)} kill switches on" +
+                  $"{DoNotSignKillSwitches.Count(kvp => kvp.Value)} kill switches ({string.Join(",", ksnames)}) on" +
                   $"{RemainingPlannedOutputs().Length} O left, {AvailableCredentials.Sum(credential => credential.Value)} C left";
         if (DoNotSignKillSwitches.Any(kvp => kvp.Value))
         {
-            if (lstMsg != msg)
+            if (lstMsg != msg || verbose)
             {
                 lstMsg = msg;
                 Logger.LogInformation(msg);
@@ -316,7 +315,7 @@ public class KompaktorRoundClient : IDisposable
             msg = "SIGN!";
         }
 
-        if (msg != lstMsg)
+        if (msg != lstMsg || verbose)
         {
             lstMsg = msg;
             Logger.LogInformation(msg);
@@ -375,20 +374,10 @@ public class KompaktorRoundClient : IDisposable
         await TaskScheduler.Schedule("signing", tasks, expiry, _random, cts.Token, Logger);
     }
 
-    private async Task Loop(Func<Task> task, Func<bool> stop, string name)
-    {
-        while (!stop() && !_cts.IsCancellationRequested)
-        {
-            await CatchException($"Error with loop task: {name}", async () =>
-            {
-                await task();
-                await Task.Delay(100, _cts.Token);
-            });
-        }
-    }
 
     public async Task<BlindedCredential[]> Generate0Credentials()
     {
+        Logger.LogInformation("Generating 0 credentials");
         var client = GetWabiSabiClient(CredentialType.Amount);
         var cts = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
         var api = _factory.Create();
@@ -414,6 +403,8 @@ public class KompaktorRoundClient : IDisposable
 
     public async Task<BlindedCredential[]> Reissue(Credential[] ins, long[] outs)
     {
+        Logger.LogInformation(
+            $"Reissuing {string.Join(", ", ins.Select(credential => credential.Value))} to {string.Join(", ", outs)}");
         var client = GetWabiSabiClient(CredentialType.Amount);
         var cts = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
         var api = _factory.Create();
@@ -566,161 +557,245 @@ public class KompaktorRoundClient : IDisposable
         await Task.WhenAll(AllocatedSelectedCoins.Keys.Select(RegisterCoin));
     }
 
+    
+    
+    class TxOutWrapper
+    {
+        public long Satoshi { get; }
+        public TxOut TxOut { get; }
+        private int _isUsed; // Use an int as a flag (0 = false, 1 = true)
+
+        public TxOutWrapper(long satoshi, TxOut txOut)
+        {
+            Satoshi = satoshi;
+            TxOut = txOut;
+            _isUsed = 0;
+        }
+
+        public bool TryMarkAsUsed()
+        {
+            // Atomically set _isUsed to 1 if it's currently 0
+            return Interlocked.CompareExchange(ref _isUsed, 1, 0) == 0;
+        }
+
+        public bool IsUsed => _isUsed == 1;
+    }
+    
     private async Task RegisterOutputs()
     {
-        if (Round.Status != KompaktorStatus.OutputRegistration)
-            return;
-        if (RemainingPlannedOutputs().Length == 0)
-            return;
-        Logger.LogInformation($"Registering {RemainingPlannedOutputs().Length} outputs ");
-        var currentAmounts = AvailableCredentials.Select(credential => credential.Value).ToList();
-
-        var plannedAmounts = RemainingPlannedOutputs()
-            .Select(txOut => (txOut.EffectiveCost(Round.RoundEventCreated.FeeRate).Satoshi, txOut)).ToList();
-        //if there is change, add to plannedAmounts
-        var targetValues = plannedAmounts.Select(x => x.Item1).ToList();
-        var originalPlannedAmounts = plannedAmounts.Count;
-        var change = currentAmounts.Sum() - targetValues.Sum();
-        if (change > 0)
+        
+        
+        
+        try
         {
-            targetValues.Add(change);
-        }
+            await OutputRegistrationLock.WaitAsync(_cts.Token);
 
-        var credentialConfiguration = Round.RoundEventCreated.Credentials[CredentialType.Amount];
-        var dependencyGraph =
-            DependencyGraph2.Compute(Logger, currentAmounts.ToArray(), targetValues.ToArray(),
-                credentialConfiguration.IssuanceIn, credentialConfiguration.IssuanceOut);
-
-        Logger.LogInformation(
-            $"computed {dependencyGraph.CountDescendants()} actions with {dependencyGraph.GetMaxDepth()} depth ");
-        Logger.LogDebug(dependencyGraph.GenerateAscii(targetValues.ToArray()));
-
-        ConcurrentHashSet<string> reserved = new();
-
-        async Task IssuanceTask(DependencyGraph2.Node node, CancellationToken cancellationToken)
-        {
-            var api = _factory.Create();
-            var requiredIns = node.Ins.Select(output => output.Amount).ToList();
-            var creds = new List<BlindedCredential>();
-            while (requiredIns.Any() && !cancellationToken.IsCancellationRequested)
-            {
-                var cred = AvailableCredentials.First(credential =>
-                    requiredIns.Contains(credential.Value) &&
-                    !reserved.Contains(credential.Mac.Serial()));
-                if (reserved.Add(cred.Mac.Serial()))
-                {
-                    creds.Add(cred);
-                    requiredIns.Remove(cred.Value);
-                }
-            }
-
-            var credentialClient = GetWabiSabiClient(CredentialType.Amount);
-            Logger.LogInformation(
-                $"Issuing {string.Join(", ", creds.Select(cred => cred.Mac.Serial()))} to {string.Join(", ", node.Outs.Select(output => output.Amount))}");
-            var credentialsRequest =
-                credentialClient.CreateRequest(node.Outs.Select(output => output.Amount), creds, cancellationToken);
-            var credRequest = new System.Collections.Generic.Dictionary<CredentialType, ICredentialsRequest>()
-            {
-                {CredentialType.Amount, credentialsRequest.CredentialsRequest}
-            };
-            if (node.OutputRegistered is not null)
-            {
-                var txOut = plannedAmounts.First(kvp => kvp.Satoshi == node.OutputRegistered.Amount);
-                plannedAmounts.Remove(txOut);
-                Logger.LogInformation(
-                    $"Issuing {node.Id} through output registration of [{txOut.txOut.ScriptPubKey.GetDestinationAddress(_network)} {txOut.txOut.Value}] ({string.Join(", ", creds.Select(cred => cred.Value))} to {string.Join(", ", node.Outs.Select(output => output.Amount))}");
-
-                var response = await api.RegisterOutput(new RegisterOutputRequest(credRequest, txOut.txOut));
-
-                var credentialResponse = credentialClient.HandleResponse(response.Credentials[CredentialType.Amount],
-                        credentialsRequest.CredentialsResponseValidation)
-                    .Select(credential => new BlindedCredential(credential)).ToArray();
-
-                foreach (var blindedCredential in credentialResponse)
-                {
-                    AllCredentials.TryAdd(blindedCredential.Mac.Serial(), blindedCredential);
-                }
-
-                Identities.Add(new KompaktorIdentity(api,
-                    null,
-                    new[] {response.Request.Output},
-                    creds.Select(credential => credential.Mac).ToArray(),
-                    credentialResponse.Select(credential => credential.Mac).ToArray(),
-                    null, false));
-            }
-            else
-            {
-                Logger.LogInformation(
-                    $"Issuing {string.Join(", ", creds.Select(cred => cred.Value))} to {string.Join(", ", node.Outs.Select(output => output.Amount))}");
-
-                await Reissue(creds.ToArray(), node.Outs.Select(output => output.Amount).ToArray());
-            }
-        }
-
-        var timeLeft = Round.OutputPhaseEnd - TimeSpan.FromSeconds(20) - DateTimeOffset.UtcNow;
-        var reissuanceExpiration = DateTimeOffset.UtcNow + TimeSpan.FromMilliseconds(timeLeft.TotalMilliseconds / 2);
-
-
-        await dependencyGraph.Reissue(reissuanceExpiration, _random, Logger, IssuanceTask, _cts.Token);
-        Logger.LogInformation(
-            $"Finished registering {originalPlannedAmounts - plannedAmounts.Count}/{originalPlannedAmounts} outputs ({RegisteredOutputs.Count()}total registered outputs)");
-    }
-
-    private async Task ReadyToSign()
-    {
-        var toSignal = Identities.Where(identity => identity.RegisteredInputs.Any() && !identity.SignalledReady)
-            .ToList();
-        if (toSignal.Count == 0)
-            return;
-
-        var subset = !ShouldSign();
-        var expiry = Round.OutputPhaseEnd - TimeSpan.FromSeconds(10);
-        if (subset)
-        {
-            if (toSignal.Count == 1)
+            if (Round.Status != KompaktorStatus.OutputRegistration)
                 return;
-            Logger.LogInformation("signalling to sign all but one");
-            toSignal.RemoveAt(Random.Shared.Next(toSignal.Count - 1));
+            if (RemainingPlannedOutputs().Length == 0)
+                return;
+            Logger.LogInformation($"Registering {RemainingPlannedOutputs().Length} outputs ");
+            var currentAmounts = AvailableCredentials.Select(credential => credential.Value).ToList();
+
+            var plannedAmounts = new ConcurrentBag<TxOutWrapper>(
+                RemainingPlannedOutputs()
+                    .Select(txOut => new TxOutWrapper(txOut.EffectiveCost(Round.RoundEventCreated.FeeRate).Satoshi, txOut))
+            );
+
+            //if there is change, add to plannedAmounts
+            var targetValues = plannedAmounts.Select(x => x.Satoshi).ToList();
+            var originalPlannedAmounts = plannedAmounts.Count;
+            // var change = currentAmounts.Sum() - targetValues.Sum();
+            // if (change > 0)
+            // {
+            //     targetValues.Add(change);
+            // }
+
+            var credentialConfiguration = Round.RoundEventCreated.Credentials[CredentialType.Amount];
+            if (currentAmounts.Count < credentialConfiguration.IssuanceIn.Min)
+            {
+                var zeroCredentials = await Generate0Credentials();
+                currentAmounts.AddRange(zeroCredentials.Select(credential => credential.Value));
+            }
+
+            var dependencyGraph =
+                DependencyGraph2.Compute(Logger, currentAmounts.ToArray(), targetValues.ToArray(),
+                    credentialConfiguration.IssuanceIn, credentialConfiguration.IssuanceOut);
+
+            Logger.LogInformation(
+                $"computed {dependencyGraph.CountDescendants()} actions with {dependencyGraph.GetMaxDepth()} depth ");
+            Logger.LogDebug(dependencyGraph.GenerateAscii(targetValues.ToArray()));
+
+            ConcurrentHashSet<string> reserved = new();
+
+            bool TryGetMatchingTxOut(long amt, out TxOut matchingTxOut)
+            {
+                matchingTxOut = null;
+
+                foreach (var item in plannedAmounts)
+                {
+                    if (item.Satoshi == amt && item.TryMarkAsUsed())
+                    {
+                        matchingTxOut = item.TxOut;
+                        return true;
+                    }
+                }
+
+                return false;
+            }
+            
+            async Task IssuanceTask(DependencyGraph2.Node node, CancellationToken cancellationToken)
+            {
+                var api = _factory.Create();
+                var requiredIns = node.Ins.Select(output => output.Amount).ToList();
+                var creds = new List<BlindedCredential>();
+                while (requiredIns.Any() && !cancellationToken.IsCancellationRequested)
+                {
+                    var cred = AvailableCredentials.FirstOrDefault(credential =>
+                        requiredIns.Contains(credential.Value) &&
+                        !reserved.Contains(credential.Mac.Serial()));
+                    if (cred is null)
+                        break;
+                    if (reserved.Add(cred.Mac.Serial()))
+                    {
+                        creds.Add(cred);
+                        requiredIns.Remove(cred.Value);
+                    }
+                }
+
+                var credentialClient = GetWabiSabiClient(CredentialType.Amount);
+                Logger.LogInformation(
+                    $"Issuing {string.Join(", ", creds.Select(cred => cred.Mac.Serial()))} to {string.Join(", ", node.Outs.Select(output => output.Amount))}");
+                var credentialsRequest =
+                    credentialClient.CreateRequest(node.Outs.Select(output => output.Amount), creds, cancellationToken);
+                var credRequest = new System.Collections.Generic.Dictionary<CredentialType, ICredentialsRequest>()
+                {
+                    {CredentialType.Amount, credentialsRequest.CredentialsRequest}
+                };
+                try
+                {
+
+
+                    if (node.OutputRegistered is not null)
+                    {
+                        //get and remove the txOut from plannedAmounts as long as it matches the amt, in a concurrent safe way
+    
+                        if (!TryGetMatchingTxOut( node.OutputRegistered.Amount, out var txOut))
+                        {
+                           
+                            throw new InvalidOperationException("Could not find matching txOut");
+                        }
+
+                    
+
+                    Logger.LogInformation(
+                        $"Issuing {node.Id} through output registration of [{txOut.ScriptPubKey.GetDestinationAddress(_network)} {txOut.Value}] ({string.Join(", ", creds.Select(cred => cred.Value))} to {string.Join(", ", node.Outs.Select(output => output.Amount))}");
+
+                    var response = await api.RegisterOutput(new RegisterOutputRequest(credRequest, txOut));
+
+                    var credentialResponse = credentialClient.HandleResponse(
+                            response.Credentials[CredentialType.Amount],
+                            credentialsRequest.CredentialsResponseValidation)
+                        .Select(credential => new BlindedCredential(credential)).ToArray();
+
+                    foreach (var blindedCredential in credentialResponse)
+                    {
+                        AllCredentials.TryAdd(blindedCredential.Mac.Serial(), blindedCredential);
+                    }
+
+                    Identities.Add(new KompaktorIdentity(api,
+                        null,
+                        new[] {response.Request.Output},
+                        creds.Select(credential => credential.Mac).ToArray(),
+                        credentialResponse.Select(credential => credential.Mac).ToArray(),
+                        null, false));
+                }
+                else
+                {
+                    Logger.LogInformation(
+                        $"Issuing {string.Join(", ", creds.Select(cred => cred.Value))} to {string.Join(", ", node.Outs.Select(output => output.Amount))}");
+
+                    await Reissue(creds.ToArray(), node.Outs.Select(output => output.Amount).ToArray());
+                }
+                }
+                catch (Exception e)
+                {
+                    Logger.LogException("Failed to issue", e);
+                    throw;
+                }
+                Logger.LogInformation(
+                    $"Finished issuing {string.Join(", ", creds.Select(cred => cred.Value))} to {string.Join(", ", node.Outs.Select(output => output.Amount))}");
+            }
+
             var timeLeft = Round.OutputPhaseEnd - TimeSpan.FromSeconds(20) - DateTimeOffset.UtcNow;
             var reissuanceExpiration =
                 DateTimeOffset.UtcNow + TimeSpan.FromMilliseconds(timeLeft.TotalMilliseconds / 2);
 
 
-            expiry = reissuanceExpiration;
+            await dependencyGraph.Reissue(reissuanceExpiration, _random, Logger, IssuanceTask, _cts.Token);
+            Logger.LogInformation(
+                $"Finished registering {plannedAmounts.Count(wrapper =>wrapper.IsUsed)}/{originalPlannedAmounts} outputs ({RegisteredOutputs.Count()}total registered outputs) ss: {ShouldSign(true)}");
+            await ReadyToSign();
         }
-        else
+        finally
         {
-            Logger.LogInformation("Signalling to sign all");
+            OutputRegistrationLock.Release();
         }
-
-        var tasks = toSignal.Select<KompaktorIdentity, Func<Task>>(
-            identity =>
-            {
-                return async () =>
-                {
-                    Logger.LogInformation($"Signalling {identity.Secret}");
-                    await identity.Api.ReadyToSign(new ReadyToSignRequest(identity.Secret));
-                    identity.SignalledReady = true;
-
-                    Logger.LogInformation($"Signalled {identity.Secret}");
-                };
-            }).ToArray();
-
-        await TaskScheduler.Schedule("signal ready to sign", tasks
-            ,
-            expiry, _random, _cts.Token, Logger);
-        Logger.LogInformation("Finished signalling ready to sign");
     }
 
-    private async Task CatchException(string name, Func<Task> task)
+    public readonly SemaphoreSlim ReadyToSignLock = new(1, 1);
+    public readonly SemaphoreSlim OutputRegistrationLock = new(1, 1);
+
+    private async Task ReadyToSign()
     {
         try
         {
-            await task();
+            await ReadyToSignLock.WaitAsync(_cts.Token);
+
+            var toSignal = Identities.Where(identity => identity.RegisteredInputs.Any() && !identity.SignalledReady)
+                .ToList();
+            if (toSignal.Count == 0)
+                return;
+
+            var subset = !ShouldSign();
+            var expiry = Round.OutputPhaseEnd - TimeSpan.FromSeconds(10);
+            if (subset)
+            {
+                if (toSignal.Count == 1)
+                    return;
+                Logger.LogInformation("signalling to sign all but one");
+                toSignal.RemoveAt(Random.Shared.Next(toSignal.Count - 1));
+                var timeLeft = Round.OutputPhaseEnd - TimeSpan.FromSeconds(20) - DateTimeOffset.UtcNow;
+                var reissuanceExpiration =
+                    DateTimeOffset.UtcNow + TimeSpan.FromMilliseconds(timeLeft.TotalMilliseconds / 2);
+
+
+                expiry = reissuanceExpiration;
+            }
+            else
+            {
+                Logger.LogInformation("Signalling to sign all");
+            }
+
+            var tasks = toSignal.Select<KompaktorIdentity, Func<Task>>(
+                identity =>
+                {
+                    return async () =>
+                    {
+                        await identity.Api.ReadyToSign(new ReadyToSignRequest(identity.Secret));
+                        identity.SignalledReady = true;
+
+                    };
+                }).ToArray();
+
+            await TaskScheduler.Schedule("signal ready to sign", tasks
+                ,
+                expiry, _random, _cts.Token, Logger);
+            Logger.LogInformation("Finished signalling ready to sign");
         }
-        catch (Exception e) when (e is not TaskCanceledException || !_cts.IsCancellationRequested)
+        finally
         {
-            Logger.LogException(name, e);
+            ReadyToSignLock.Release();
         }
     }
 }

@@ -1,5 +1,8 @@
-﻿namespace Kompaktor.Models;
+﻿using System.Text.Json.Serialization;
 
+namespace Kompaktor.Models;
+
+[JsonConverter(typeof(JsonStringEnumConverter))]
 public enum KompaktorStatus
 {
     InputRegistration,

@@ -565,11 +565,13 @@ public static class DependencyGraph2
         // Convert ins and outs to Output objects
         var insOutputs = ins.Select(amount => new Output(amount)).ToArray();
         var outsOutputs = outs.Select(amount => new Output(amount)).ToArray();
+        
 
         var rootNode = new RootNode(logger, insOutputs);
+        
 
         
-        if (ins.Sum() != outs.Sum())
+        if (ins.Sum() < outs.Sum())
         {
             throw new InvalidOperationException($"The sum of the inputs must be equal to the sum of the outputs. {ins.Sum()} != {outs.Sum()}");
         }

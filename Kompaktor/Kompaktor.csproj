@@ -4,11 +4,12 @@
         <TargetFramework>net8.0</TargetFramework>
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>
+        <PublishAot>true</PublishAot>
     </PropertyGroup>
 
     <ItemGroup>
-        <PackageReference Include="NBitcoin" Version="7.0.38"/>
-        <PackageReference Include="NBitcoin.Secp256k1" Version="3.1.5"/>
+        <PackageReference Include="NBitcoin" Version="7.0.46"/>
+        <PackageReference Include="NBitcoin.Secp256k1" Version="3.1.6"/>
         <PackageReference Include="WabiSabi" Version="1.0.1.2"/>
     </ItemGroup>
 

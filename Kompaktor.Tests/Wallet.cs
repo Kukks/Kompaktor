@@ -14,7 +14,7 @@ namespace Kompaktor.Tests;
 public class Wallet : IOutboundPaymentManager, IKompaktorWalletInterface, IInboundPaymentManager
 {
     private readonly Network _network;
-    private readonly ILogger _logger;
+    internal readonly ILogger _logger;
     public Mnemonic Mnemonic { get; }
     private uint Index { get; set; }
     private Dictionary<BitcoinAddress, uint> Addresses { get; } = new();
@@ -233,6 +233,9 @@ public class Wallet : IOutboundPaymentManager, IKompaktorWalletInterface, IInbou
 
     public async Task AddProof(string pendingPaymentId, KompaktorOffchainPaymentProof proof)
     {
+        
+        _logger.LogInformation("Added proof: {0}", proof);
+        if(proof == null) throw new ArgumentNullException(nameof(proof));
         PaymentProofs.TryAdd(pendingPaymentId, proof);
     }
 

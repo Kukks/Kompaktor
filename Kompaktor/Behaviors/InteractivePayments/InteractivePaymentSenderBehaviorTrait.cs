@@ -8,7 +8,7 @@ namespace Kompaktor.Behaviors.InteractivePayments;
 
 public class InteractivePaymentSenderBehaviorTrait : KompaktorClientBaseBehaviorTrait
 {
-    private  ILogger _logger => Client.Logger;
+    private  ILogger Logger => Client.Logger;
     private readonly IOutboundPaymentManager _outboundPaymentManager;
     private readonly IKompaktorPeerCommunicationApi _communicationApi;
 
@@ -19,8 +19,7 @@ public class InteractivePaymentSenderBehaviorTrait : KompaktorClientBaseBehavior
         _communicationApi = communicationApi;
     }
 
-    private CancellationTokenSource _cts = new();
-    private CancellationTokenSource paymentEndCts = new();
+    private readonly CancellationTokenSource _cts = new();
 
     public override void Start(KompaktorRoundClient client)
     {
@@ -37,13 +36,13 @@ public class InteractivePaymentSenderBehaviorTrait : KompaktorClientBaseBehavior
         {
             interactivePendingPaymentSenderFlow.TxId = Client.GetTransaction().GetHash();
         }
-        _logger.LogInformation("interactive payment sender can sign: {0}",
+        Logger.LogInformation("interactive payment sender can sign: {0}",
             Committed.All(flow => flow.CanSign));
         await Task.WhenAll(Committed.Select(flow => flow.WaitUntilOkToSign(_cts.Token)));
 
         Client.DoNotSignKillSwitches.AddOrReplace(this, Committed.Any(flow => !flow.CanSign));
         
-        _logger.LogInformation("interactive payment sender can sign: {0}",
+        Logger.LogInformation("interactive payment sender can sign: {0}",
             Committed.All(flow => flow.CanSign));
     }
 
@@ -64,7 +63,7 @@ public class InteractivePaymentSenderBehaviorTrait : KompaktorClientBaseBehavior
         var tasks = new List<Task>();
         var flows = new List<InteractivePendingPaymentSenderFlow>();
         foreach (var flow in computed.SelectedPayments.Select(payment =>
-                     new InteractivePendingPaymentSenderFlow(_logger, payment, _communicationApi)))
+                     new InteractivePendingPaymentSenderFlow(Logger, payment, _communicationApi)))
         {
             flows.Add(flow);
             tasks.Add(flow.SignalIntentPay(new CancellationTokenSource(TimeSpan.FromSeconds(10)).Token));
@@ -85,6 +84,7 @@ public class InteractivePaymentSenderBehaviorTrait : KompaktorClientBaseBehavior
         {
             if (flow.P3 is null)
             {
+                Logger.LogInformation("Payment {0} will run but non-interactively", flow.Payment.Id);
                 Client.AllocatedPlannedOutputs.TryAdd(flow.Payment.TxOut(), this);
                 flow.RegisteredOutput = true;
                 continue;
@@ -103,7 +103,7 @@ public class InteractivePaymentSenderBehaviorTrait : KompaktorClientBaseBehavior
 
                 Client.AllocatedCredentials.TryAdd(c1.Mac.Serial(), this);
                 Client.AllocatedCredentials.TryAdd(c2.Mac.Serial(), this);
-                var newCreds = await Client.Reissue([c1, c2], new[] {o1, o2});
+                var newCreds = await Client.Reissue([c1, c2], [o1, o2]);
                 
                
                 workingCredentials.AddRange(newCreds);
@@ -112,16 +112,17 @@ public class InteractivePaymentSenderBehaviorTrait : KompaktorClientBaseBehavior
                 
             }
 
-            workingCredentials.AddRange(await Client.Generate0Credentials());
+            // workingCredentials.AddRange(await Client.Generate0Credentials());
             var credential = workingCredentials.First(credential => credential.Value == flow.Payment.Amount.Satoshi);
-            var zeroCredential = workingCredentials.First(credential => credential.Value == 0);
+            // var zeroCredential = workingCredentials.First(credential => credential.Value == 0);
 
 
             workingCredentials.Remove(credential);
-            workingCredentials.Remove(zeroCredential);
+            // workingCredentials.Remove(zeroCredential);
             Client.AllocatedCredentials.TryAdd(credential.Mac.Serial(), this);
-            Client.AllocatedCredentials.TryAdd(zeroCredential.Mac.Serial(), this);
-            flow.AssignedCredentials = new[] {credential, zeroCredential};
+            // Client.AllocatedCredentials.TryAdd(zeroCredential.Mac.Serial(), this);
+            flow.AssignedCredentials = new[] {credential};
+            // flow.AssignedCredentials = new[] {credential, zeroCredential};
             
             tasks.Add(flow.SendPayment(_cts.Token).ContinueWith(task =>
             {
@@ -136,29 +137,29 @@ public class InteractivePaymentSenderBehaviorTrait : KompaktorClientBaseBehavior
         }
 
         await Task.WhenAll(tasks);
-
-        var processManuallyIfPossible = flows.Where(flow => flow.P5 is null).ToDictionary(flow => flow.Payment, flow => flow);
-        credentials =
-            Client!.AvailableCredentialsForTrait(this);
-        credentialsAmounts = credentials.Select(credential => Money.Satoshis(credential.Value)).ToArray();
-
-        computed = await ComputePendingPayments(credentialsAmounts, processManuallyIfPossible.Keys.ToArray(), false);
-        foreach (var payment in processManuallyIfPossible)
-        {
-            if(computed.SelectedPayments.Contains(payment.Key))
-            {
-                Client.AllocatedPlannedOutputs.TryAdd(payment.Key.TxOut(), this);
-                payment.Value.RegisteredOutput = true;
-            }
-            else
-            {
-                await _outboundPaymentManager.BreakCommitment(payment.Key.Id);
-                
-            }
-            
-        }
-        flows = flows.Where(flow => flow.P3 is not null || flow.RegisteredOutput).ToList();
-        
+        //
+        // var processManuallyIfPossible = flows.Where(flow => flow.P5 is null).ToDictionary(flow => flow.Payment, flow => flow);
+        // credentials =
+        //     Client!.AvailableCredentialsForTrait(this);
+        // credentialsAmounts = credentials.Select(credential => Money.Satoshis(credential.Value)).ToArray();
+        //
+        // computed = await ComputePendingPayments(credentialsAmounts, processManuallyIfPossible.Keys.ToArray(), false);
+        // foreach (var payment in processManuallyIfPossible)
+        // {
+        //     if(computed.SelectedPayments.Contains(payment.Key))
+        //     {
+        //         Client.AllocatedPlannedOutputs.TryAdd(payment.Key.TxOut(), this);
+        //         payment.Value.RegisteredOutput = true;
+        //     }
+        //     else
+        //     {
+        //         await _outboundPaymentManager.BreakCommitment(payment.Key.Id);
+        //         
+        //     }
+        //     
+        // }
+        // flows = flows.Where(flow => flow.P3 is not null || flow.RegisteredOutput).ToList();
+        //
         while (Client.AllocatedSelectedCoins.FirstOrDefault(pair => pair.Value == this) is
                {Key: not null, Value: not null} pair)
         {
@@ -168,11 +169,11 @@ public class InteractivePaymentSenderBehaviorTrait : KompaktorClientBaseBehavior
         Committed = flows.ToArray();
         _ = Task.WhenAll(flows.Select(flow => flow.WaitForReadyToSignal(_cts.Token))).ContinueWith(task =>
         {
-            _logger.LogInformation("All send flows completed, ready to sign: {0}",
+            Logger.LogInformation("All send flows completed, ready to sign: {0}",
                 flows.All(flow => flow.SignalReady));
             Client.DoNotSignKillSwitches.AddOrReplace(this, flows.Any(flow => !flow.SignalReady));
         });
-        _logger.LogInformation("Committed to handling {0} payments", Committed.Length);
+        Logger.LogInformation("Committed to handling {0} payments", Committed.Length);
     }
 
 
@@ -224,8 +225,6 @@ public class InteractivePaymentSenderBehaviorTrait : KompaktorClientBaseBehavior
                 toFulfillAmount += payment.TxOut().EffectiveCost(feerate);
             }
         }
-
-        _logger.LogInformation("Selected {0} payments to fulfill with {1} coins", toFulfill.Count, selectedCoins.Count);
         return (toFulfill, selectedCoins.ToArray());
     }
 
@@ -305,12 +304,18 @@ public class InteractivePaymentSenderBehaviorTrait : KompaktorClientBaseBehavior
             }
             case KompaktorStatus.Completed:
             {
-                var txId = Client.GetTransaction().GetHash();
-                Committed.Where(flow => flow.Proof is not null)
-                    .Select(flow =>
-                        _outboundPaymentManager.AddProof(flow.Payment.Id, new KompaktorOffchainPaymentProof(txId,
-                            flow.Payment.Amount.Satoshi,
-                            ((InteractivePendingPayment) flow.Payment).KompaktorPubKey!, flow.Proof))).ToArray();
+                var success = Committed.Count(flow => flow.Proof is not null);
+                
+                Logger.LogInformation("Completed sending {0} interactive, {1} manual payments.", success,Committed.Count(flow => flow.CanSign)-success);
+                foreach (var flow in Committed.Where(flow => flow.Proof is not null)
+                        )
+                {
+                    await _outboundPaymentManager.AddProof(flow.Payment.Id, flow.Proof);        
+                }
+                foreach (var flow in Committed.Where(flow => !flow.CanSign))
+                {
+                    await _outboundPaymentManager.BreakCommitment(flow.Payment.Id);
+                }
                 break;
             }
         }

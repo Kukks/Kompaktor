@@ -143,8 +143,9 @@ public class StaticPaymentBehaviorTrait : KompaktorClientBaseBehaviorTrait
     }
 
 
-    protected virtual async Task OnStatusChanged(object sender, KompaktorStatus phase)
+    protected override async Task OnStatusChanged(object sender, KompaktorStatus phase)
     {
+        await  base.OnStatusChanged(sender, phase);
         if(phase == KompaktorStatus.Failed)
         {
             foreach (var payment in Committed)
@@ -157,8 +158,8 @@ public class StaticPaymentBehaviorTrait : KompaktorClientBaseBehaviorTrait
 
     public override void Dispose()
     {
-        Client.StatusChanged -= OnStatusChanged;
         Client.StartCoinSelection -= OnStartCoinSelection;
         Client.FinishedCoinRegistration -= OnFinishedCoinRegistration;
+        base.Dispose();
     }
 }

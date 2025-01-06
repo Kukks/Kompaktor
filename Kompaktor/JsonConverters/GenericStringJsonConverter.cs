@@ -3,14 +3,14 @@ using System.Text.Json.Serialization;
 
 namespace Kompaktor.JsonConverters;
 
-public abstract class GenericStringJsonConverter<T> : JsonConverter<T> where T : class
+public abstract class GenericStringJsonConverter<T> : JsonConverter<T>
 {
     public abstract T Create(string str);
     public override T? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
     {
         if (reader.TokenType == JsonTokenType.Null)
         {
-            return null;
+            return default;
         }
 
         if (reader.TokenType != JsonTokenType.String ||
@@ -31,6 +31,11 @@ public abstract class GenericStringJsonConverter<T> : JsonConverter<T> where T :
             return;
         }
 
-        writer.WriteStringValue(value.ToString());
+        writer.WriteStringValue(ToString(value));
+    }
+
+    public virtual string ToString(T value)
+    {
+        return value.ToString();
     }
 }

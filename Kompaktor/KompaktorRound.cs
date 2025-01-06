@@ -90,7 +90,8 @@ public class KompaktorRound : IDisposable
         return transaction;
     }
 
-    private SemaphoreSlim _lock = new(1, 1);
+    private readonly SemaphoreSlim _lock = new(1, 1);
+    
 
     protected virtual async Task<T> AddEvent<T>(T @event) where T : KompaktorRoundEvent
     {
@@ -103,8 +104,5 @@ public class KompaktorRound : IDisposable
      
     }
 
-    public KompaktorRoundEventCreated RoundEventCreated
-    {
-        get { return Events.OfType<KompaktorRoundEventCreated>().Single(); }
-    }
+    public KompaktorRoundEventCreated RoundEventCreated => Events.OfType<KompaktorRoundEventCreated>().Single();
 }

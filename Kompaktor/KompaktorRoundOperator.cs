@@ -19,7 +19,7 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
     private readonly ILogger _logger;
     private readonly RPCClient _rpcClient;
 
-    private CancellationTokenSource _cts;
+    private readonly CancellationTokenSource _cts;
 
     public KompaktorRoundOperator(Network network, RPCClient rpcClient, WasabiRandom random, ILogger logger)
     {
@@ -50,6 +50,11 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
     public readonly
         ConcurrentDictionary<string, (RegisterInputQuoteRequest quoteRequest, InputRegistrationQuoteResponse, Coin coin
             )> ActiveQuotes = new();
+
+    public async Task<KompaktorRoundEvent> GetEvents(string lastEventId)
+    {
+        
+    }
 
     public async Task<KompaktorRoundEventMessage> SendMessage(MessageRequest request)
     {

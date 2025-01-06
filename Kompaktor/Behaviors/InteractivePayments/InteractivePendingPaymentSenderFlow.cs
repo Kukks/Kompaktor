@@ -46,7 +46,7 @@ public class InteractivePendingPaymentSenderFlow
     }
 
     private TaskCompletionSource TxIdSet { get; } = new();
-    public SecpSchnorrSignature? Proof { get; set; }
+    public KompaktorOffchainPaymentProof? Proof { get; set; }
 
 
     public Credential[] AssignedCredentials { get; set; }
@@ -72,10 +72,8 @@ public class InteractivePendingPaymentSenderFlow
 
         P2 ??= ECPrivKey.Create(RandomUtils.GetBytes(32));
 
-        var tcs = new TaskCompletionSource();
         var receivedMessageTask = _communicationApi.WaitForMessage( P2.ToXPubKey().ToBytes(), cancellationToken,
-            $"intent to pay ack {Payment.Id}", tcs);
-await tcs.Task;
+            $"intent to pay ack {Payment.Id}");
         await _communicationApi.SendMessageAsync(IntentPay(), $"intent to pay {Payment.Id}");
         try
         {
@@ -91,6 +89,10 @@ await tcs.Task;
 
     public async Task SendPayment(CancellationToken cancellationToken)
     {
+        if(RegisteredOutput)
+        {
+            return;
+        }
         if (P3 is null || AssignedCredentials.Sum(credential => credential.Value) != Payment.Amount.Satoshi)
         {
             _logger.LogInformation($"Invalid credentials sum for payment {Payment.Id}");
@@ -98,16 +100,11 @@ await tcs.Task;
         }
 
         P4 ??= ECPrivKey.Create(RandomUtils.GetBytes(32));
-
-        _logger.LogInformation($"P1={P1} P2={P2.ToXPubKey()} P3={P3} P4={P4.ToXPubKey()}");
-        var tcs = new TaskCompletionSource();
-        var receivedMessageTask = _communicationApi.WaitForMessage(P4.ToXPubKey().ToBytes(), cancellationToken,
-            $"Waiting for cred ack {Payment.Id}",tcs);
-        await tcs.Task.WithCancellation(cancellationToken);
-        await _communicationApi.SendMessageAsync(Pay(), $"credential payment {Payment.Id}");
+       var receivedMessage = await  _communicationApi.SendAndWaitForMessageAsync(Pay(), P4.ToXPubKey().ToBytes(), cancellationToken,
+            $"credential payment {Payment.Id}");
+       
         try
         {
-           var receivedMessage = await receivedMessageTask;
             P5 = ECXOnlyPubKey.Create(receivedMessage[32..]);
 
             _logger.LogInformation($"Received cred ack {Payment.Id}");
@@ -124,16 +121,12 @@ await tcs.Task;
 
     public async Task WaitForReadyToSignal(CancellationToken cancellationToken)
     {
-        if (P5 is null)
+        if(RegisteredOutput  || P5 is null)
         {
             return;
         }
-
-        var tcs = new TaskCompletionSource();
-
         var receivedMessageTask =  _communicationApi.WaitForMessage(P5.ToBytes(), cancellationToken,
-            $"Waiting for ready to sign {Payment.Id}", tcs);
-        await tcs.Task.WithCancellation(cancellationToken);
+            $"Waiting for ready to sign {Payment.Id}");
         var receivedMessage = await receivedMessageTask;
         _logger.LogInformation($"Received ready {Payment.Id}");
         P6 = ECXOnlyPubKey.Create(receivedMessage[32..]);
@@ -141,6 +134,10 @@ await tcs.Task;
 
     public async Task WaitUntilOkToSign(CancellationToken cancellationToken)
     {
+        if (RegisteredOutput)
+        {
+            return;
+        }
         await TxIdSet.Task.WithCancellation(cancellationToken);
         if (P6 is null)
         {
@@ -151,20 +148,16 @@ await tcs.Task;
         {
             return;
         }
-var tcs = new TaskCompletionSource();
         var receivedMessageTask =
-            _communicationApi.WaitForMessage(P6.ToBytes(), cancellationToken, $"waiting for proof {Payment.Id}", tcs);
-        await tcs.Task.WithCancellation(cancellationToken);
+            _communicationApi.WaitForMessage(P6.ToBytes(), cancellationToken, $"waiting for proof {Payment.Id}");
         var receivedMessage = await receivedMessageTask;
         if (SecpSchnorrSignature.TryCreate(receivedMessage[32..], out var sig))
         {
             var proof = new KompaktorOffchainPaymentProof(TxId, Payment.Amount.Satoshi, P1, sig);
-            _logger.LogInformation(
-                $"Received proof for payment {Payment.Id} \n {Convert.ToHexString(proof.ProofMessage)}");
             if (proof.Verify())
             {
                 _logger.LogInformation($"Received proof for payment {Payment.Id}");
-                Proof = sig;
+                Proof = proof;
                 return;
             }
         }

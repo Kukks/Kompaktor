@@ -15,13 +15,12 @@ public class InteractivePendingPaymentReceiverFlow
     private readonly ILogger _logger;
     public readonly InteractiveReceiverPendingPayment Payment;
     private readonly IKompaktorPeerCommunicationApi _communicationApi;
-    private readonly Func<Credential[], Task> _reissue;
+    private readonly Func<BlindedCredential[], Task> _reissue;
     private readonly Func<Task<bool>> _waitUntilReady;
     private uint256? _txId;
-    private BlindedCredential[] _receivedCredentials;
 
     public InteractivePendingPaymentReceiverFlow(ILogger logger, InteractiveReceiverPendingPayment payment,
-        IKompaktorPeerCommunicationApi communicationApi, Func<Credential[], Task> reissue,
+        IKompaktorPeerCommunicationApi communicationApi, Func<BlindedCredential[], Task> reissue,
         Func<Task<bool>> waitUntilReady)
     {
         _logger = logger;
@@ -50,33 +49,11 @@ public class InteractivePendingPaymentReceiverFlow
     }
 
     private TaskCompletionSource TxIdSet { get; } = new();
-    private TaskCompletionSource Reissued { get; } = new();
 
-    public KompaktorOffchainPaymentProof Proof { get; set; }
+    public KompaktorOffchainPaymentProof? Proof { get; private set; }
 
 
-    public BlindedCredential[] ReceivedCredentials
-    {
-        get => _receivedCredentials;
-        set
-        {
-            _receivedCredentials = value;
-            _logger.LogInformation("Reissuing credentials for payment {0}", Payment.Id);
-            _ = _reissue(value).ContinueWith(task =>
-            {
-                if (task.IsCompletedSuccessfully)
-                {
-                    Reissued.SetResult();
-                }
-                else
-                {
-                    _logger.LogInformation("Reissuing credentials failed for payment {0}", Payment.Id);
-
-                    Reissued.SetException(task.Exception);
-                }
-            });
-        }
-    }
+    public BlindedCredential[] ReceivedCredentials { get; set; }
 
 
     private byte[] IntentPayAck()
@@ -105,12 +82,10 @@ public class InteractivePendingPaymentReceiverFlow
     {
         P2 = p2;
         P3 = ECPrivKey.Create(RandomNumberGenerator.GetBytes(32));
-        _logger.LogInformation(($"P2={P2.ToString()} P3={ P3.ToXPubKey()}"));
-        var tcs = new TaskCompletionSource();
-        var msgTask = _communicationApi.WaitForMessage(P3.ToXPubKey().ToBytes(), ct, $"creds for payment {Payment.Id}", tcs);
-        await _communicationApi.SendMessageAsync(IntentPayAck(), $"intent to pay ack {Payment.Id}");
-    await tcs.Task.WithCancellation(ct);
-        var msg = await msgTask;
+
+        var msg = await _communicationApi
+            .SendAndWaitForMessageAsync(IntentPayAck(), P3.ToXPubKey().ToBytes(), ct,
+                $"creds for payment {Payment.Id}");
         
         _logger.LogInformation("Received creds for payment {0}", Payment.Id);
         var p4 = msg[32..64].ToXPubKey();
@@ -134,17 +109,20 @@ public class InteractivePendingPaymentReceiverFlow
 
         P4 = p4;
 
+        var sw = Stopwatch.StartNew();
         ReceivedCredentials = credentials.Select(credential => new BlindedCredential(credential)).ToArray();
 
 
-        var sw = Stopwatch.StartNew();
         P5 = ECPrivKey.Create(RandomNumberGenerator.GetBytes(32));
-        await _communicationApi.SendMessageAsync(CredReceiveAck(), $"creds ack for payment {Payment.Id}");
-
+       var credAckTest = _communicationApi.SendMessageAsync(CredReceiveAck(), $"creds ack for payment {Payment.Id}");
+       var reissueTask = _reissue(ReceivedCredentials);
+        _logger.LogInformation("Reissuing credentials for payment {0}", Payment.Id);
+      
+await  credAckTest;
         _logger.LogInformation($"Sent creds ack for payment {Payment.Id} (took {sw.ElapsedMilliseconds}ms)");
-        await Reissued.Task.WaitAsync(ct);
+        await reissueTask;
 
-        _logger.LogInformation($"Reissued creds of payment {Payment.Id} {sw.ElapsedMilliseconds}ms)");
+        _logger.LogInformation($"Reissued creds of payment {Payment.Id} ({sw.ElapsedMilliseconds}ms)");
         P6 = ECPrivKey.Create(RandomNumberGenerator.GetBytes(32));
 
         if (!await _waitUntilReady())
@@ -165,7 +143,6 @@ public class InteractivePendingPaymentReceiverFlow
         }
 
         var proof = new KompaktorOffchainPaymentProof(TxId, Payment.Amount.Satoshi, P1.ToXPubKey(), null);
-        _logger.LogInformation($"Send Proof message: {Convert.ToHexString(proof.ProofMessage)}");
         var sig = ((ECPrivKey) P1).SignBIP340(proof.ProofMessage);
         Proof = proof with {Proof = sig};
         await _communicationApi.SendMessageAsync(ProofMsg(), $"proof for payment {Payment.Id}");
