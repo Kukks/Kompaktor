@@ -16,11 +16,11 @@ public static class CredentialTypeConstants
 		return credentialType.CredentialIssuer(new CredentialIssuerSecretKey(random), random);
 	}
 	
-	public static CredentialConfiguation CredentialConfiguration(
+	public static CredentialConfiguration CredentialConfiguration(
 		this CredentialType credentialType,
 		CredentialIssuer credentialIssuer)
 	{
-		return new CredentialConfiguation(
+		return new CredentialConfiguration(
 			credentialIssuer.MaxAmount,
 			credentialType.IssuanceIn(),
 			credentialType.IssuanceOut(),

@@ -7,5 +7,5 @@ public class RegisteredCoin
 {
     private Coin Coin { get; }
     private KompaktorIdentity Identity { get; }
-    public Credential IssuedCredentials{ get; set; }
+    public Credential IssuedCredentials { get; set; }
 }

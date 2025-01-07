@@ -1,3 +1,18 @@
-﻿namespace Kompaktor.Contracts;
+﻿using System.Text.Json.Serialization;
 
-public record ReadyToSignRequest(string Secret);
+namespace Kompaktor.Contracts;
+
+public record ReadyToSignRequest
+{
+    public ReadyToSignRequest(string Secret)
+    {
+        this.Secret = Secret;
+    }
+[JsonPropertyName("secret")]
+    public string Secret { get; init; }
+
+    public void Deconstruct(out string Secret)
+    {
+        Secret = this.Secret;
+    }
+}

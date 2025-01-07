@@ -4,6 +4,7 @@ using Kompaktor.Models;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Console;
 using Microsoft.Extensions.Options;
+using WabiSabi.Crypto.Groups;
 using Xunit;
 using Xunit.Abstractions;
 
@@ -46,4 +47,9 @@ public class JsonTests
     {
         
     }
+    
+    public void GroupElementVectorTests()
+    {
+    }
+    
 }

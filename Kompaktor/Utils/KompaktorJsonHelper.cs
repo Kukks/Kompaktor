@@ -1,4 +1,5 @@
 ﻿using System.Text.Json;
+using JsonSerializer = System.Text.Json.JsonSerializer;
 
 namespace Kompaktor.JsonConverters;
 
@@ -32,5 +33,11 @@ public static class KompaktorJsonHelper
 #pragma warning disable IL2026,IL3050
         return JsonSerializer.Deserialize<T>(ref reader, o);
 #pragma warning restore IL2026,IL3050
+    }
+    
+    public static void WriteProperty<T>(this Utf8JsonWriter writer, string propertyName, T value, JsonSerializerOptions options)
+    {
+        writer.WritePropertyName(propertyName);
+        writer.Serialize(value, options);
     }
 }

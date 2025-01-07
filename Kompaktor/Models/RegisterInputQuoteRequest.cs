@@ -8,8 +8,11 @@ namespace Kompaktor.Models;
 public record RegisterInputQuoteRequest
 {
     [JsonConverter(typeof(SignatureJsonConverter))]
+    [JsonPropertyName("signature")]
+    
     public required BIP322Signature.Full Signature { get; init; }
     
     [JsonConverter(typeof(CredentialsRequestJsonConverter))]
+    [JsonPropertyName("credentialsRequest")]
     public required ICredentialsRequest CredentialsRequest { get; init; }
 }

@@ -1,4 +1,6 @@
-﻿using NBitcoin;
+﻿using System.Text.Json.Serialization;
+using Kompaktor.JsonConverters;
+using NBitcoin;
 
 namespace Kompaktor.Models;
 
@@ -13,6 +15,10 @@ public record MoneyRange
     }
 
     public bool Contains(Money value) => Min <= value && value <= Max;
-    public Money Min { get; init; }
+    [JsonConverter(typeof(MoneyJsonConverter))]
+    [JsonPropertyName("min")]
+    public Money Min { get; init; }    
+    [JsonConverter(typeof(MoneyJsonConverter))]
+    [JsonPropertyName("max")]
     public Money Max { get; init; }
 }

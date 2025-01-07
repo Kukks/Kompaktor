@@ -1,4 +1,6 @@
-﻿namespace Kompaktor.Models;
+﻿using System.Text.Json.Serialization;
+
+namespace Kompaktor.Models;
 
 public record IntRange
 {
@@ -11,6 +13,8 @@ public record IntRange
     }
 
     public bool Contains(int value) => Min <= value && value <= Max;
+    [JsonPropertyName("min")]
     public int Min { get; init; }
+    [JsonPropertyName("max")]
     public int Max { get; init; }
 }

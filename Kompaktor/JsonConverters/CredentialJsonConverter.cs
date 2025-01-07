@@ -1,10 +1,6 @@
-﻿using System.Text.Json;
-using Kompaktor.Mapper;
+﻿using Kompaktor.Mapper;
 using Kompaktor.Utils;
-using Newtonsoft.Json;
-using WabiSabi.Crypto.Groups;
 using WabiSabi.Crypto.ZeroKnowledge;
-using JsonSerializer = Newtonsoft.Json.JsonSerializer;
 
 namespace Kompaktor.JsonConverters;
 
@@ -16,45 +12,77 @@ public class CredentialJsonConverter : GenericStringJsonConverter<BlindedCredent
     }
 }
 
-public class CredentialPresentationJsonConverter : System.Text.Json.Serialization.JsonConverter<CredentialPresentation>
-{
-    public override CredentialPresentation? ReadJson(JsonReader reader, Type objectType, CredentialPresentation? existingValue, bool hasExistingValue, JsonSerializer serializer)
-    {
-        reader.Expect(JsonToken.StartObject);
-        var ca = reader.ReadProperty<GroupElement>(serializer, "Ca");
-        var cx0 = reader.ReadProperty<GroupElement>(serializer, "Cx0");
-        var cx1 = reader.ReadProperty<GroupElement>(serializer, "Cx1");
-        var cV = reader.ReadProperty<GroupElement>(serializer, "CV");
-        var s = reader.ReadProperty<GroupElement>(serializer, "S");
-        reader.Read();
-        reader.Expect(JsonToken.EndObject);
 
-        return ReflectionUtils.CreateInstance<CredentialPresentation>(new object[] { ca, cx0, cx1, cV, s });
-    }
-
-    /// <inheritdoc />
-    public override void WriteJson(JsonWriter writer, CredentialPresentation? value, JsonSerializer serializer)
-    {
-        
-    }
-
-    public override CredentialPresentation? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
-    {
-        throw new NotImplementedException();
-    }
-
-    public override void Write(Utf8JsonWriter writer, CredentialPresentation value, JsonSerializerOptions options)
-    {if (value is null)
-        {
-            throw new ArgumentException($"No valid {nameof(CredentialPresentation)}.", nameof(value));
-        }
-        writer.WriteStartObject();
-        writer.WrVa
-        writer.Serialize("Ca", value.Ca, options);
-        writer.WriteProperty("Cx0", value.Cx0, options);
-        writer.WriteProperty("Cx1", value.Cx1, options);
-        writer.WriteProperty("CV", value.CV, options);
-        writer.WriteProperty("S", value.S, options);
-        writer.WriteEndObject();
-    }
-}
+//
+// public class DictionaryConverter<TKeyConverter, TValueConverter> : JsonConverterFactory 
+//     where TKeyConverter: JsonConverter 
+//     where TValueConverter:JsonConverter
+// {
+//     public override bool CanConvert(Type typeToConvert)
+//     {
+//         return typeToConvert.IsGenericType && typeToConvert.GetGenericTypeDefinition() == typeof(Dictionary<,>);
+//     }
+//
+//     public override JsonConverter? CreateConverter(Type typeToConvert, JsonSerializerOptions options)
+//     {
+//         Type keyType = typeToConvert.GetGenericArguments()[0];
+//         Type valueType = typeToConvert.GetGenericArguments()[1];
+//
+//         
+//         
+//         JsonConverter? keyConverter = typeof(TKeyConverter) == typeof(PlaceHolderJsonConverter) ? null:
+//             (JsonConverter)Activator.CreateInstance(typeof(TKeyConverter))!;
+//         
+//         JsonConverter? valueConverter = typeof(TValueConverter) == typeof(PlaceHolderJsonConverter) ? null:(JsonConverter)Activator.CreateInstance(typeof(TValueConverter));
+//       
+//         return new DictionaryConverterInternal(keyType, valueType, keyConverter, valueConverter);
+//     }
+//     
+//     
+//     
+// }
+//
+// public class DictionaryConverterInternal : JsonConverter<object>
+// {
+//     private readonly Type _keyType;
+//     private readonly Type _valueType;
+//     private readonly JsonConverter? _keyConverter;
+//     private readonly JsonConverter? _valueConverter;
+//
+//     public DictionaryConverterInternal(Type keyType, Type valueType, JsonConverter? keyConverter, JsonConverter? valueConverter)
+//     {
+//         _keyType = keyType;
+//         _valueType = valueType;
+//         _keyConverter = keyConverter;
+//         _valueConverter = valueConverter;
+//     }
+//
+//     public override object Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+//     {
+//         if (reader.TokenType  == JsonTokenType.Null)
+//         {
+//             return null;
+//         }
+//         if(reader.TokenType != JsonTokenType.StartObject)
+//         {
+//             throw new JsonException("Expected StartObject");
+//         }
+//
+//         while (reader.Read())
+//         {
+//             if (reader.TokenType == JsonTokenType.PropertyName)
+//             {
+//                 if(_keyConverter != null)
+//                 {
+//                     var keyV = _keyConverter.Read(ref reader, _keyType, options);
+//                 }
+//             }
+//             var 
+//         }
+//     }
+//
+//     public override void Write(Utf8JsonWriter writer, object value, JsonSerializerOptions options)
+//     {
+//         throw new NotImplementedException();
+//     }
+// }

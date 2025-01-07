@@ -15,10 +15,10 @@ public record KompaktorIdentity
         bool SignalledReady)
     {
         this.Api = Api;
-        this.RegisteredInputs = RegisteredInputs?? Array.Empty<OutPoint>();
-        this.RegisteredOutputs = RegisteredOutputs?? Array.Empty<TxOut>();
-        this.SpentCredentials = SpentCredentials?? Array.Empty<MAC>();
-        this.CreatedCredentials = CreatedCredentials?? Array.Empty<MAC>();
+        this.RegisteredInputs = RegisteredInputs?? [];
+        this.RegisteredOutputs = RegisteredOutputs?? [];
+        this.SpentCredentials = SpentCredentials?? [];
+        this.CreatedCredentials = CreatedCredentials?? [];
         this.Secret = Secret;
         this.SignalledReady = SignalledReady;
     }

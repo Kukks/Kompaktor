@@ -1,4 +1,5 @@
-﻿using NBitcoin.BIP322;
+﻿using Kompaktor.Utils;
+using NBitcoin.BIP322;
 
 namespace Kompaktor.JsonConverters;
 
