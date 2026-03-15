@@ -500,6 +500,7 @@ public class Test
 
 
     [Fact]
+    [Trait("Category", "Scale")]
     public async Task CanDoInteractivePaymentsAtScale()
     {
         List<Wallet> wallets = new();

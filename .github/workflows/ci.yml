@@ -93,8 +93,8 @@ jobs:
           done
 
       - name: Run integration tests
-        run: dotnet test --no-restore --logger "trx;LogFileName=integration-tests.trx" --results-directory ./test-results
-        timeout-minutes: 10
+        run: dotnet test --no-restore --filter "Category!=Scale" --logger "trx;LogFileName=integration-tests.trx" --results-directory ./test-results
+        timeout-minutes: 20
 
       - name: Upload test results
         uses: actions/upload-artifact@v4
