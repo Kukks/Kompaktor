@@ -19,6 +19,7 @@ using Xunit.Sdk;
 
 namespace Kompaktor.Tests;
 
+[Trait("Category", "Integration")]
 public class Test
 {
     private readonly LoggerFactory _loggerFactory;
