@@ -6,6 +6,13 @@ public class ScalarJsonConverter : GenericStringJsonConverter<Scalar>
 {
     public override Scalar Create(string str)
     {
-        return new Scalar(Convert.FromHexString(str));
+        try
+        {
+            return new Scalar(Convert.FromHexString(str));
+        }
+        catch (FormatException ex)
+        {
+            throw new System.Text.Json.JsonException($"Invalid Scalar hex value: '{str}'", ex);
+        }
     }
 }

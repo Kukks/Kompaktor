@@ -6,7 +6,14 @@ public class OutPointJsonConverter : GenericStringJsonConverter<OutPoint>
 {
     public override OutPoint Create(string str)
     {
-        return OutPoint.Parse(str);
+        try
+        {
+            return OutPoint.Parse(str);
+        }
+        catch (FormatException ex)
+        {
+            throw new System.Text.Json.JsonException($"Invalid OutPoint value: '{str}'", ex);
+        }
     }
     public override string ToString(OutPoint value)
     {

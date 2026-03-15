@@ -123,11 +123,9 @@ public static class DependencyGraph2
             }
         }
 
-        // List to keep track of running tasks
-        var runningTasks = new ConcurrentBag<Task>();
-
-        // Semaphore to control access to the queue
-        var semaphore = new SemaphoreSlim(1, 1);
+        // Track in-flight nodes with a counter instead of unreliable ConcurrentBag.IsEmpty
+        var inFlightCount = 0;
+        var completionSignal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
         // Function to process nodes
         async Task ProcessNodesAsync()
@@ -137,14 +135,16 @@ public static class DependencyGraph2
                 if (!readyNodes.TryDequeue(out var currentNode))
                 {
                     // No nodes to process currently
-                    // Check if all tasks are done
-                    if (runningTasks.IsEmpty)
+                    // Check if all in-flight work is done
+                    if (Volatile.Read(ref inFlightCount) == 0 && readyNodes.IsEmpty)
                         break;
 
                     // Wait briefly before retrying
-                    await Task.Delay(100, token).ConfigureAwait(false);
+                    await Task.Delay(50, token).ConfigureAwait(false);
                     continue;
                 }
+
+                Interlocked.Increment(ref inFlightCount);
 
                 // Start processing the node
                 var task = Task.Run(async () =>
@@ -208,23 +208,16 @@ public static class DependencyGraph2
                         await ctsOnError.CancelAsync();
                         throw;
                     }
+                    finally
+                    {
+                        Interlocked.Decrement(ref inFlightCount);
+                    }
                 }, token);
-
-                runningTasks.Add(task);
-
-                // Remove completed tasks from the bag to prevent memory leaks
-                _ = task.ContinueWith(t => runningTasks.TryTake(out _), TaskContinuationOptions.OnlyOnRanToCompletion);
             }
         }
 
-        // Start processing nodes
-        var processingTask = ProcessNodesAsync();
-
-        // Wait for processing to complete
-        await processingTask.ConfigureAwait(false);
-
-        // Wait for all running tasks to complete
-        await Task.WhenAll(runningTasks.ToArray()).ConfigureAwait(false);
+        // Start processing nodes and wait for completion
+        await ProcessNodesAsync().ConfigureAwait(false);
     }
     catch (OperationCanceledException)
     {
@@ -588,25 +581,95 @@ public static class DependencyGraph2
             return o.ToArray();
         }
 
+        // Pre-processing: when there are many more non-zero inputs than can be matched directly
+        // (i.e., more non-zero inputs than input.Max), build a binary merge tree to reduce them.
+        // This avoids O(n²) tree traversals in the main loop.
+        {
+            var availableOutputs = rootNode.RemainingOuts.Where(o => o.Amount > 0).ToList();
+            if (availableOutputs.Count > input.Max)
+            {
+                // Build a binary reduction tree: merge pairs of outputs until we have <= input.Max
+                while (availableOutputs.Count > input.Max)
+                {
+                    var newAvailable = new List<Output>();
+                    for (int i = 0; i < availableOutputs.Count; i += input.Max)
+                    {
+                        var batch = availableOutputs.Skip(i).Take(input.Max).ToList();
+                        if (batch.Count < input.Min)
+                        {
+                            // Not enough for a merge step — carry forward as-is
+                            newAvailable.AddRange(batch);
+                            continue;
+                        }
+
+                        var mergedAmount = batch.Sum(o => o.Amount);
+                        var mergedOutput = new Output(mergedAmount);
+                        var extra0Outs = Enumerable.Range(0, output.Max - 1).Select(_ => new Output(0)).ToArray();
+
+                        // Find which parent node owns each output and build the parent map
+                        var parentMap = new Dictionary<Node, List<Output>>();
+                        foreach (var batchOutput in batch)
+                        {
+                            // Find the node that has this output as a remaining out
+                            var ownerNode = FindOwnerNode(rootNode, batchOutput);
+                            if (ownerNode == null)
+                                throw new InvalidOperationException($"Could not find owner node for output {batchOutput}");
+                            if (!parentMap.TryGetValue(ownerNode, out var list))
+                            {
+                                list = new List<Output>();
+                                parentMap[ownerNode] = list;
+                            }
+                            list.Add(batchOutput);
+                        }
+
+                        var newNode = new Node(logger, input, output,
+                            extra0Outs.Concat(new[] {mergedOutput}).ToArray(),
+                            null,
+                            parentMap.ToDictionary(kvp => kvp.Key, kvp => kvp.Value.ToArray()));
+
+                        foreach (var parent in newNode.Parents)
+                        {
+                            parent.Key.AddChild(newNode, parent.Value);
+                        }
+
+                        newAvailable.Add(mergedOutput);
+                    }
+                    availableOutputs = newAvailable;
+                }
+            }
+        }
+
         var lastRoundAnyMatch = false;
+        var maxIterations = Math.Max(outs.Length * 100, ins.Length * 2 + outs.Length * 100);
+        var iteration = 0;
         while (RemainingOuts() is {Length: > 0} remainingOuts)
         {
+            if (++iteration > maxIterations)
+            {
+                logger.LogWarning("DependencyGraph2.Compute exceeded max iterations ({MaxIterations}), breaking with {Remaining} unmatched outputs",
+                    maxIterations, remainingOuts.Length);
+                break;
+            }
+
             var anyMatch = false;
+
+            // Cache NestedRemainingOuts once per iteration instead of per-output
+            var cachedNestedOuts = rootNode.NestedRemainingOuts(lastRoundAnyMatch);
 
             // Try to find exact matches first, these are direct output registrations
             foreach (var remaining in remainingOuts)
             {
                 // Try to find a combination of inputs within the input range that matches the remaining output
-                var smallerAmts = rootNode.NestedRemainingOuts(lastRoundAnyMatch)
+                var smallerAmts = cachedNestedOuts
                     .Where(x => x.Item2.Amount <= remaining.Amount)
-                    
+
                     .ToArray();
                 if(smallerAmts.Sum(x => x.Item2.Amount) < remaining.Amount)
                     continue;
 
                 var match =  FindBestMatchThroughGreedy(smallerAmts, remaining.Amount, input, true);
-                
-                
+
+
                 if (match is not null && match.Sum(x => x.Item2.Amount) == remaining.Amount)
                 {
                     var extra0Outs = Enumerable.Range(0, output.Max).Select(_ => new Output(0)).ToArray();
@@ -622,6 +685,9 @@ public static class DependencyGraph2
                     {
                         parent.Key.AddChild(newNode, parent.Value);
                     }
+
+                    // Refresh cache after consuming outputs from parent nodes
+                    cachedNestedOuts = rootNode.NestedRemainingOuts(lastRoundAnyMatch);
                 }
             }
 
@@ -630,7 +696,7 @@ public static class DependencyGraph2
             foreach (var remaining in remainingOuts)
             {
                 // Try to find a combination of inputs within the input range that matches the remaining output
-                var amts = rootNode.NestedRemainingOuts(lastRoundAnyMatch)
+                var amts = cachedNestedOuts
                     .OrderByDescending(tuple => tuple.Item2.Amount)
                     .ToArray();
 
@@ -699,16 +765,49 @@ public static class DependencyGraph2
                     anyMatch = true;
                     lastRoundAnyMatch = true;
 
+                    // Refresh cache after consuming outputs
+                    cachedNestedOuts = rootNode.NestedRemainingOuts(lastRoundAnyMatch);
+
                     break;
                 }
             }
 
+            if (!lastRoundAnyMatch && !anyMatch)
+            {
+                logger.LogWarning("DependencyGraph2.Compute made no progress for 2 consecutive rounds, breaking with {Remaining} unmatched outputs",
+                    remainingOuts.Length);
+                break;
+            }
             lastRoundAnyMatch = false;
         }
 
         return rootNode;
     }
     
+    /// <summary>
+    /// Finds the node that owns a specific output (i.e., the output is in that node's RemainingOuts).
+    /// </summary>
+    private static Node? FindOwnerNode(Node root, Output target)
+    {
+        var queue = new Queue<Node>();
+        queue.Enqueue(root);
+        var visited = new HashSet<string>();
+
+        while (queue.Count > 0)
+        {
+            var node = queue.Dequeue();
+            if (!visited.Add(node.Id)) continue;
+
+            if (node.RemainingOuts.Any(o => o.Id == target.Id))
+                return node;
+
+            foreach (var child in node.Children.Keys)
+                queue.Enqueue(child);
+        }
+
+        return null;
+    }
+
     private static (Node, Output)[]? FindBestMatchThroughGreedy(
         (Node, Output)[] amtsAvailable, long target, IntRange inRange, bool equalOnly)
     {

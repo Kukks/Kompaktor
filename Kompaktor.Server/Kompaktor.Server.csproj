@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+    <PropertyGroup>
+        <Description>Kompaktor coordinator server with HTTP API</Description>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <PackageReference Include="NBitcoin" Version="7.0.46"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\Kompaktor\Kompaktor.csproj" />
+    </ItemGroup>
+
+</Project>

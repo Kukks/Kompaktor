@@ -1,0 +1,112 @@
+name: CI
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+    branches: [ master, main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build --no-restore --configuration Release
+
+  unit-tests:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Run unit tests
+        run: dotnet test --no-restore --filter "Category!=Integration" --logger "trx;LogFileName=unit-tests.trx" --results-directory ./test-results
+        continue-on-error: false
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: unit-test-results
+          path: ./test-results/*.trx
+
+  integration-tests:
+    runs-on: ubuntu-latest
+    needs: build
+    services:
+      bitcoind:
+        image: btcpayserver/bitcoin:27.1
+        ports:
+          - 53782:43782
+        env:
+          BITCOIN_NETWORK: regtest
+          BITCOIN_WALLETDIR: "/data/wallets"
+          BITCOIN_EXTRA_ARGS: |-
+            rpcuser=ceiwHEbqWI83
+            rpcpassword=DwubwWsoo3
+            rpcport=43782
+            rpcbind=0.0.0.0:43782
+            rpcallowip=0.0.0.0/0
+            port=39388
+            whitelist=0.0.0.0/0
+            fallbackfee=0.0002
+            txindex=1
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Wait for bitcoind
+        run: |
+          for i in $(seq 1 30); do
+            if curl -s -u ceiwHEbqWI83:DwubwWsoo3 --data-binary '{"jsonrpc":"1.0","method":"getblockchaininfo","params":[]}' -H 'content-type:text/plain;' http://localhost:53782/ > /dev/null 2>&1; then
+              echo "bitcoind is ready"
+              break
+            fi
+            echo "Waiting for bitcoind... ($i/30)"
+            sleep 2
+          done
+
+      - name: Run integration tests
+        run: dotnet test --no-restore --logger "trx;LogFileName=integration-tests.trx" --results-directory ./test-results
+        timeout-minutes: 10
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: integration-test-results
+          path: ./test-results/*.trx
+
+      - name: Upload logs on failure
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: ci-logs
+          path: |
+            ./test-results/

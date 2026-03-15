@@ -14,7 +14,11 @@ public static class TaskUtils
                 await task();
                 await Task.Delay(100, cancellationToken);
             }
-            catch (Exception e) when (e is not TaskCanceledException || !cancellationToken.IsCancellationRequested)
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (Exception e)
             {
                 logger.LogException($"Error with loop task: {name}", e);
             }

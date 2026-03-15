@@ -57,6 +57,11 @@ public class InteractivePaymentSenderBehaviorTrait : KompaktorClientBaseBehavior
     {
         var credentials =
             Client!.AvailableCredentialsForTrait(this);
+        // Mark all credentials as allocated immediately to prevent receiver trait from consuming them
+        foreach (var cred in credentials)
+        {
+            Client.AllocatedCredentials.TryAdd(cred.Mac.Serial(), this);
+        }
         var credentialsAmounts = credentials.Select(credential => Money.Satoshis(credential.Value)).ToArray();
 
         var computed = await ComputePendingPayments(credentialsAmounts, _toFulfill.ToArray(), true);
@@ -95,6 +100,18 @@ public class InteractivePaymentSenderBehaviorTrait : KompaktorClientBaseBehavior
                 var c1 = workingCredentials.First();
                 var c2 = workingCredentials.LastOrDefault(blindedCredential =>
                     blindedCredential.Value != 0 && blindedCredential != c1) ?? workingCredentials.Last();
+
+                // If only one credential remains, generate a zero to pair with it
+                if (ReferenceEquals(c1, c2))
+                {
+                    var zeroCreds = await Client.Generate0Credentials();
+                    foreach (var zeroCred in zeroCreds)
+                    {
+                        Client.AllocatedCredentials.TryAdd(zeroCred.Mac.Serial(), this);
+                    }
+                    workingCredentials.AddRange(zeroCreds);
+                    c2 = zeroCreds.First();
+                }
                 var sum = c1.Value + c2.Value;
                 var o1 = flow.Payment.Amount.Satoshi >= (c1.Value + c2.Value)
                     ? (c1.Value + c2.Value)
@@ -104,8 +121,13 @@ public class InteractivePaymentSenderBehaviorTrait : KompaktorClientBaseBehavior
                 Client.AllocatedCredentials.TryAdd(c1.Mac.Serial(), this);
                 Client.AllocatedCredentials.TryAdd(c2.Mac.Serial(), this);
                 var newCreds = await Client.Reissue([c1, c2], [o1, o2]);
-                
-               
+
+                // Mark new credentials as allocated to prevent receiver trait from consuming them
+                foreach (var newCred in newCreds)
+                {
+                    Client.AllocatedCredentials.TryAdd(newCred.Mac.Serial(), this);
+                }
+
                 workingCredentials.AddRange(newCreds);
                 workingCredentials.Remove(c1);
                 workingCredentials.Remove(c2);
@@ -164,6 +186,12 @@ public class InteractivePaymentSenderBehaviorTrait : KompaktorClientBaseBehavior
                {Key: not null, Value: not null} pair)
         {
             Client.AllocatedSelectedCoins.AddOrReplace(pair.Key, null);
+        }
+
+        // Release leftover credentials (change from reissues) so other traits can use them
+        foreach (var leftover in workingCredentials)
+        {
+            Client.AllocatedCredentials.TryRemove(leftover.Mac.Serial(), out _);
         }
 
         Committed = flows.ToArray();

@@ -36,11 +36,19 @@ public class Wallet : IOutboundPaymentManager, IKompaktorWalletInterface, IInbou
 
     public BitcoinAddress GetAddress()
     {
-        var address = Mnemonic.DeriveExtKey().Derive(new KeyPath(Index)).PrivateKey
-            .GetAddress(ScriptPubKeyType.Segwit, _network);
-        Addresses.Add(address, (Index));
-        Index++;
-        return address;
+        _lock.Wait();
+        try
+        {
+            var address = Mnemonic.DeriveExtKey().Derive(new KeyPath(Index)).PrivateKey
+                .GetAddress(ScriptPubKeyType.Segwit, _network);
+            Addresses.Add(address, (Index));
+            Index++;
+            return address;
+        }
+        finally
+        {
+            _lock.Release();
+        }
     }
 
     public List<Transaction> GetTransactions()
@@ -87,7 +95,7 @@ public class Wallet : IOutboundPaymentManager, IKompaktorWalletInterface, IInbou
             _lock.Wait();
             foreach (var unused in transaction.Outputs.Where(output => PendingOutboundPayments
                          .OrderByDescending(pair => pair.Value.Reserved).Where(pending =>
-                             pending.Value.Destination.ScriptPubKey == output.ScriptPubKey &
+                             pending.Value.Destination.ScriptPubKey == output.ScriptPubKey &&
                              pending.Value.Amount >= output.Value)
                          .Any(pending => PendingOutboundPayments.Remove(pending.Key, out _))))
             {
@@ -96,7 +104,7 @@ public class Wallet : IOutboundPaymentManager, IKompaktorWalletInterface, IInbou
 
             foreach (var unused in transaction.Outputs.Where(output => PendingInboundPayments
                          .OrderByDescending(pair => pair.Value.Reserved).Where(pending =>
-                             pending.Value.Destination.ScriptPubKey == output.ScriptPubKey &
+                             pending.Value.Destination.ScriptPubKey == output.ScriptPubKey &&
                              pending.Value.Amount <= output.Value)
                          .Any(pending => PendingInboundPayments.Remove(pending.Key, out _))))
             {
@@ -267,8 +275,10 @@ public class Wallet : IOutboundPaymentManager, IKompaktorWalletInterface, IInbou
 
 
         var input = tx.Inputs.FindIndexedInput(coin.Outpoint);
+        if (input is null)
+            throw new InvalidOperationException($"Input {coin.Outpoint} not found in transaction");
 
-        _logger.LogDebug($"client:Signing input {input?.Index} of {coin.Outpoint} for id: {tx?.GetHash()}");
+        _logger.LogDebug($"client:Signing input {input.Index} of {coin.Outpoint} for id: {tx.GetHash()}");
         return input.WitScript;
     }
 }

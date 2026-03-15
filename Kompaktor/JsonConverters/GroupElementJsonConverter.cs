@@ -6,6 +6,13 @@ public class GroupElementJsonConverter : GenericStringJsonConverter<GroupElement
 {
     public override GroupElement Create(string str)
     {
-        return GroupElement.FromBytes(Convert.FromHexString(str));
+        try
+        {
+            return GroupElement.FromBytes(Convert.FromHexString(str));
+        }
+        catch (FormatException ex)
+        {
+            throw new System.Text.Json.JsonException($"Invalid GroupElement hex value: '{str}'", ex);
+        }
     }
 }

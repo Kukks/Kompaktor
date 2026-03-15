@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <Description>Kompaktor HTTP client for communicating with coordinator server</Description>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\Kompaktor\Kompaktor.csproj" />
+    </ItemGroup>
+
+</Project>

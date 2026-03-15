@@ -5,6 +5,25 @@ namespace Kompaktor.JsonConverters;
 
 public static class KompaktorJsonHelper
 {
+    public static JsonSerializerOptions CreateSerializerOptions()
+    {
+        var options = new JsonSerializerOptions
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+        };
+        ConfigureJsonOptions(options);
+        return options;
+    }
+
+    public static void ConfigureJsonOptions(JsonSerializerOptions options)
+    {
+        foreach (var converter in Kompaktor.JsonConverters.SourceGenerationContext.DefaultConverters)
+        {
+            if (!options.Converters.Contains(converter))
+                options.Converters.Add(converter);
+        }
+    }
+
     public static void Serialize<T>(this Utf8JsonWriter writer, T value, JsonSerializerOptions options)
     {
         var o = new JsonSerializerOptions(options)

@@ -33,6 +33,12 @@ public class InteractivePaymentReceiverBehaviorTrait : KompaktorClientBaseBehavi
         _ = StartListen();
     }
 
+    public override void Dispose()
+    {
+        _flowCts.Dispose();
+        base.Dispose();
+    }
+
     private readonly CancellationTokenSource _flowCts = new();
 
     protected override async Task OnStatusChanged(object sender, KompaktorStatus phase)
@@ -113,17 +119,19 @@ public class InteractivePaymentReceiverBehaviorTrait : KompaktorClientBaseBehavi
 
     private async Task<bool> WaitUntilReady()
     {
+        // Use IsOutputRegistrationComplete instead of ShouldSign to avoid deadlock
+        // in mesh scenarios where this client also has a sender trait whose kill switch
+        // would prevent ShouldSign from ever returning true
         while (!_flowCts.IsCancellationRequested &&
-               !Client.ShouldSign())
+               !Client.IsOutputRegistrationComplete())
         {
             await Task.Delay(100, _flowCts.Token);
         }
 
-        return Client.ShouldSign();
+        return Client.IsOutputRegistrationComplete();
     }
 
     private readonly ConcurrentHashSet<string> _reissued = new();
-    private readonly SemaphoreSlim _reissueLock = new(1, 1);
 
     private async Task ReissueReceivedCredentials(BlindedCredential[] arg)
     {
@@ -152,20 +160,8 @@ public class InteractivePaymentReceiverBehaviorTrait : KompaktorClientBaseBehavi
                 }
                 else if (config.IssuanceIn.Min > ins.Count)
                 {
-                    // await _reissueLock.WaitAsync();
                     try
                     {
-                        var externalnonZero = Client.AvailableCredentials.Where(x => x.Value != 0)
-                            .ExceptBy(_reissued, x => x.Mac.Serial())
-                            .Take(config.IssuanceIn.Max - ins.Count).ToArray();
-
-                        if (externalnonZero.Length != 0)
-                        {
-                            Logger.LogInformation("Reissuing {Count} non-0s", externalnonZero.Length);
-                        }
-
-                        ins.AddRange(externalnonZero);
-
                         //add 0s until you hit the min
                         while (ins.Count < config.IssuanceIn.Min)
                         {
@@ -177,17 +173,11 @@ public class InteractivePaymentReceiverBehaviorTrait : KompaktorClientBaseBehavi
                             }
                             else
                             {
-                                var externalZero = Client.AvailableCredentials.Where(x => x.Value == 0)
-                                    .ExceptBy(_reissued, x => x.Mac.Serial())
-                                    .Take(config.IssuanceIn.Min - ins.Count).ToArray();
-                                if (externalZero.Length == 0)
-                                {
-                                    var newZeros = await Client.Generate0Credentials();
-                                    externalZero = newZeros
-                                        .Take(config.IssuanceIn.Min - ins.Count).ToArray();
-                                }
-
-                                ins.AddRange(externalZero);
+                                // Always generate fresh zeros to avoid TOCTOU races with
+                                // concurrent ReissueReceivedCredentials calls and IssuanceTask
+                                var newZeros = await Client.Generate0Credentials();
+                                var needed = config.IssuanceIn.Min - ins.Count;
+                                ins.AddRange(newZeros.Take(needed));
                             }
                         }
                     }
@@ -197,10 +187,14 @@ public class InteractivePaymentReceiverBehaviorTrait : KompaktorClientBaseBehavi
                         {
                             _reissued.Add(credential.Mac.Serial());
                         }
-
-                        // _reissueLock.Release();
                     }
                 }
+            }
+
+            // Mark all ins as allocated to prevent IssuanceTask from grabbing them
+            foreach (var cred in ins)
+            {
+                Client.AllocatedCredentials.TryAdd(cred.Mac.Serial(), this);
             }
 
             var outs = new List<long> {ins.Sum(credential => credential.Value)};
@@ -218,7 +212,7 @@ public class InteractivePaymentReceiverBehaviorTrait : KompaktorClientBaseBehavi
         }
         catch (Exception e)
         {
-            Console.WriteLine(e);
+            Logger.LogError("Failed to reissue received credentials: {Error}", e.Message);
             throw;
         }
     }
