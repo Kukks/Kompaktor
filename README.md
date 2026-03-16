@@ -1,5 +1,7 @@
 # Kompaktor
 
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/Kukks/Kompaktor)
+
 A Bitcoin privacy protocol implementing collaborative transactions (coinjoins) using the [WabiSabi](https://eprint.iacr.org/2021/206) anonymous credential system. Kompaktor enables multiple participants to construct a joint transaction where inputs and outputs cannot be linked, providing strong on-chain privacy without trusted third parties.
 
 ## How It Works
