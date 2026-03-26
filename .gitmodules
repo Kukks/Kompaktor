@@ -1,0 +1,4 @@
+[submodule "lib/NWabiSabi"]
+	path = lib/NWabiSabi
+	url = https://github.com/Kukks/NWabiSabi.git
+	branch = kompaktor/net10-compat

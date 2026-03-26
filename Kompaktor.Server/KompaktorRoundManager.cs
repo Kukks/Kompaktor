@@ -47,7 +47,8 @@ public class KompaktorRoundManager : IDisposable
         var op = new KompaktorRoundOperator(_network, _rpcClient, _random, logger, _prison);
 
         var issuerKey = new CredentialIssuerSecretKey(_random);
-        var issuer = new CredentialIssuer(issuerKey, _random, _options.MaxCredentialValue);
+        var k = _options.CredentialCount;
+        var issuer = new CredentialIssuer(issuerKey, _random, _options.MaxCredentialValue, k);
         var issuers = new Dictionary<CredentialType, CredentialIssuer>
         {
             { CredentialType.Amount, issuer }
@@ -67,7 +68,7 @@ public class KompaktorRoundManager : IDisposable
             {
                 {
                     CredentialType.Amount,
-                    new CredentialConfiguration(_options.MaxCredentialValue, new IntRange(2, 2), new IntRange(2, 2),
+                    new CredentialConfiguration(_options.MaxCredentialValue, new IntRange(k, k), new IntRange(k, k),
                         issuerKey.ComputeCredentialIssuerParameters())
                 }
             }

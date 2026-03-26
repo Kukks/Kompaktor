@@ -46,6 +46,13 @@ public class KompaktorCoordinatorOptions
     /// <summary>Maximum credential value for WabiSabi issuance.</summary>
     public long MaxCredentialValue { get; set; } = 4300000000000L; // ~43 BTC
 
+    /// <summary>
+    /// Number of credentials per issuance step (k in the WabiSabi paper).
+    /// Higher values reduce reissuance tree depth (fewer round-trips) at the cost of
+    /// larger proofs per step. Default 2 matches the original WabiSabi protocol.
+    /// </summary>
+    public int CredentialCount { get; set; } = 2;
+
     /// <summary>Maximum number of concurrent rounds.</summary>
     public int MaxConcurrentRounds { get; set; } = 10;
 

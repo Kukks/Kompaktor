@@ -1304,4 +1304,131 @@ public class Test
                 .LogInformation($"computed {result.CountDescendants()} actions with {result.GetMaxDepth()} depth ");
         }
     }
+
+    /// <summary>
+    /// Full integration test with k=4 credential arity — consolidation round with 10 participants.
+    /// Compares against the default k=2 by running both and logging timing.
+    /// </summary>
+    [Theory]
+    [InlineData(2)]
+    [InlineData(4)]
+    public async Task CanConsolidateWithVariableArity(int k)
+    {
+        var participantCount = 10;
+        var logger = _loggerFactory.CreateLogger($"arity-k{k}");
+        List<Wallet> wallets = new();
+
+        for (int w = 0; w < participantCount; w++)
+        {
+            var participantWallet = new Wallet(Network, new Mnemonic(Wordlist.English, WordCount.Twelve),
+                _loggerFactory.CreateLogger<Wallet>());
+            wallets.Add(participantWallet);
+        }
+
+        // Fund each participant with 2 coins
+        foreach (var participantWallet in wallets)
+        {
+            await CashCow(RPC, participantWallet.GetAddress(), Money.Coins(1), wallets);
+            await CashCow(RPC, participantWallet.GetAddress(), Money.Coins(0.5m), wallets);
+        }
+
+        await RPC.GenerateAsync(1);
+
+        using var roundOperator = new KompaktorRoundOperator(Network, RPC, SecureRandom.Instance,
+            _loggerFactory.CreateLogger<KompaktorRoundOperator>());
+        ConcurrentBag<KompaktorRoundEvent> roundEvents = new();
+
+        roundOperator.NewEvent += (sender, args) =>
+        {
+            roundEvents.Add(args);
+            return Task.CompletedTask;
+        };
+
+        // Create issuer with variable k
+        Dictionary<CredentialType, CredentialIssuer> issuers = new()
+        {
+            {
+                CredentialType.Amount, new CredentialIssuer(new CredentialIssuerSecretKey(SecureRandom.Instance),
+                    SecureRandom.Instance, Money.Coins(100_000m).Satoshi, k)
+            }
+        };
+
+        await roundOperator.Start(new KompaktorRoundEventCreated(
+                Guid.NewGuid().ToString(),
+                new FeeRate(2m),
+                TimeSpan.FromSeconds(60),
+                TimeSpan.FromSeconds(120),
+                TimeSpan.FromSeconds(120),
+                new IntRange(1, participantCount * 3),
+                new MoneyRange(Money.Satoshis(10000), Money.Coins(100)),
+                new IntRange(1, participantCount * 3),
+                new MoneyRange(Money.Satoshis(10000), Money.Coins(100)),
+                issuers.ToDictionary(pair => pair.Key, pair => pair.Key.CredentialConfiguration(pair.Value))),
+            issuers);
+
+        Eventually(() =>
+            Assert.IsType<KompaktorRoundEventCreated>(Assert.Single(roundEvents)));
+
+        var kompaktorRoundApiFactory = new LocalKompaktorRoundApiFactory(roundOperator);
+        var kompaktorRound = (KompaktorRound)roundOperator;
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+
+        // Create clients for all participants
+        var clients = new List<KompaktorRoundClient>();
+        for (int w = 0; w < participantCount; w++)
+        {
+            var participantWallet = wallets[w];
+            var traits = new List<KompaktorClientBaseBehaviorTrait>
+            {
+                new ConsolidationBehaviorTrait(),
+                new SelfSendChangeBehaviorTrait(
+                    () => participantWallet.GetAddress().ScriptPubKey,
+                    TimeSpan.FromSeconds(45)),
+            };
+
+            var client = new KompaktorRoundClient(
+                SecureRandom.Instance,
+                Network,
+                kompaktorRound,
+                kompaktorRoundApiFactory,
+                traits,
+                participantWallet, _loggerFactory.CreateLogger($"k{k}_Wallet_{w}"));
+            clients.Add(client);
+        }
+
+        await Eventually(async () =>
+        {
+            foreach (var client in clients)
+            {
+                if (client.PhasesTask.IsFaulted || client.PhasesTask.IsCompleted)
+                    await client.PhasesTask;
+            }
+
+            Assert.Equal(participantCount * 2, roundEvents.Count(@event =>
+                @event is KompaktorRoundEventInputRegistered));
+            Assert.NotNull(roundEvents.SingleOrDefault(@event =>
+                @event is KompaktorRoundEventStatusUpdate { Status: KompaktorStatus.OutputRegistration }));
+            Assert.NotNull(roundEvents.SingleOrDefault(@event =>
+                @event is KompaktorRoundEventStatusUpdate { Status: KompaktorStatus.Signing }));
+            Assert.Equal(participantCount * 2, roundEvents.Count(@event =>
+                @event is KompaktorRoundEventSignaturePosted));
+            Assert.NotNull(roundEvents.SingleOrDefault(@event =>
+                @event is KompaktorRoundEventStatusUpdate { Status: KompaktorStatus.Broadcasting }));
+
+            var txid = clients[0].Round.GetTransaction(Network).GetHash();
+            var operatorTxId = roundOperator.GetTransaction(Network).GetHash();
+            Assert.Equal(txid, operatorTxId);
+            var tx = await RPC.GetRawTransactionAsync(txid);
+            foreach (var wallet in wallets)
+                wallet.AddTransaction(tx);
+        }, 300_000); // 5 minutes
+
+        sw.Stop();
+        logger.LogInformation("k={K} n={N}: Full round completed in {Elapsed}ms",
+            k, participantCount, sw.ElapsedMilliseconds);
+
+        foreach (var client in clients)
+            client.Dispose();
+    }
 }

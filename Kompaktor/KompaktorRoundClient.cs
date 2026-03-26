@@ -202,7 +202,7 @@ public class KompaktorRoundClient : IDisposable
         }
 
         return _createdClients[credentialType] =
-            new WabiSabiClient(credentialConfiguation.Parameters, _random, credentialConfiguation.Max);
+            new WabiSabiClient(credentialConfiguation.Parameters, _random, credentialConfiguation.Max, credentialConfiguation.IssuanceOut.Max);
     }
 
     private async Task OnStatusChanged(object sender, KompaktorStatus e)

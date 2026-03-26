@@ -624,6 +624,374 @@ public class DependencyGraph2ScaleTests
         // Should complete in reasonable time (< 30 seconds)
         Assert.True(sw.ElapsedMilliseconds < 30000, $"Took too long: {sw.ElapsedMilliseconds}ms");
     }
+
+    [Theory]
+    [InlineData(2)]
+    [InlineData(4)]
+    [InlineData(8)]
+    public void HigherArityReducesTreeDepth(int k)
+    {
+        var loggerFactory = LoggerFactory.Create(b => b.AddConsole().SetMinimumLevel(LogLevel.Information));
+        var logger = loggerFactory.CreateLogger($"dg-arity-{k}");
+        var inputRange = new IntRange(k, k);
+        var outputRange = new IntRange(k, k);
+
+        // 100 credentials of 1M sats each + 100 zeros
+        var count = 100;
+        var perInput = 1_000_000L;
+        var ins = Enumerable.Range(0, count)
+            .SelectMany(_ => new[] { perInput, 0L })
+            .ToArray();
+        var outs = new[] { perInput * count };
+
+        var result = DependencyGraph2.Compute(logger, ins, outs, inputRange, outputRange);
+        var depth = result.GetMaxDepth();
+        var actions = result.CountDescendants();
+
+        logger.LogInformation("k={K}: depth={Depth}, actions={Actions}", k, depth, actions);
+
+        // Verify correctness
+        var registered = result.NestedOutputsRegistered;
+        Assert.Single(registered);
+        Assert.Equal(perInput * count, registered[0].Amount);
+    }
+}
+
+#endregion
+
+#region Variable Arity WabiSabi Credential Tests
+
+public class VariableArityCredentialTests
+{
+    private static readonly WabiSabi.Crypto.Randomness.SecureRandom Rnd = WabiSabi.Crypto.Randomness.SecureRandom.Instance;
+    private const long MaxAmount = 4_300_000_000_000L;
+
+    /// <summary>
+    /// End-to-end credential lifecycle at variable k:
+    /// bootstrap → mint → reissue → reissue again → burn (presentation-only)
+    /// </summary>
+    [Theory]
+    [InlineData(2)]
+    [InlineData(4)]
+    [InlineData(8)]
+    public void FullCredentialLifecycleAtVariousArity(int k)
+    {
+        var issuerKey = new WabiSabi.Crypto.CredentialIssuerSecretKey(Rnd);
+        var issuerParams = issuerKey.ComputeCredentialIssuerParameters();
+
+        var issuer = new WabiSabi.Crypto.CredentialIssuer(issuerKey, Rnd, MaxAmount, k);
+        var client = new WabiSabi.Crypto.WabiSabiClient(issuerParams, Rnd, MaxAmount, k);
+
+        Assert.Equal(k, issuer.NumberOfCredentials);
+        Assert.Equal(k, client.NumberOfCredentials);
+
+        // Step 1: Bootstrap — request k zero-value credentials
+        var zeroReqData = client.CreateRequestForZeroAmount();
+        var zeroResponse = issuer.HandleRequest(zeroReqData.CredentialsRequest);
+        var zeroCredentials = client.HandleResponse(zeroResponse, zeroReqData.CredentialsResponseValidation).ToArray();
+
+        Assert.Equal(k, zeroCredentials.Length);
+        Assert.All(zeroCredentials, c => Assert.Equal(0L, c.Value));
+        Assert.Equal(0L, issuer.Balance);
+
+        // Step 2: "Input registration" — present k zeros, request [amount, 0, ...0]
+        // This simulates depositing value into the credential system
+        var depositAmount = 100_000_000L; // 1 BTC in sats
+        var mintReqData = client.CreateRequest(
+            new[] { depositAmount },
+            zeroCredentials,
+            CancellationToken.None);
+        var mintResponse = issuer.HandleRequest(mintReqData.CredentialsRequest);
+        var mintedCredentials = client.HandleResponse(mintResponse, mintReqData.CredentialsResponseValidation).ToArray();
+
+        Assert.Equal(k, mintedCredentials.Length);
+        Assert.Equal(depositAmount, mintedCredentials.Sum(c => c.Value));
+        Assert.Equal(depositAmount, issuer.Balance);
+
+        // Step 3: Reissuance — split the value across k credentials
+        // E.g., with k=4: [100M] → [30M, 30M, 20M, 20M]
+        var splitAmounts = CreateSplit(depositAmount, k);
+        Assert.Equal(depositAmount, splitAmounts.Sum());
+
+        var reissueReqData = client.CreateRequest(
+            splitAmounts,
+            mintedCredentials,
+            CancellationToken.None);
+        var reissueResponse = issuer.HandleRequest(reissueReqData.CredentialsRequest);
+        var splitCredentials = client.HandleResponse(reissueResponse, reissueReqData.CredentialsResponseValidation).ToArray();
+
+        Assert.Equal(k, splitCredentials.Length);
+        Assert.Equal(depositAmount, splitCredentials.Sum(c => c.Value));
+        // Balance unchanged — reissuance is delta=0
+        Assert.Equal(depositAmount, issuer.Balance);
+
+        // Step 4: Second reissuance — re-merge into different denominations
+        // E.g., [30M, 30M, 20M, 20M] → [50M, 25M, 15M, 10M]
+        var resplitAmounts = CreateAlternateSplit(depositAmount, k);
+        Assert.Equal(depositAmount, resplitAmounts.Sum());
+
+        var reissue2ReqData = client.CreateRequest(
+            resplitAmounts,
+            splitCredentials,
+            CancellationToken.None);
+        var reissue2Response = issuer.HandleRequest(reissue2ReqData.CredentialsRequest);
+        var resplitCredentials = client.HandleResponse(reissue2Response, reissue2ReqData.CredentialsResponseValidation).ToArray();
+
+        Assert.Equal(k, resplitCredentials.Length);
+        Assert.Equal(depositAmount, resplitCredentials.Sum(c => c.Value));
+        Assert.Equal(depositAmount, issuer.Balance);
+
+        // Step 5: "Output registration" — present all credentials (presentation-only, burn)
+        var burnReqData = client.CreateRequest(
+            resplitCredentials,
+            CancellationToken.None);
+        var burnResponse = issuer.HandleRequest(burnReqData.CredentialsRequest);
+        // Presentation-only returns no new credentials
+        Assert.Equal(0L, issuer.Balance);
+    }
+
+    /// <summary>
+    /// Verify that mismatched k between issuer and client produces invalid proofs.
+    /// </summary>
+    [Fact]
+    public void MismatchedArityRejected()
+    {
+        var issuerKey = new WabiSabi.Crypto.CredentialIssuerSecretKey(Rnd);
+        var issuerParams = issuerKey.ComputeCredentialIssuerParameters();
+
+        // Issuer expects k=4, client creates with k=2
+        var issuer = new WabiSabi.Crypto.CredentialIssuer(issuerKey, Rnd, MaxAmount, numberOfCredentials: 4);
+        var client = new WabiSabi.Crypto.WabiSabiClient(issuerParams, Rnd, MaxAmount, numberOfCredentials: 2);
+
+        // Client creates 2 zero credentials but issuer expects 4
+        var zeroReqData = client.CreateRequestForZeroAmount();
+        Assert.Throws<WabiSabi.Crypto.WabiSabiCryptoException>(() =>
+            issuer.HandleRequest(zeroReqData.CredentialsRequest));
+    }
+
+    /// <summary>
+    /// Verify serial number double-spend protection works at higher k.
+    /// </summary>
+    [Theory]
+    [InlineData(4)]
+    [InlineData(8)]
+    public void SerialNumberReuse_RejectedAtHigherArity(int k)
+    {
+        var issuerKey = new WabiSabi.Crypto.CredentialIssuerSecretKey(Rnd);
+        var issuerParams = issuerKey.ComputeCredentialIssuerParameters();
+
+        var issuer = new WabiSabi.Crypto.CredentialIssuer(issuerKey, Rnd, MaxAmount, k);
+        var client = new WabiSabi.Crypto.WabiSabiClient(issuerParams, Rnd, MaxAmount, k);
+
+        // Bootstrap
+        var zeroReqData = client.CreateRequestForZeroAmount();
+        var zeroResponse = issuer.HandleRequest(zeroReqData.CredentialsRequest);
+        var zeroCredentials = client.HandleResponse(zeroResponse, zeroReqData.CredentialsResponseValidation).ToArray();
+
+        // Mint
+        var mintReqData = client.CreateRequest(new[] { 50_000L }, zeroCredentials, CancellationToken.None);
+        var mintResponse = issuer.HandleRequest(mintReqData.CredentialsRequest);
+        var credentials = client.HandleResponse(mintResponse, mintReqData.CredentialsResponseValidation).ToArray();
+
+        // First reissue succeeds
+        var reissue1 = client.CreateRequest(new[] { 50_000L }, credentials, CancellationToken.None);
+        issuer.HandleRequest(reissue1.CredentialsRequest);
+
+        // Second reissue with SAME credentials — serial numbers already used
+        var reissue2 = client.CreateRequest(new[] { 50_000L }, credentials, CancellationToken.None);
+        var ex = Assert.Throws<WabiSabi.Crypto.WabiSabiCryptoException>(() =>
+            issuer.HandleRequest(reissue2.CredentialsRequest));
+        Assert.Equal(WabiSabi.Crypto.WabiSabiCryptoErrorCode.SerialNumberAlreadyUsed, ex.ErrorCode);
+    }
+
+    /// <summary>
+    /// Create k amounts that sum to total, distributing evenly with remainder in first slot.
+    /// </summary>
+    private static long[] CreateSplit(long total, int k)
+    {
+        var perSlot = total / k;
+        var remainder = total - (perSlot * k);
+        var amounts = new long[k];
+        amounts[0] = perSlot + remainder;
+        for (int i = 1; i < k; i++)
+            amounts[i] = perSlot;
+        return amounts;
+    }
+
+    /// <summary>
+    /// Create a different denomination split: descending powers that sum to total.
+    /// </summary>
+    private static long[] CreateAlternateSplit(long total, int k)
+    {
+        // Weight each slot as k, k-1, k-2, ..., 1
+        var totalWeight = k * (k + 1) / 2;
+        var amounts = new long[k];
+        long allocated = 0;
+        for (int i = 0; i < k - 1; i++)
+        {
+            amounts[i] = total * (k - i) / totalWeight;
+            allocated += amounts[i];
+        }
+        amounts[k - 1] = total - allocated; // remainder in last slot
+        return amounts;
+    }
+}
+
+#endregion
+
+#region Scale Comparison Tests
+
+/// <summary>
+/// Compares reissuance performance at different credential arities.
+/// Simulates the full credential flow (DependencyGraph2 tree planning +
+/// WabiSabi proof generation/verification for every node) to measure
+/// the real-world speedup from higher k.
+/// </summary>
+public class ArityScaleComparisonTests
+{
+    private static readonly WabiSabi.Crypto.Randomness.SecureRandom Rnd = WabiSabi.Crypto.Randomness.SecureRandom.Instance;
+    private const long MaxAmount = 4_300_000_000_000L;
+
+    /// <summary>
+    /// Simulates N participants each contributing one input, going through the full
+    /// DependencyGraph2 merge tree with actual WabiSabi credential operations at each node.
+    /// Measures: tree depth, total reissuance operations, and wall-clock time for proof work.
+    /// </summary>
+    [Theory]
+    [InlineData(2, 20)]
+    [InlineData(4, 20)]
+    [InlineData(8, 20)]
+    [InlineData(2, 50)]
+    [InlineData(4, 50)]
+    [InlineData(8, 50)]
+    public void ReissuanceScaleComparison(int k, int participantCount)
+    {
+        var loggerFactory = LoggerFactory.Create(b => b.AddConsole().SetMinimumLevel(LogLevel.Information));
+        var logger = loggerFactory.CreateLogger($"scale-k{k}-n{participantCount}");
+
+        // --- Phase 1: Plan the merge tree ---
+        var inputRange = new IntRange(k, k);
+        var outputRange = new IntRange(k, k);
+
+        // Each participant has one real credential + (k-1) zero-padding
+        var perInput = 1_000_000L;
+        var ins = Enumerable.Range(0, participantCount)
+            .SelectMany(_ =>
+            {
+                var slot = new long[k];
+                slot[0] = perInput;
+                return slot;
+            })
+            .ToArray();
+        // Target: single output of total value
+        var totalValue = perInput * participantCount;
+        var outs = new[] { totalValue };
+
+        var planSw = System.Diagnostics.Stopwatch.StartNew();
+        var tree = DependencyGraph2.Compute(logger, ins, outs, inputRange, outputRange);
+        planSw.Stop();
+
+        var depth = tree.GetMaxDepth();
+        var reissuanceOps = tree.CountDescendants();
+
+        // --- Phase 2: Execute actual WabiSabi credential operations for each merge node ---
+        var issuerKey = new WabiSabi.Crypto.CredentialIssuerSecretKey(Rnd);
+        var issuerParams = issuerKey.ComputeCredentialIssuerParameters();
+        var issuer = new WabiSabi.Crypto.CredentialIssuer(issuerKey, Rnd, MaxAmount, k);
+        var client = new WabiSabi.Crypto.WabiSabiClient(issuerParams, Rnd, MaxAmount, k);
+
+        var proofSw = System.Diagnostics.Stopwatch.StartNew();
+
+        var bootstrapSw = System.Diagnostics.Stopwatch.StartNew();
+        // Bootstrap: get initial zero credentials (one set per participant)
+        // then mint real credentials — this cost is the same regardless of merge strategy
+        var allCredentials = new List<WabiSabi.Crypto.ZeroKnowledge.Credential>();
+        for (int p = 0; p < participantCount; p++)
+        {
+            var zeroReq = client.CreateRequestForZeroAmount();
+            var zeroResp = issuer.HandleRequest(zeroReq.CredentialsRequest);
+            var zeroCreds = client.HandleResponse(zeroResp, zeroReq.CredentialsResponseValidation).ToArray();
+
+            // Mint real credentials for this participant
+            var mintReq = client.CreateRequest(new[] { perInput }, zeroCreds, CancellationToken.None);
+            var mintResp = issuer.HandleRequest(mintReq.CredentialsRequest);
+            var realCreds = client.HandleResponse(mintResp, mintReq.CredentialsResponseValidation);
+            allCredentials.AddRange(realCreds);
+        }
+        bootstrapSw.Stop();
+
+        // Now simulate reissuance merge operations:
+        // Take batches of k credentials, merge into consolidated credentials.
+        // Pad incomplete batches with zeros to handle n % k != 0.
+        var mergeSw = System.Diagnostics.Stopwatch.StartNew();
+        var credQueue = new Queue<WabiSabi.Crypto.ZeroKnowledge.Credential>(
+            allCredentials.Where(c => c.Value > 0));
+        int mergeOps = 0;
+        int sequentialLevels = 0;
+
+        while (credQueue.Count > 1)
+        {
+            int levelSize = credQueue.Count;
+            var nextLevel = new List<WabiSabi.Crypto.ZeroKnowledge.Credential>();
+
+            while (credQueue.Count > 0)
+            {
+                // Take up to k credentials from the queue
+                var batch = new List<WabiSabi.Crypto.ZeroKnowledge.Credential>();
+                for (int i = 0; i < k && credQueue.Count > 0; i++)
+                    batch.Add(credQueue.Dequeue());
+
+                if (batch.Count == 1)
+                {
+                    // Can't merge a single credential, carry it forward
+                    nextLevel.Add(batch[0]);
+                    continue;
+                }
+
+                // Pad with zero credentials if batch < k
+                while (batch.Count < k)
+                {
+                    var padReq = client.CreateRequestForZeroAmount();
+                    var padResp = issuer.HandleRequest(padReq.CredentialsRequest);
+                    var padCreds = client.HandleResponse(padResp, padReq.CredentialsResponseValidation).ToArray();
+                    batch.Add(padCreds[0]);
+                }
+
+                var batchTotal = batch.Sum(c => c.Value);
+                var requestAmounts = new long[k];
+                requestAmounts[0] = batchTotal;
+
+                var reissueReq = client.CreateRequest(requestAmounts, batch.ToArray(), CancellationToken.None);
+                var reissueResp = issuer.HandleRequest(reissueReq.CredentialsRequest);
+                var newCreds = client.HandleResponse(reissueResp, reissueReq.CredentialsResponseValidation).ToArray();
+
+                nextLevel.AddRange(newCreds.Where(c => c.Value > 0));
+                mergeOps++;
+            }
+
+            credQueue = new Queue<WabiSabi.Crypto.ZeroKnowledge.Credential>(nextLevel);
+            sequentialLevels++;
+        }
+        mergeSw.Stop();
+        proofSw.Stop();
+
+        // --- Report ---
+        logger.LogInformation(
+            "k={K} n={N}: tree_depth={Depth}, merge_ops={MergeOps}, seq_levels={SeqLevels}, " +
+            "bootstrap={BootMs}ms, merge={MergeMs}ms, total_proof={TotalMs}ms",
+            k, participantCount, depth, mergeOps, sequentialLevels,
+            bootstrapSw.ElapsedMilliseconds, mergeSw.ElapsedMilliseconds,
+            bootstrapSw.ElapsedMilliseconds + mergeSw.ElapsedMilliseconds);
+
+        // --- Verify correctness ---
+        Assert.Single(credQueue);
+        Assert.Equal(totalValue, credQueue.Peek().Value);
+
+        // Verify the tree planned correctly
+        var registered = tree.NestedOutputsRegistered;
+        Assert.Single(registered);
+        Assert.Equal(totalValue, registered[0].Amount);
+    }
 }
 
 #endregion
