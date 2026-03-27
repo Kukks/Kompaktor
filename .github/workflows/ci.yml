@@ -11,6 +11,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true
 
       - name: Setup .NET 10
         uses: actions/setup-dotnet@v4
@@ -28,6 +30,8 @@ jobs:
     needs: build
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true
 
       - name: Setup .NET 10
         uses: actions/setup-dotnet@v4
@@ -72,6 +76,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true
 
       - name: Setup .NET 10
         uses: actions/setup-dotnet@v4
