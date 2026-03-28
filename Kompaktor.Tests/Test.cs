@@ -38,9 +38,18 @@ public class Test
             UserPassword = new NetworkCredential("ceiwHEbqWI83", "DwubwWsoo3"),
             Server = "http://localhost:53782"
         }, Network);
-        while (RPC.GetBalance().ToUnit(MoneyUnit.BTC) < 1)
+        for (int attempt = 0; attempt < 30; attempt++)
         {
-            RPC.Generate(5);
+            try
+            {
+                if (RPC.GetBalance().ToUnit(MoneyUnit.BTC) >= 1)
+                    break;
+                RPC.Generate(5);
+            }
+            catch (HttpRequestException)
+            {
+                Thread.Sleep(2000);
+            }
         }
     }
 
