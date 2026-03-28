@@ -125,7 +125,8 @@ public static class DependencyGraph2
 
         // Track in-flight nodes with a counter instead of unreliable ConcurrentBag.IsEmpty
         var inFlightCount = 0;
-        var completionSignal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        // Signal when new nodes become ready or when all work is done
+        var workAvailable = new SemaphoreSlim(readyNodes.Count, int.MaxValue);
 
         // Function to process nodes
         async Task ProcessNodesAsync()
@@ -139,8 +140,8 @@ public static class DependencyGraph2
                     if (Volatile.Read(ref inFlightCount) == 0 && readyNodes.IsEmpty)
                         break;
 
-                    // Wait briefly before retrying
-                    await Task.Delay(50, token).ConfigureAwait(false);
+                    // Wait for a signal that new work is available
+                    await workAvailable.WaitAsync(token).ConfigureAwait(false);
                     continue;
                 }
 
@@ -151,42 +152,9 @@ public static class DependencyGraph2
                 {
                     try
                     {
-                        // Recalculate the available time
-                        var remainingTime = expiry - DateTimeOffset.UtcNow;
-
-                        if (remainingTime <= TimeSpan.Zero)
-                        {
-                            remainingTime = TimeSpan.Zero;
-                        }
-
-                        // Estimate the total time needed for all descendants
-                        int descendantCount = currentNode.GetMaxDepth();
-                        // Estimate minimum time per node (processing time + average delay)
-                        TimeSpan minTimePerNode = TimeSpan.FromSeconds(5); // Adjust based on your system
-                        var minDescendantTime = TimeSpan.FromTicks(descendantCount * minTimePerNode.Ticks);
-
-                        // Calculate the maximum allowed delay for this node
-                        var maxDelay = remainingTime - minDescendantTime;
-                        if (maxDelay <= TimeSpan.Zero)
-                        {
-                            maxDelay = TimeSpan.Zero;
-                        }
-
                         if (!(currentNode is RootNode))
                         {
-                            // Generate a random delay within the allowed range
-                            var delayMilliseconds = 0; //random.GetInt(0, Math.Max(1, (int) maxDelay.TotalMilliseconds));
-
-                            // Log the scheduling
-                            // logger.LogInformation($"Scheduling node {currentNode.Id} after {delayMilliseconds} ms delay.");
-                            // Introduce the randomized delay
-                            await Task.Delay(delayMilliseconds, token).ConfigureAwait(false);
-
-                            // logger.LogInformation($"Node {currentNode.Id} running");
-                            // Execute the issuance task
                             await issuanceTask(currentNode, token).ConfigureAwait(false);
-
-                            // logger.LogInformation($"Node {currentNode.Id} completed");
                         }
 
                         // Decrement dependency counts of child nodes
@@ -197,6 +165,7 @@ public static class DependencyGraph2
                                 if (dependencyCounts.AddOrUpdate(child, 0, (key, count) => count - 1) == 0)
                                 {
                                     readyNodes.Enqueue(child);
+                                    workAvailable.Release();
                                 }
                             }
                         }
@@ -211,6 +180,8 @@ public static class DependencyGraph2
                     finally
                     {
                         Interlocked.Decrement(ref inFlightCount);
+                        // Wake the main loop to check completion
+                        workAvailable.Release();
                     }
                 }, token);
             }

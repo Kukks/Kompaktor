@@ -22,7 +22,6 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
     private readonly KompaktorPrison? _prison;
     private readonly CancellationTokenSource _cts;
     private readonly SemaphoreSlim _statusSemaphore = new(1, 1);
-    private readonly SemaphoreSlim _outputRegistrationSemaphore = new(1, 1);
 
     public KompaktorRoundOperator(Network network, RPCClient rpcClient, WasabiRandom random, ILogger logger, KompaktorPrison? prison = null)
     {
@@ -216,28 +215,16 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
             throw new KompaktorProtocolException(KompaktorProtocolErrorCode.OutputUneconomic,
                 "Output uneconomic");
 
-        // Serialize output registration to prevent credential balance races
-        await _outputRegistrationSemaphore.WaitAsync(_cts.Token);
-        try
+        // Credential issuers are thread-safe (Interlocked balance, locked serial numbers).
+        // AddEvent serialization is handled by KompaktorRound._lock.
+        var creds = (await Task.WhenAll(request.CredentialsRequest.Select(async pair =>
         {
-            var creds = (await Task.WhenAll(request.CredentialsRequest.Select(async pair =>
-            {
-                var issuer = CredentialIssuers[pair.Key];
-                var result = await issuer.HandleRequestAsync(pair.Value, _cts.Token);
-                return (pair.Key, result);
-            }))).ToDictionary(x => x.Item1, x => x.result);
+            var issuer = CredentialIssuers[pair.Key];
+            var result = await issuer.HandleRequestAsync(pair.Value, _cts.Token);
+            return (pair.Key, result);
+        }))).ToDictionary(x => x.Item1, x => x.result);
 
-            return await AddEvent(new KompaktorRoundEventOutputRegistered(request, creds));
-        }
-        catch (Exception e)
-        {
-            _logger.LogException("Failed to register output", e);
-            throw;
-        }
-        finally
-        {
-            _outputRegistrationSemaphore.Release();
-        }
+        return await AddEvent(new KompaktorRoundEventOutputRegistered(request, creds));
     }
 
     public async Task<KompaktorRoundEventSignaturePosted> Sign(SignRequest request)
