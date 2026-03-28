@@ -995,3 +995,204 @@ public class ArityScaleComparisonTests
 }
 
 #endregion
+
+#region Bulletproofs++ vs Classical Range Proof Benchmark
+
+/// <summary>
+/// Compares Bulletproofs++ reciprocal range proofs against the classical sigma-protocol
+/// bit-decomposition range proofs used in WabiSabi. Measures end-to-end credential
+/// flow performance (create request → issuer verify → issue → client verify) for both
+/// proof systems at various k values.
+/// </summary>
+public class BulletproofVsClassicalBenchmark
+{
+    private static readonly WabiSabi.Crypto.Randomness.SecureRandom Rnd = WabiSabi.Crypto.Randomness.SecureRandom.Instance;
+    private const long MaxAmount = 4_300_000_000_000L;
+
+    [Theory]
+    [InlineData(2, 20)]
+    [InlineData(4, 20)]
+    [InlineData(8, 20)]
+    [InlineData(2, 50)]
+    [InlineData(4, 50)]
+    [InlineData(8, 50)]
+    public void ClassicalReissuanceBenchmark(int k, int participantCount)
+    {
+        var loggerFactory = LoggerFactory.Create(b => b.AddConsole().SetMinimumLevel(LogLevel.Information));
+        var logger = loggerFactory.CreateLogger($"classical-k{k}-n{participantCount}");
+
+        var issuerKey = new WabiSabi.Crypto.CredentialIssuerSecretKey(Rnd);
+        var issuerParams = issuerKey.ComputeCredentialIssuerParameters();
+        var issuer = new WabiSabi.Crypto.CredentialIssuer(issuerKey, Rnd, MaxAmount, k);
+        var client = new WabiSabi.Crypto.WabiSabiClient(issuerParams, Rnd, MaxAmount, k);
+        var perInput = 1_000_000L;
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var allCredentials = BootstrapCredentials(issuer, client, k, participantCount, perInput);
+        var bootstrapMs = sw.ElapsedMilliseconds;
+
+        var mergeSw = System.Diagnostics.Stopwatch.StartNew();
+        var (finalCred, mergeOps, levels) = MergeCredentials(issuer, client, k, allCredentials);
+        mergeSw.Stop();
+        sw.Stop();
+
+        logger.LogInformation(
+            "CLASSICAL k={K} n={N}: merge_ops={Ops}, levels={Levels}, bootstrap={Boot}ms, merge={Merge}ms, total={Total}ms",
+            k, participantCount, mergeOps, levels, bootstrapMs, mergeSw.ElapsedMilliseconds, sw.ElapsedMilliseconds);
+
+        Assert.Equal(perInput * participantCount, finalCred.Value);
+    }
+
+    [Theory]
+    [InlineData(2, 20)]
+    [InlineData(4, 20)]
+    [InlineData(8, 20)]
+    [InlineData(2, 50)]
+    [InlineData(4, 50)]
+    [InlineData(8, 50)]
+    public void BulletproofReissuanceBenchmark(int k, int participantCount)
+    {
+        var loggerFactory = LoggerFactory.Create(b => b.AddConsole().SetMinimumLevel(LogLevel.Information));
+        var logger = loggerFactory.CreateLogger($"bulletproof-k{k}-n{participantCount}");
+
+        var issuerKey = new WabiSabi.Crypto.CredentialIssuerSecretKey(Rnd);
+        var rangeProofSystem = new WabiSabi.Crypto.ZeroKnowledge.BulletproofPlusPlusRangeProof();
+        var issuer = new WabiSabi.Crypto.BulletproofCredentialIssuer(issuerKey, rangeProofSystem, Rnd, MaxAmount, k);
+        var client = new WabiSabi.Crypto.BulletproofWabiSabiClient(
+            issuerKey.ComputeCredentialIssuerParameters(), rangeProofSystem, Rnd, k);
+        var perInput = 1_000_000L;
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var allCredentials = BootstrapBulletproofCredentials(issuer, client, k, participantCount, perInput);
+        var bootstrapMs = sw.ElapsedMilliseconds;
+
+        var mergeSw = System.Diagnostics.Stopwatch.StartNew();
+        var (finalCred, mergeOps, levels) = MergeBulletproofCredentials(issuer, client, k, allCredentials);
+        mergeSw.Stop();
+        sw.Stop();
+
+        logger.LogInformation(
+            "BP++ k={K} n={N}: merge_ops={Ops}, levels={Levels}, bootstrap={Boot}ms, merge={Merge}ms, total={Total}ms",
+            k, participantCount, mergeOps, levels, bootstrapMs, mergeSw.ElapsedMilliseconds, sw.ElapsedMilliseconds);
+
+        Assert.Equal(perInput * participantCount, finalCred.Value);
+    }
+
+    private static List<WabiSabi.Crypto.ZeroKnowledge.Credential> BootstrapCredentials(
+        WabiSabi.Crypto.CredentialIssuer issuer, WabiSabi.Crypto.WabiSabiClient client,
+        int k, int participantCount, long perInput)
+    {
+        var all = new List<WabiSabi.Crypto.ZeroKnowledge.Credential>();
+        for (int p = 0; p < participantCount; p++)
+        {
+            var zeroReq = client.CreateRequestForZeroAmount();
+            var zeroResp = issuer.HandleRequest(zeroReq.CredentialsRequest);
+            var zeroCreds = client.HandleResponse(zeroResp, zeroReq.CredentialsResponseValidation).ToArray();
+
+            var mintReq = client.CreateRequest(new[] { perInput }, zeroCreds, CancellationToken.None);
+            var mintResp = issuer.HandleRequest(mintReq.CredentialsRequest);
+            all.AddRange(client.HandleResponse(mintResp, mintReq.CredentialsResponseValidation));
+        }
+        return all;
+    }
+
+    private static List<WabiSabi.Crypto.ZeroKnowledge.Credential> BootstrapBulletproofCredentials(
+        WabiSabi.Crypto.BulletproofCredentialIssuer issuer, WabiSabi.Crypto.BulletproofWabiSabiClient client,
+        int k, int participantCount, long perInput)
+    {
+        var all = new List<WabiSabi.Crypto.ZeroKnowledge.Credential>();
+        for (int p = 0; p < participantCount; p++)
+        {
+            var zeroReq = client.CreateRequestForZeroAmount();
+            var zeroResp = issuer.HandleRequest(zeroReq.CredentialsRequest);
+            var zeroCreds = client.HandleResponse(zeroResp, zeroReq.CredentialsResponseValidation).ToArray();
+
+            var mintReq = client.CreateRequest(new[] { perInput }, zeroCreds, CancellationToken.None);
+            var mintResp = issuer.HandleRequest(mintReq.CredentialsRequest);
+            all.AddRange(client.HandleResponse(mintResp, mintReq.CredentialsResponseValidation));
+        }
+        return all;
+    }
+
+    private static (WabiSabi.Crypto.ZeroKnowledge.Credential finalCred, int mergeOps, int levels) MergeCredentials(
+        WabiSabi.Crypto.CredentialIssuer issuer, WabiSabi.Crypto.WabiSabiClient client,
+        int k, List<WabiSabi.Crypto.ZeroKnowledge.Credential> allCredentials)
+    {
+        var credQueue = new Queue<WabiSabi.Crypto.ZeroKnowledge.Credential>(
+            allCredentials.Where(c => c.Value > 0));
+        int mergeOps = 0, levels = 0;
+
+        while (credQueue.Count > 1)
+        {
+            var nextLevel = new List<WabiSabi.Crypto.ZeroKnowledge.Credential>();
+            while (credQueue.Count > 0)
+            {
+                var batch = new List<WabiSabi.Crypto.ZeroKnowledge.Credential>();
+                for (int j = 0; j < k && credQueue.Count > 0; j++)
+                    batch.Add(credQueue.Dequeue());
+                while (batch.Count < k)
+                {
+                    var zeroReq = client.CreateRequestForZeroAmount();
+                    var zeroResp = issuer.HandleRequest(zeroReq.CredentialsRequest);
+                    batch.AddRange(client.HandleResponse(zeroResp, zeroReq.CredentialsResponseValidation)
+                        .Take(k - batch.Count));
+                }
+
+                var batchTotal = batch.Sum(c => c.Value);
+                var requestAmounts = new long[k];
+                requestAmounts[0] = batchTotal;
+
+                var req = client.CreateRequest(requestAmounts, batch.ToArray(), CancellationToken.None);
+                var resp = issuer.HandleRequest(req.CredentialsRequest);
+                nextLevel.AddRange(client.HandleResponse(resp, req.CredentialsResponseValidation)
+                    .Where(c => c.Value > 0));
+                mergeOps++;
+            }
+            credQueue = new Queue<WabiSabi.Crypto.ZeroKnowledge.Credential>(nextLevel);
+            levels++;
+        }
+        return (credQueue.Peek(), mergeOps, levels);
+    }
+
+    private static (WabiSabi.Crypto.ZeroKnowledge.Credential finalCred, int mergeOps, int levels) MergeBulletproofCredentials(
+        WabiSabi.Crypto.BulletproofCredentialIssuer issuer, WabiSabi.Crypto.BulletproofWabiSabiClient client,
+        int k, List<WabiSabi.Crypto.ZeroKnowledge.Credential> allCredentials)
+    {
+        var credQueue = new Queue<WabiSabi.Crypto.ZeroKnowledge.Credential>(
+            allCredentials.Where(c => c.Value > 0));
+        int mergeOps = 0, levels = 0;
+
+        while (credQueue.Count > 1)
+        {
+            var nextLevel = new List<WabiSabi.Crypto.ZeroKnowledge.Credential>();
+            while (credQueue.Count > 0)
+            {
+                var batch = new List<WabiSabi.Crypto.ZeroKnowledge.Credential>();
+                for (int j = 0; j < k && credQueue.Count > 0; j++)
+                    batch.Add(credQueue.Dequeue());
+                while (batch.Count < k)
+                {
+                    var zeroReq = client.CreateRequestForZeroAmount();
+                    var zeroResp = issuer.HandleRequest(zeroReq.CredentialsRequest);
+                    batch.AddRange(client.HandleResponse(zeroResp, zeroReq.CredentialsResponseValidation)
+                        .Take(k - batch.Count));
+                }
+
+                var batchTotal = batch.Sum(c => c.Value);
+                var requestAmounts = new long[k];
+                requestAmounts[0] = batchTotal;
+
+                var req = client.CreateRequest(requestAmounts, batch.ToArray(), CancellationToken.None);
+                var resp = issuer.HandleRequest(req.CredentialsRequest);
+                nextLevel.AddRange(client.HandleResponse(resp, req.CredentialsResponseValidation)
+                    .Where(c => c.Value > 0));
+                mergeOps++;
+            }
+            credQueue = new Queue<WabiSabi.Crypto.ZeroKnowledge.Credential>(nextLevel);
+            levels++;
+        }
+        return (credQueue.Peek(), mergeOps, levels);
+    }
+}
+
+#endregion
