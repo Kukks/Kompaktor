@@ -212,7 +212,7 @@ public class Test
             await roundOperator.Start(new KompaktorRoundEventCreated(
                     Guid.NewGuid().ToString(),
                     new FeeRate(2m),
-                    TimeSpan.FromSeconds(60),
+                    TimeSpan.FromSeconds(120),
                     TimeSpan.FromSeconds(120),
                     TimeSpan.FromSeconds(120),
                     new IntRange(1, participantCount * 3),

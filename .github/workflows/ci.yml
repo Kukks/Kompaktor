@@ -72,6 +72,7 @@ jobs:
             port=39388
             whitelist=0.0.0.0/0
             fallbackfee=0.0002
+            maxtxfee=10
             txindex=1
 
     steps:
