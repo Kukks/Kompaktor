@@ -182,12 +182,10 @@ public class KompaktorRoundClient : IDisposable
         _cts.Cancel();
         Round.NewEvent -= RoundOnNewEvent;
         StatusChanged = null;
-        _credentialLock.Dispose();
     }
 
 
     private readonly ConcurrentDictionary<CredentialType, WabiSabiClient> _createdClients = new();
-    private readonly SemaphoreSlim _credentialLock = new(1, 1);
 
     private WabiSabiClient GetWabiSabiClient(CredentialType credentialType)
     {
@@ -390,70 +388,54 @@ public class KompaktorRoundClient : IDisposable
 
     public async Task<BlindedCredential[]> Generate0Credentials()
     {
-        await _credentialLock.WaitAsync();
-        try
-        {
-            Logger.LogInformation("Generating 0 credentials");
-            var client = GetWabiSabiClient(CredentialType.Amount);
-            var api = _factory.Create();
-            var credReq = client.CreateRequestForZeroAmount();
-            var response = await api.ReissueCredentials(new CredentialReissuanceRequest(
-                new Dictionary<CredentialType, ICredentialsRequest>()
-                {
-                    {CredentialType.Amount, credReq.CredentialsRequest}
-                }));
-            var newCredentials = client.HandleResponse(response.Credentials[CredentialType.Amount],
-                    credReq.CredentialsResponseValidation)
-                .Select(credential => new BlindedCredential(credential)).ToArray();
-            var identity = new KompaktorIdentity(api, null, null, null,
-                newCredentials.Select(credential => credential.Mac).ToArray(), null, false);
-            Identities.Add(identity);
-            foreach (var credential in newCredentials)
+        Logger.LogInformation("Generating 0 credentials");
+        var client = GetWabiSabiClient(CredentialType.Amount);
+        var api = _factory.Create();
+        var credReq = client.CreateRequestForZeroAmount();
+        var response = await api.ReissueCredentials(new CredentialReissuanceRequest(
+            new Dictionary<CredentialType, ICredentialsRequest>()
             {
-                AllCredentials.TryAdd(credential.Mac.Serial(), credential);
-            }
-
-            return newCredentials;
-        }
-        finally
+                {CredentialType.Amount, credReq.CredentialsRequest}
+            }));
+        var newCredentials = client.HandleResponse(response.Credentials[CredentialType.Amount],
+                credReq.CredentialsResponseValidation)
+            .Select(credential => new BlindedCredential(credential)).ToArray();
+        var identity = new KompaktorIdentity(api, null, null, null,
+            newCredentials.Select(credential => credential.Mac).ToArray(), null, false);
+        Identities.Add(identity);
+        foreach (var credential in newCredentials)
         {
-            _credentialLock.Release();
+            AllCredentials.TryAdd(credential.Mac.Serial(), credential);
         }
+
+        return newCredentials;
     }
 
     public async Task<BlindedCredential[]> Reissue(Credential[] ins, long[] outs)
     {
-        await _credentialLock.WaitAsync();
-        try
-        {
-            Logger.LogInformation(
-                $"Reissuing {string.Join(", ", ins.Select(credential => credential.Value))} to {string.Join(", ", outs)}");
-            var client = GetWabiSabiClient(CredentialType.Amount);
-            using var cts = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
-            var api = _factory.Create();
-            var credReq = client.CreateRequest(outs, ins, cts.Token);
-            var response = await api.ReissueCredentials(new CredentialReissuanceRequest(
-                new Dictionary<CredentialType, ICredentialsRequest>()
-                {
-                    {CredentialType.Amount, credReq.CredentialsRequest}
-                }));
-            var newCredentials = client.HandleResponse(response.Credentials[CredentialType.Amount],
-                    credReq.CredentialsResponseValidation)
-                .Select(credential => new BlindedCredential(credential)).ToArray();
-            var identity = new KompaktorIdentity(api, null, null, ins.Select(credential => credential.Mac).ToArray(),
-                newCredentials.Select(credential => credential.Mac).ToArray(), null, false);
-            Identities.Add(identity);
-            foreach (var credential in newCredentials)
+        Logger.LogInformation(
+            $"Reissuing {string.Join(", ", ins.Select(credential => credential.Value))} to {string.Join(", ", outs)}");
+        var client = GetWabiSabiClient(CredentialType.Amount);
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
+        var api = _factory.Create();
+        var credReq = client.CreateRequest(outs, ins, cts.Token);
+        var response = await api.ReissueCredentials(new CredentialReissuanceRequest(
+            new Dictionary<CredentialType, ICredentialsRequest>()
             {
-                AllCredentials.TryAdd(credential.Mac.Serial(), credential);
-            }
-
-            return newCredentials;
-        }
-        finally
+                {CredentialType.Amount, credReq.CredentialsRequest}
+            }));
+        var newCredentials = client.HandleResponse(response.Credentials[CredentialType.Amount],
+                credReq.CredentialsResponseValidation)
+            .Select(credential => new BlindedCredential(credential)).ToArray();
+        var identity = new KompaktorIdentity(api, null, null, ins.Select(credential => credential.Mac).ToArray(),
+            newCredentials.Select(credential => credential.Mac).ToArray(), null, false);
+        Identities.Add(identity);
+        foreach (var credential in newCredentials)
         {
-            _credentialLock.Release();
+            AllCredentials.TryAdd(credential.Mac.Serial(), credential);
         }
+
+        return newCredentials;
     }
 
     private async Task RegisterCoin(Coin coin)
@@ -470,54 +452,46 @@ public class KompaktorRoundClient : IDisposable
                 var inputFee = ownershipProof.FundProofs.Sum(@in => @in.GetFee(Round.RoundEventCreated.FeeRate));
                 var expectedCredentialAmount = coin.Amount - inputFee;
 
-                await _credentialLock.WaitAsync(cts.Token);
-                try
+                var credentialClient = GetWabiSabiClient(CredentialType.Amount);
+
+                var zeroAmountCredentialRequestData = credentialClient.CreateRequestForZeroAmount();
+                var quote = await api.PreRegisterInput(new RegisterInputQuoteRequest
                 {
-                    var credentialClient = GetWabiSabiClient(CredentialType.Amount);
+                    Signature = ownershipProof,
+                    CredentialsRequest = zeroAmountCredentialRequestData.CredentialsRequest
+                });
 
-                    var zeroAmountCredentialRequestData = credentialClient.CreateRequestForZeroAmount();
-                    var quote = await api.PreRegisterInput(new RegisterInputQuoteRequest
-                    {
-                        Signature = ownershipProof,
-                        CredentialsRequest = zeroAmountCredentialRequestData.CredentialsRequest
-                    });
+                if (quote.CredentialAmount != expectedCredentialAmount)
+                    throw new InvalidOperationException("Expected credential amount does not match quote");
 
-                    if (quote.CredentialAmount != expectedCredentialAmount)
-                        throw new InvalidOperationException("Expected credential amount does not match quote");
+                var zeroCredentials = credentialClient.HandleResponse(quote.CredentialsResponse,
+                    zeroAmountCredentialRequestData.CredentialsResponseValidation).ToArray();
 
-                    var zeroCredentials = credentialClient.HandleResponse(quote.CredentialsResponse,
-                        zeroAmountCredentialRequestData.CredentialsResponseValidation).ToArray();
-
-                    foreach (var credential in zeroCredentials)
-                    {
-                        AllCredentials.TryAdd(credential.Mac.Serial(), new BlindedCredential(credential));
-                    }
-
-                    var realCredentialsRequest =
-                        credentialClient.CreateRequest([expectedCredentialAmount, 0], zeroCredentials, cts.Token);
-
-                    var registered =
-                        await api.RegisterInput(new RegisterInputRequest(quote.Secret,
-                            realCredentialsRequest.CredentialsRequest));
-                    var credentials = credentialClient.HandleResponse(registered.CredentialsResponse,
-                        realCredentialsRequest.CredentialsResponseValidation).ToArray();
-
-                    var macs = credentials.Select(credential => credential.Mac).ToArray();
-                    foreach (var credential in credentials)
-                    {
-                        AllCredentials.TryAdd(credential.Mac.Serial(), new BlindedCredential(credential));
-                    }
-
-                    var newIdentity = new KompaktorIdentity(api, new[] {coin.Outpoint}, null,
-                        zeroCredentials.Select(credential => credential.Mac).ToArray(),
-                        macs, quote.Secret, false);
-
-                    Identities.Add(newIdentity);
-                }
-                finally
+                foreach (var credential in zeroCredentials)
                 {
-                    _credentialLock.Release();
+                    AllCredentials.TryAdd(credential.Mac.Serial(), new BlindedCredential(credential));
                 }
+
+                var realCredentialsRequest =
+                    credentialClient.CreateRequest([expectedCredentialAmount, 0], zeroCredentials, cts.Token);
+
+                var registered =
+                    await api.RegisterInput(new RegisterInputRequest(quote.Secret,
+                        realCredentialsRequest.CredentialsRequest));
+                var credentials = credentialClient.HandleResponse(registered.CredentialsResponse,
+                    realCredentialsRequest.CredentialsResponseValidation).ToArray();
+
+                var macs = credentials.Select(credential => credential.Mac).ToArray();
+                foreach (var credential in credentials)
+                {
+                    AllCredentials.TryAdd(credential.Mac.Serial(), new BlindedCredential(credential));
+                }
+
+                var newIdentity = new KompaktorIdentity(api, new[] {coin.Outpoint}, null,
+                    zeroCredentials.Select(credential => credential.Mac).ToArray(),
+                    macs, quote.Secret, false);
+
+                Identities.Add(newIdentity);
             }, maxRetries: 5, baseDelay: TimeSpan.FromSeconds(1), logger: Logger,
                 operationName: $"RegisterCoin({coin.Outpoint})", cancellationToken: cts.Token);
         }
@@ -685,18 +659,21 @@ public class KompaktorRoundClient : IDisposable
                 var api = _factory.Create();
                 var requiredIns = node.Ins.Select(output => output.Amount).ToList();
                 var creds = new List<BlindedCredential>();
-                while (requiredIns.Any() && !cancellationToken.IsCancellationRequested)
+                // Snapshot available credentials once per node instead of rebuilding
+                // SpentCredentials + filtering AllCredentials on every iteration.
+                var available = AvailableCredentials;
+                foreach (var cred in available)
                 {
-                    var cred = AvailableCredentials.FirstOrDefault(credential =>
-                        requiredIns.Contains(credential.Value) &&
-                        !reserved.Contains(credential.Mac.Serial()));
-                    if (cred is null)
+                    if (!requiredIns.Any())
                         break;
-                    if (reserved.Add(cred.Mac.Serial()))
-                    {
-                        creds.Add(cred);
-                        requiredIns.Remove(cred.Value);
-                    }
+                    if (cancellationToken.IsCancellationRequested)
+                        break;
+                    if (!requiredIns.Contains(cred.Value))
+                        continue;
+                    if (!reserved.Add(cred.Mac.Serial()))
+                        continue;
+                    creds.Add(cred);
+                    requiredIns.Remove(cred.Value);
                 }
 
                 try
@@ -714,42 +691,34 @@ public class KompaktorRoundClient : IDisposable
                     Logger.LogInformation(
                         $"Issuing {node.Id} through output registration of [{txOut.ScriptPubKey.GetDestinationAddress(_network)} {txOut.Value}] ({string.Join(", ", creds.Select(cred => cred.Value))} to {string.Join(", ", node.Outs.Select(output => output.Amount))}");
 
-                    await _credentialLock.WaitAsync(cancellationToken);
-                    try
+                    var credentialClient = GetWabiSabiClient(CredentialType.Amount);
+                    Logger.LogInformation(
+                        $"Issuing {string.Join(", ", creds.Select(cred => cred.Mac.Serial()))} to {string.Join(", ", node.Outs.Select(output => output.Amount))}");
+                    var credentialsRequest =
+                        credentialClient.CreateRequest(node.Outs.Select(output => output.Amount), creds, cancellationToken);
+                    var credRequest = new System.Collections.Generic.Dictionary<CredentialType, ICredentialsRequest>()
                     {
-                        var credentialClient = GetWabiSabiClient(CredentialType.Amount);
-                        Logger.LogInformation(
-                            $"Issuing {string.Join(", ", creds.Select(cred => cred.Mac.Serial()))} to {string.Join(", ", node.Outs.Select(output => output.Amount))}");
-                        var credentialsRequest =
-                            credentialClient.CreateRequest(node.Outs.Select(output => output.Amount), creds, cancellationToken);
-                        var credRequest = new System.Collections.Generic.Dictionary<CredentialType, ICredentialsRequest>()
-                        {
-                            {CredentialType.Amount, credentialsRequest.CredentialsRequest}
-                        };
+                        {CredentialType.Amount, credentialsRequest.CredentialsRequest}
+                    };
 
-                        var response = await api.RegisterOutput(new RegisterOutputRequest(credRequest, txOut));
+                    var response = await api.RegisterOutput(new RegisterOutputRequest(credRequest, txOut));
 
-                        var credentialResponse = credentialClient.HandleResponse(
-                                response.Credentials[CredentialType.Amount],
-                                credentialsRequest.CredentialsResponseValidation)
-                            .Select(credential => new BlindedCredential(credential)).ToArray();
+                    var credentialResponse = credentialClient.HandleResponse(
+                            response.Credentials[CredentialType.Amount],
+                            credentialsRequest.CredentialsResponseValidation)
+                        .Select(credential => new BlindedCredential(credential)).ToArray();
 
-                        foreach (var blindedCredential in credentialResponse)
-                        {
-                            AllCredentials.TryAdd(blindedCredential.Mac.Serial(), blindedCredential);
-                        }
-
-                        Identities.Add(new KompaktorIdentity(api,
-                            null,
-                            new[] {response.Request.Output},
-                            creds.Select(credential => credential.Mac).ToArray(),
-                            credentialResponse.Select(credential => credential.Mac).ToArray(),
-                            null, false));
-                    }
-                    finally
+                    foreach (var blindedCredential in credentialResponse)
                     {
-                        _credentialLock.Release();
+                        AllCredentials.TryAdd(blindedCredential.Mac.Serial(), blindedCredential);
                     }
+
+                    Identities.Add(new KompaktorIdentity(api,
+                        null,
+                        new[] {response.Request.Output},
+                        creds.Select(credential => credential.Mac).ToArray(),
+                        credentialResponse.Select(credential => credential.Mac).ToArray(),
+                        null, false));
                 }
                 else
                 {
