@@ -205,7 +205,7 @@ public class Test
             {
                 {
                     CredentialType.Amount, new CredentialIssuer(new CredentialIssuerSecretKey(SecureRandom.Instance),
-                        SecureRandom.Instance, Money.Coins(100_000m).Satoshi)
+                        SecureRandom.Instance, Money.Coins(100_000m).Satoshi, 8)
                 }
             };
 
@@ -409,7 +409,7 @@ public class Test
             {
                 {
                     CredentialType.Amount, new CredentialIssuer(new CredentialIssuerSecretKey(SecureRandom.Instance),
-                        SecureRandom.Instance, Money.Coins(1000m).Satoshi)
+                        SecureRandom.Instance, Money.Coins(1000m).Satoshi, 8)
                 }
             };
 
@@ -573,7 +573,7 @@ public class Test
             {
                 {
                     CredentialType.Amount, new CredentialIssuer(new CredentialIssuerSecretKey(SecureRandom.Instance),
-                        SecureRandom.Instance, Money.Coins(100_000m).Satoshi)
+                        SecureRandom.Instance, Money.Coins(100_000m).Satoshi, 8)
                 }
             };
 
@@ -784,7 +784,7 @@ public class Test
             {
                 {
                     CredentialType.Amount, new CredentialIssuer(new CredentialIssuerSecretKey(SecureRandom.Instance),
-                        SecureRandom.Instance, Money.Coins(100_000m).Satoshi)
+                        SecureRandom.Instance, Money.Coins(100_000m).Satoshi, 8)
                 }
             };
 
@@ -1044,7 +1044,7 @@ public class Test
             {
                 {
                     CredentialType.Amount, new CredentialIssuer(new CredentialIssuerSecretKey(SecureRandom.Instance),
-                        SecureRandom.Instance, Money.Coins(100_000m).Satoshi)
+                        SecureRandom.Instance, Money.Coins(100_000m).Satoshi, 8)
                 }
             };
 
