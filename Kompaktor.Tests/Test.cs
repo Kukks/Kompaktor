@@ -1,4 +1,5 @@
 ﻿using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Net;
 using System.Text;
 using Kompaktor.Behaviors;
@@ -513,6 +514,10 @@ public class Test
     [Trait("Category", "Scale")]
     public async Task CanDoInteractivePaymentsAtScale()
     {
+        var phaseLog = _loggerFactory.CreateLogger("PhaseTimer");
+        var totalSw = Stopwatch.StartNew();
+        var phaseSw = Stopwatch.StartNew();
+
         List<Wallet> wallets = new();
 
         // Create receiver wallet
@@ -531,6 +536,9 @@ public class Test
             wallets.Add(senderWallet);
         }
 
+        phaseLog.LogInformation("[TIMER] Wallet creation: {Elapsed}", phaseSw.Elapsed);
+        phaseSw.Restart();
+
         // Fund each sender wallet with 1 BTC
         foreach (var senderWallet in wallets.Skip(1)) // Skip receiver wallet at index 0
         {
@@ -538,6 +546,9 @@ public class Test
         }
 
         await RPC.GenerateAsync(1);
+
+        phaseLog.LogInformation("[TIMER] Wallet funding ({Count} wallets): {Elapsed}", scale, phaseSw.Elapsed);
+        phaseSw.Restart();
 
         // Receiver requests payments
         List<InteractiveReceiverPendingPayment> interactivePayments = new();
@@ -558,17 +569,51 @@ public class Test
             index++;
         }
 
+        phaseLog.LogInformation("[TIMER] Payment scheduling ({Count} payments): {Elapsed}", scale, phaseSw.Elapsed);
+        phaseSw.Restart();
+
         using (var roundOperator = new KompaktorRoundOperator(Network, RPC, SecureRandom.Instance,
                    _loggerFactory.CreateLogger<KompaktorRoundOperator>()))
         {
             ConcurrentBag<KompaktorRoundEvent> roundEvents = new();
+            var phaseTimestamps = new ConcurrentDictionary<string, TimeSpan>();
 
 
             roundOperator.NewEvent += (sender, args) =>
             {
                 roundEvents.Add(args);
+                if (args is KompaktorRoundEventStatusUpdate statusUpdate)
+                {
+                    phaseTimestamps[statusUpdate.Status.ToString()] = totalSw.Elapsed;
+                    phaseLog.LogInformation("[TIMER] Phase transition → {Phase} at {Elapsed}", statusUpdate.Status, totalSw.Elapsed);
+                }
+                else if (args is KompaktorRoundEventInputRegistered)
+                {
+                    var inputCount = roundEvents.Count(e => e is KompaktorRoundEventInputRegistered);
+                    if (inputCount == 1)
+                        phaseLog.LogInformation("[TIMER] First input registered at {Elapsed}", totalSw.Elapsed);
+                    else if (inputCount == scale)
+                        phaseLog.LogInformation("[TIMER] Last input registered ({Count}) at {Elapsed}", inputCount, totalSw.Elapsed);
+                }
+                else if (args is KompaktorRoundEventOutputRegistered)
+                {
+                    var outputCount = roundEvents.Count(e => e is KompaktorRoundEventOutputRegistered);
+                    if (outputCount == 1)
+                        phaseLog.LogInformation("[TIMER] First output registered at {Elapsed}", totalSw.Elapsed);
+                }
+                else if (args is KompaktorRoundEventSignaturePosted)
+                {
+                    var sigCount = roundEvents.Count(e => e is KompaktorRoundEventSignaturePosted);
+                    if (sigCount == 1)
+                        phaseLog.LogInformation("[TIMER] First signature posted at {Elapsed}", totalSw.Elapsed);
+                    else if (sigCount == scale)
+                        phaseLog.LogInformation("[TIMER] Last signature posted ({Count}) at {Elapsed}", sigCount, totalSw.Elapsed);
+                }
                 return Task.CompletedTask;
             };
+
+            phaseLog.LogInformation("[TIMER] Round setup: {Elapsed}", phaseSw.Elapsed);
+            phaseSw.Restart();
 
             // Use Bulletproofs++ for range proofs: 39% faster than classical sigma at n=100
             var issuerKey = new CredentialIssuerSecretKey(SecureRandom.Instance);
@@ -699,6 +744,37 @@ public class Test
                 wallets[0]._logger.LogInformation(tx.ToHex());
 
             }, 900_000); // 15 minutes target with BP++ range proofs (10min input + output/signing with 5min buffer)
+
+            totalSw.Stop();
+            var outputCount = roundEvents.Count(e => e is KompaktorRoundEventOutputRegistered);
+            var summary = new StringBuilder();
+            summary.AppendLine();
+            summary.AppendLine("╔══════════════════════════════════════════════════════════════╗");
+            summary.AppendLine("║              SCALE TEST TIMING BREAKDOWN                    ║");
+            summary.AppendLine("╠══════════════════════════════════════════════════════════════╣");
+
+            // Compute per-phase durations from timestamps
+            var phases = new[] { "InputRegistration", "OutputRegistration", "Signing", "Broadcasting", "Completed" };
+            TimeSpan prev = TimeSpan.Zero;
+            foreach (var phase in phases)
+            {
+                if (phaseTimestamps.TryGetValue(phase, out var ts))
+                {
+                    var duration = ts - prev;
+                    var pct = totalSw.Elapsed.TotalSeconds > 0 ? duration.TotalSeconds / totalSw.Elapsed.TotalSeconds * 100 : 0;
+                    summary.AppendLine($"║  {phase,-25} {duration.TotalSeconds,8:F1}s  ({pct,4:F0}%)          ║");
+                    prev = ts;
+                }
+            }
+
+            summary.AppendLine("╠══════════════════════════════════════════════════════════════╣");
+            summary.AppendLine($"║  Total elapsed              {totalSw.Elapsed.TotalSeconds,8:F1}s                       ║");
+            summary.AppendLine($"║  Participants               {scale,8}                        ║");
+            summary.AppendLine($"║  Inputs registered          {scale,8}                        ║");
+            summary.AppendLine($"║  Outputs registered         {outputCount,8}                        ║");
+            summary.AppendLine($"║  Signatures posted          {scale,8}                        ║");
+            summary.AppendLine("╚══════════════════════════════════════════════════════════════╝");
+            phaseLog.LogInformation(summary.ToString());
         }
     }
 
@@ -1173,6 +1249,383 @@ public class Test
             {
                 client.Dispose();
             }
+        }
+    }
+
+    /// <summary>
+    /// Complex payment chaining test: multi-hop payment graph where receivers use incoming
+    /// funds to partially fund onward payments within the same coinjoin round.
+    ///
+    /// Payment graph (50 participants, 3 layers deep):
+    ///
+    ///   Layer 0 (Funders):    20 senders → each pays 0.1 BTC to a Layer 1 aggregator
+    ///   Layer 1 (Relayers):    5 relayers → each receives from 4 senders, pays 0.3 BTC to a Layer 2 node
+    ///   Layer 2 (Collectors):  2 collectors → each receives from 2-3 relayers, pays 0.5 BTC to the final sink
+    ///   Layer 3 (Sink):        1 final recipient receives from both collectors
+    ///
+    /// Additionally, 22 independent senders make direct payments to random relayers/collectors
+    /// to stress test the credential reissuance graph with mixed payment depths.
+    ///
+    /// All within a single coinjoin round using BP++ range proofs.
+    /// </summary>
+    [Fact]
+    [Trait("Category", "Scale")]
+    public async Task CanDoInteractivePaymentChaining()
+    {
+        var phaseLog = _loggerFactory.CreateLogger("PhaseTimer");
+        var totalSw = Stopwatch.StartNew();
+        var phaseSw = Stopwatch.StartNew();
+
+        // --- Wallet topology ---
+        // Layer 0: 20 funders (send only)
+        // Layer 1: 5 relayers (receive from funders, send to collectors)
+        // Layer 2: 2 collectors (receive from relayers, send to sink)
+        // Layer 3: 1 sink (receive only)
+        // Extra: 22 independent senders → random recipients in layer 1/2
+        const int funderCount = 20;
+        const int relayerCount = 5;
+        const int collectorCount = 2;
+        const int extraSenderCount = 22;
+        const int fundersPerRelayer = funderCount / relayerCount; // 4
+
+        var allWallets = new List<Wallet>();
+        var funderWallets = new List<Wallet>();
+        var relayerWallets = new List<Wallet>();
+        var collectorWallets = new List<Wallet>();
+        var extraSenderWallets = new List<Wallet>();
+
+        Wallet CreateWallet(string name)
+        {
+            var w = new Wallet(Network, new Mnemonic(Wordlist.English, WordCount.Twelve),
+                _loggerFactory.CreateLogger(name));
+            allWallets.Add(w);
+            return w;
+        }
+
+        for (int i = 0; i < funderCount; i++) funderWallets.Add(CreateWallet($"Funder_{i}"));
+        for (int i = 0; i < relayerCount; i++) relayerWallets.Add(CreateWallet($"Relayer_{i}"));
+        for (int i = 0; i < collectorCount; i++) collectorWallets.Add(CreateWallet($"Collector_{i}"));
+        var sinkWallet = CreateWallet("Sink");
+        for (int i = 0; i < extraSenderCount; i++) extraSenderWallets.Add(CreateWallet($"ExtraSender_{i}"));
+
+        var totalParticipants = allWallets.Count; // 50
+
+        phaseLog.LogInformation("[TIMER] Wallet creation ({Count}): {Elapsed}", totalParticipants, phaseSw.Elapsed);
+        phaseSw.Restart();
+
+        // Fund everyone who sends (funders, relayers, collectors, extra senders)
+        var walletsToFund = funderWallets
+            .Concat(relayerWallets)
+            .Concat(collectorWallets)
+            .Concat(extraSenderWallets).ToList();
+        foreach (var w in walletsToFund)
+            await CashCow(RPC, w.GetAddress(), Money.Coins(1), allWallets);
+        await RPC.GenerateAsync(1);
+
+        phaseLog.LogInformation("[TIMER] Wallet funding ({Count}): {Elapsed}", walletsToFund.Count, phaseSw.Elapsed);
+        phaseSw.Restart();
+
+        // --- Schedule payment graph ---
+        var totalPaymentFlows = 0;
+
+        // Layer 0 → Layer 1: Each funder pays its assigned relayer 0.1 BTC
+        for (int r = 0; r < relayerCount; r++)
+        {
+            for (int f = 0; f < fundersPerRelayer; f++)
+            {
+                var funderIdx = r * fundersPerRelayer + f;
+                var payment = await relayerWallets[r].RequestPayment(Money.Coins(0.1m));
+                await funderWallets[funderIdx].SchedulePayment(payment.Destination, payment.Amount,
+                    payment.KompaktorKey.ToXPubKey(), true, payment.Id);
+                totalPaymentFlows++;
+            }
+        }
+
+        // Layer 1 → Layer 2: Each relayer pays a collector 0.3 BTC
+        // Relayers 0,1,2 → Collector 0; Relayers 3,4 → Collector 1
+        var relayersPerCollector = new[] { 3, 2 };
+        var relayerIdx = 0;
+        for (int c = 0; c < collectorCount; c++)
+        {
+            for (int r = 0; r < relayersPerCollector[c]; r++)
+            {
+                var payment = await collectorWallets[c].RequestPayment(Money.Coins(0.3m));
+                await relayerWallets[relayerIdx].SchedulePayment(payment.Destination, payment.Amount,
+                    payment.KompaktorKey.ToXPubKey(), true, payment.Id);
+                relayerIdx++;
+                totalPaymentFlows++;
+            }
+        }
+
+        // Layer 2 → Layer 3: Each collector pays the sink 0.5 BTC
+        for (int c = 0; c < collectorCount; c++)
+        {
+            var payment = await sinkWallet.RequestPayment(Money.Coins(0.5m));
+            await collectorWallets[c].SchedulePayment(payment.Destination, payment.Amount,
+                payment.KompaktorKey.ToXPubKey(), true, payment.Id);
+            totalPaymentFlows++;
+        }
+
+        // Extra senders → random relayers and collectors (stress the credential graph)
+        var extraTargets = relayerWallets.Cast<Wallet>().Concat(collectorWallets).ToList();
+        for (int i = 0; i < extraSenderCount; i++)
+        {
+            var target = extraTargets[i % extraTargets.Count];
+            var payment = await target.RequestPayment(Money.Coins(0.05m));
+            await extraSenderWallets[i].SchedulePayment(payment.Destination, payment.Amount,
+                payment.KompaktorKey.ToXPubKey(), true, payment.Id);
+            totalPaymentFlows++;
+        }
+
+        phaseLog.LogInformation("[TIMER] Payment scheduling ({Count} flows): {Elapsed}", totalPaymentFlows, phaseSw.Elapsed);
+        phaseSw.Restart();
+
+        // --- Log the payment graph ---
+        var graph = new StringBuilder();
+        graph.AppendLine();
+        graph.AppendLine("╔══════════════════════════════════════════════════════════════╗");
+        graph.AppendLine("║         CHAINED PAYMENT ROUTING GRAPH                       ║");
+        graph.AppendLine("╠══════════════════════════════════════════════════════════════╣");
+        graph.AppendLine($"║  Participants: {totalParticipants} total                                     ║");
+        graph.AppendLine($"║  Payment flows: {totalPaymentFlows} ({funderCount} L0→L1, {relayerCount} L1→L2, {collectorCount} L2→L3, {extraSenderCount} extra)   ║");
+        graph.AppendLine("╠══════════════════════════════════════════════════════════════╣");
+        graph.AppendLine("║  Layer 0 (Funders)      ─── 0.10 BTC ──→  Layer 1 (Relayers)║");
+        graph.AppendLine("║  Layer 1 (Relayers)     ─── 0.30 BTC ──→  Layer 2 (Collect.) ║");
+        graph.AppendLine("║  Layer 2 (Collectors)   ─── 0.50 BTC ──→  Layer 3 (Sink)    ║");
+        graph.AppendLine("║  Extra senders          ─── 0.05 BTC ──→  Relayers/Collect.  ║");
+        graph.AppendLine("╠══════════════════════════════════════════════════════════════╣");
+        graph.AppendLine("║  Key: Relayers receive funds AND forward them onward.        ║");
+        graph.AppendLine("║  Collectors aggregate multiple relayer payments.             ║");
+        graph.AppendLine("║  Credential reissuance depth: up to 3 hops.                 ║");
+        graph.AppendLine("╚══════════════════════════════════════════════════════════════╝");
+        phaseLog.LogInformation(graph.ToString());
+
+        // --- Determine max concurrent inbound flows per wallet ---
+        // Relayers receive from fundersPerRelayer + some extras
+        var maxRelayerInbound = fundersPerRelayer + (extraSenderCount / extraTargets.Count) + 1;
+        var maxCollectorInbound = relayersPerCollector.Max() + (extraSenderCount / extraTargets.Count) + 1;
+
+        var totalInputs = walletsToFund.Count; // everyone who has coins registers
+
+        using (var roundOperator = new KompaktorRoundOperator(Network, RPC, SecureRandom.Instance,
+                   _loggerFactory.CreateLogger<KompaktorRoundOperator>()))
+        {
+            ConcurrentBag<KompaktorRoundEvent> roundEvents = new();
+            var phaseTimestamps = new ConcurrentDictionary<string, TimeSpan>();
+
+            roundOperator.NewEvent += (sender, args) =>
+            {
+                roundEvents.Add(args);
+                if (args is KompaktorRoundEventStatusUpdate statusUpdate)
+                {
+                    phaseTimestamps[statusUpdate.Status.ToString()] = totalSw.Elapsed;
+                    phaseLog.LogInformation("[TIMER] Phase transition → {Phase} at {Elapsed}", statusUpdate.Status, totalSw.Elapsed);
+                }
+                return Task.CompletedTask;
+            };
+
+            var issuerKey = new CredentialIssuerSecretKey(SecureRandom.Instance);
+            var rangeProofSystem = new BulletproofPlusPlusRangeProof();
+            Dictionary<CredentialType, ICredentialIssuer> issuers = new()
+            {
+                {
+                    CredentialType.Amount, new BulletproofCredentialIssuer(issuerKey, rangeProofSystem,
+                        SecureRandom.Instance, Money.Coins(100_000m).Satoshi)
+                }
+            };
+
+            await roundOperator.Start(new KompaktorRoundEventCreated(
+                    Guid.NewGuid().ToString(),
+                    new FeeRate(2m),
+                    TimeSpan.FromMinutes(10),
+                    TimeSpan.FromMinutes(15),
+                    TimeSpan.FromMinutes(10),
+                    new IntRange(1, totalInputs + 50),
+                    new MoneyRange(Money.Satoshis(10000), Money.Coins(100)),
+                    new IntRange(1, totalPaymentFlows * 4),
+                    new MoneyRange(Money.Satoshis(10000), Money.Coins(100)),
+                    issuers.ToDictionary(pair => pair.Key,
+                        pair => pair.Key.CredentialConfiguration(pair.Value, useBulletproofs: true))),
+                issuers);
+
+            Eventually(() =>
+                Assert.IsType<KompaktorRoundEventCreated>(Assert.Single(roundEvents)));
+
+            phaseLog.LogInformation("[TIMER] Round operator started: {Elapsed}", phaseSw.Elapsed);
+            phaseSw.Restart();
+
+            var kompaktorRoundApiFactory = new LocalKompaktorRoundApiFactory(roundOperator);
+            var allClients = new List<KompaktorRoundClient>();
+
+            // Funders: send only
+            for (int i = 0; i < funderCount; i++)
+            {
+                var idx = i;
+                var logger = _loggerFactory.CreateLogger($"FunderClient_{i}");
+                var messagingApi = new KompaktorMessagingApi(logger, roundOperator, roundOperator);
+                var client = new KompaktorRoundClient(
+                    SecureRandom.Instance, Network, roundOperator, kompaktorRoundApiFactory,
+                    [
+                        new InteractivePaymentSenderBehaviorTrait(funderWallets[idx], messagingApi),
+                        new ConsolidationBehaviorTrait(),
+                        new SelfSendChangeBehaviorTrait(() => funderWallets[idx].GetAddress().ScriptPubKey,
+                            TimeSpan.FromSeconds(90))
+                    ],
+                    funderWallets[idx], logger);
+                allClients.Add(client);
+            }
+
+            // Relayers: receive from funders + extras, send to collectors (both traits)
+            for (int i = 0; i < relayerCount; i++)
+            {
+                var idx = i;
+                var logger = _loggerFactory.CreateLogger($"RelayerClient_{i}");
+                var messagingApi = new KompaktorMessagingApi(logger, roundOperator, roundOperator);
+                var client = new KompaktorRoundClient(
+                    SecureRandom.Instance, Network, roundOperator, kompaktorRoundApiFactory,
+                    [
+                        new InteractivePaymentReceiverBehaviorTrait(relayerWallets[idx],
+                            messagingApi, maxRelayerInbound),
+                        new InteractivePaymentSenderBehaviorTrait(relayerWallets[idx], messagingApi),
+                        new ConsolidationBehaviorTrait(),
+                        new SelfSendChangeBehaviorTrait(() => relayerWallets[idx].GetAddress().ScriptPubKey,
+                            TimeSpan.FromSeconds(90))
+                    ],
+                    relayerWallets[idx], logger);
+                allClients.Add(client);
+            }
+
+            // Collectors: receive from relayers + extras, send to sink (both traits)
+            for (int i = 0; i < collectorCount; i++)
+            {
+                var idx = i;
+                var logger = _loggerFactory.CreateLogger($"CollectorClient_{i}");
+                var messagingApi = new KompaktorMessagingApi(logger, roundOperator, roundOperator);
+                var client = new KompaktorRoundClient(
+                    SecureRandom.Instance, Network, roundOperator, kompaktorRoundApiFactory,
+                    [
+                        new InteractivePaymentReceiverBehaviorTrait(collectorWallets[idx],
+                            messagingApi, maxCollectorInbound),
+                        new InteractivePaymentSenderBehaviorTrait(collectorWallets[idx], messagingApi),
+                        new ConsolidationBehaviorTrait(),
+                        new SelfSendChangeBehaviorTrait(() => collectorWallets[idx].GetAddress().ScriptPubKey,
+                            TimeSpan.FromSeconds(90))
+                    ],
+                    collectorWallets[idx], logger);
+                allClients.Add(client);
+            }
+
+            // Sink: receive only
+            {
+                var logger = _loggerFactory.CreateLogger("SinkClient");
+                var messagingApi = new KompaktorMessagingApi(logger, roundOperator, roundOperator);
+                var client = new KompaktorRoundClient(
+                    SecureRandom.Instance, Network, roundOperator, kompaktorRoundApiFactory,
+                    [
+                        new InteractivePaymentReceiverBehaviorTrait(sinkWallet,
+                            messagingApi, collectorCount),
+                        new ConsolidationBehaviorTrait(),
+                        new SelfSendChangeBehaviorTrait(() => sinkWallet.GetAddress().ScriptPubKey,
+                            TimeSpan.FromSeconds(90))
+                    ],
+                    sinkWallet, logger);
+                allClients.Add(client);
+            }
+
+            // Extra senders: send only
+            for (int i = 0; i < extraSenderCount; i++)
+            {
+                var idx = i;
+                var logger = _loggerFactory.CreateLogger($"ExtraSenderClient_{i}");
+                var messagingApi = new KompaktorMessagingApi(logger, roundOperator, roundOperator);
+                var client = new KompaktorRoundClient(
+                    SecureRandom.Instance, Network, roundOperator, kompaktorRoundApiFactory,
+                    [
+                        new InteractivePaymentSenderBehaviorTrait(extraSenderWallets[idx], messagingApi),
+                        new ConsolidationBehaviorTrait(),
+                        new SelfSendChangeBehaviorTrait(() => extraSenderWallets[idx].GetAddress().ScriptPubKey,
+                            TimeSpan.FromSeconds(90))
+                    ],
+                    extraSenderWallets[idx], logger);
+                allClients.Add(client);
+            }
+
+            await Eventually(async () =>
+            {
+                foreach (var client in allClients)
+                {
+                    if (client.PhasesTask.IsFaulted || client.PhasesTask.IsCompleted)
+                        await client.PhasesTask;
+                }
+
+                Assert.Equal(totalInputs,
+                    roundEvents.Count(@event => @event is KompaktorRoundEventInputRegistered));
+                Assert.NotNull(roundEvents.SingleOrDefault(@event =>
+                    @event is KompaktorRoundEventStatusUpdate { Status: KompaktorStatus.OutputRegistration }));
+
+                var outputRegistrations =
+                    roundEvents.Count(@event => @event is KompaktorRoundEventOutputRegistered);
+                // Each funded participant gets at least a change output, plus receiver outputs
+                Assert.True(outputRegistrations >= totalInputs,
+                    $"Expected at least {totalInputs} output registrations, got {outputRegistrations}");
+
+                Assert.NotNull(roundEvents.SingleOrDefault(@event =>
+                    @event is KompaktorRoundEventStatusUpdate { Status: KompaktorStatus.Signing }));
+                Assert.Equal(totalInputs,
+                    roundEvents.Count(@event => @event is KompaktorRoundEventSignaturePosted));
+                Assert.NotNull(roundEvents.SingleOrDefault(@event =>
+                    @event is KompaktorRoundEventStatusUpdate { Status: KompaktorStatus.Broadcasting }));
+                Assert.NotNull(roundEvents.SingleOrDefault(@event =>
+                    @event is KompaktorRoundEventStatusUpdate { Status: KompaktorStatus.Completed }));
+
+                var txid = allClients[0].Round.GetTransaction(Network).GetHash();
+                var operatorTxId = roundOperator.GetTransaction(Network).GetHash();
+                Assert.Equal(txid, operatorTxId);
+                var tx = await RPC.GetRawTransactionAsync(txid);
+                foreach (var wallet in allWallets)
+                    wallet.AddTransaction(tx);
+
+                // Verify all payments settled
+                foreach (var wallet in allWallets)
+                {
+                    Assert.Empty(await wallet.GetOutboundPendingPayments(true));
+                    Assert.Empty(await wallet.GetInboundPendingPayments(true));
+                }
+            }, 1_800_000); // 30 minutes
+
+            totalSw.Stop();
+            var finalOutputCount = roundEvents.Count(e => e is KompaktorRoundEventOutputRegistered);
+            var summary = new StringBuilder();
+            summary.AppendLine();
+            summary.AppendLine("╔══════════════════════════════════════════════════════════════╗");
+            summary.AppendLine("║          CHAINED PAYMENT TEST TIMING BREAKDOWN              ║");
+            summary.AppendLine("╠══════════════════════════════════════════════════════════════╣");
+
+            var phases = new[] { "InputRegistration", "OutputRegistration", "Signing", "Broadcasting", "Completed" };
+            TimeSpan prev = TimeSpan.Zero;
+            foreach (var phase in phases)
+            {
+                if (phaseTimestamps.TryGetValue(phase, out var ts))
+                {
+                    var duration = ts - prev;
+                    var pct = totalSw.Elapsed.TotalSeconds > 0 ? duration.TotalSeconds / totalSw.Elapsed.TotalSeconds * 100 : 0;
+                    summary.AppendLine($"║  {phase,-25} {duration.TotalSeconds,8:F1}s  ({pct,4:F0}%)          ║");
+                    prev = ts;
+                }
+            }
+
+            summary.AppendLine("╠══════════════════════════════════════════════════════════════╣");
+            summary.AppendLine($"║  Total elapsed              {totalSw.Elapsed.TotalSeconds,8:F1}s                       ║");
+            summary.AppendLine($"║  Participants               {totalParticipants,8}                        ║");
+            summary.AppendLine($"║  Payment flows              {totalPaymentFlows,8}                        ║");
+            summary.AppendLine($"║  Chain depth                       3 hops                   ║");
+            summary.AppendLine($"║  Inputs registered          {totalInputs,8}                        ║");
+            summary.AppendLine($"║  Outputs registered         {finalOutputCount,8}                        ║");
+            summary.AppendLine("╚══════════════════════════════════════════════════════════════╝");
+            phaseLog.LogInformation(summary.ToString());
+
+            foreach (var client in allClients)
+                client.Dispose();
         }
     }
 
