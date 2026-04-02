@@ -1016,6 +1016,9 @@ public class BulletproofVsClassicalBenchmark
     [InlineData(2, 50)]
     [InlineData(4, 50)]
     [InlineData(8, 50)]
+    [InlineData(2, 100)]
+    [InlineData(4, 100)]
+    [InlineData(8, 100)]
     public void ClassicalReissuanceBenchmark(int k, int participantCount)
     {
         var loggerFactory = LoggerFactory.Create(b => b.AddConsole().SetMinimumLevel(LogLevel.Information));
@@ -1050,6 +1053,9 @@ public class BulletproofVsClassicalBenchmark
     [InlineData(2, 50)]
     [InlineData(4, 50)]
     [InlineData(8, 50)]
+    [InlineData(2, 100)]
+    [InlineData(4, 100)]
+    [InlineData(8, 100)]
     public void BulletproofReissuanceBenchmark(int k, int participantCount)
     {
         var loggerFactory = LoggerFactory.Create(b => b.AddConsole().SetMinimumLevel(LogLevel.Information));

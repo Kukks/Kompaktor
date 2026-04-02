@@ -14,6 +14,7 @@ using WabiSabi.CredentialRequesting;
 using WabiSabi.Crypto;
 using WabiSabi.Crypto.Randomness;
 using WabiSabi.Crypto.ZeroKnowledge;
+using WabiSabi.CredentialRequesting;
 using TaskScheduler = Kompaktor.Utils.TaskScheduler;
 
 namespace Kompaktor;
@@ -185,9 +186,9 @@ public class KompaktorRoundClient : IDisposable
     }
 
 
-    private readonly ConcurrentDictionary<CredentialType, WabiSabiClient> _createdClients = new();
+    private readonly ConcurrentDictionary<CredentialType, ICredentialClient> _createdClients = new();
 
-    private WabiSabiClient GetWabiSabiClient(CredentialType credentialType)
+    private ICredentialClient GetCredentialClient(CredentialType credentialType)
     {
         if (_createdClients.TryGetValue(credentialType, out var client))
         {
@@ -199,8 +200,12 @@ public class KompaktorRoundClient : IDisposable
             throw new InvalidOperationException($"No issuer parameters for credential type {credentialType}");
         }
 
-        return _createdClients[credentialType] =
-            new WabiSabiClient(credentialConfiguation.Parameters, _random, credentialConfiguation.Max, credentialConfiguation.IssuanceOut.Max);
+        var k = credentialConfiguation.IssuanceOut.Max;
+        ICredentialClient newClient = credentialConfiguation.UseBulletproofs
+            ? new BulletproofWabiSabiClient(credentialConfiguation.Parameters, new BulletproofPlusPlusRangeProof(), _random, k)
+            : new WabiSabiClient(credentialConfiguation.Parameters, _random, credentialConfiguation.Max, k);
+
+        return _createdClients[credentialType] = newClient;
     }
 
     private async Task OnStatusChanged(object sender, KompaktorStatus e)
@@ -389,7 +394,7 @@ public class KompaktorRoundClient : IDisposable
     public async Task<BlindedCredential[]> Generate0Credentials()
     {
         Logger.LogInformation("Generating 0 credentials");
-        var client = GetWabiSabiClient(CredentialType.Amount);
+        var client = GetCredentialClient(CredentialType.Amount);
         var api = _factory.Create();
         var credReq = client.CreateRequestForZeroAmount();
         var response = await api.ReissueCredentials(new CredentialReissuanceRequest(
@@ -415,7 +420,7 @@ public class KompaktorRoundClient : IDisposable
     {
         Logger.LogInformation(
             $"Reissuing {string.Join(", ", ins.Select(credential => credential.Value))} to {string.Join(", ", outs)}");
-        var client = GetWabiSabiClient(CredentialType.Amount);
+        var client = GetCredentialClient(CredentialType.Amount);
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
         var api = _factory.Create();
         var credReq = client.CreateRequest(outs, ins, cts.Token);
@@ -452,7 +457,7 @@ public class KompaktorRoundClient : IDisposable
                 var inputFee = ownershipProof.FundProofs.Sum(@in => @in.GetFee(Round.RoundEventCreated.FeeRate));
                 var expectedCredentialAmount = coin.Amount - inputFee;
 
-                var credentialClient = GetWabiSabiClient(CredentialType.Amount);
+                var credentialClient = GetCredentialClient(CredentialType.Amount);
 
                 var zeroAmountCredentialRequestData = credentialClient.CreateRequestForZeroAmount();
                 var quote = await api.PreRegisterInput(new RegisterInputQuoteRequest
@@ -514,7 +519,7 @@ public class KompaktorRoundClient : IDisposable
     //         var cts = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
     //
     //         var api = _factory.Create();
-    //         var credentialClient = GetWabiSabiClient(CredentialType.Amount);
+    //         var credentialClient = GetCredentialClient(CredentialType.Amount);
     //
     //         var amtBack = credentials.Sum(credential => credential.Value) -
     //                       txOut.EffectiveCost(Round.RoundEventCreated.FeeRate).Satoshi;
@@ -691,7 +696,7 @@ public class KompaktorRoundClient : IDisposable
                     Logger.LogInformation(
                         $"Issuing {node.Id} through output registration of [{txOut.ScriptPubKey.GetDestinationAddress(_network)} {txOut.Value}] ({string.Join(", ", creds.Select(cred => cred.Value))} to {string.Join(", ", node.Outs.Select(output => output.Amount))}");
 
-                    var credentialClient = GetWabiSabiClient(CredentialType.Amount);
+                    var credentialClient = GetCredentialClient(CredentialType.Amount);
                     Logger.LogInformation(
                         $"Issuing {string.Join(", ", creds.Select(cred => cred.Mac.Serial()))} to {string.Join(", ", node.Outs.Select(output => output.Amount))}");
                     var credentialsRequest =

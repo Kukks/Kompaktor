@@ -6,12 +6,13 @@ namespace Kompaktor.Models;
 
 public record CredentialConfiguration
 {
-    public CredentialConfiguration(long Max, IntRange IssuanceIn, IntRange IssuanceOut, CredentialIssuerParameters Parameters)
+    public CredentialConfiguration(long Max, IntRange IssuanceIn, IntRange IssuanceOut, CredentialIssuerParameters Parameters, bool UseBulletproofs = false)
     {
         this.Max = Max;
         this.IssuanceIn = IssuanceIn;
         this.IssuanceOut = IssuanceOut;
         this.Parameters = Parameters;
+        this.UseBulletproofs = UseBulletproofs;
     }
 
     [JsonPropertyName("max")]
@@ -23,6 +24,8 @@ public record CredentialConfiguration
     [JsonPropertyName("parameters")]
     [JsonConverter(typeof(CredentialIssuerParametersJsonConverter))]
     public CredentialIssuerParameters Parameters { get; init; }
+    [JsonPropertyName("useBulletproofs")]
+    public bool UseBulletproofs { get; init; }
 
     public void Deconstruct(out long Max, out IntRange IssuanceIn, out IntRange IssuanceOut, out CredentialIssuerParameters Parameters)
     {

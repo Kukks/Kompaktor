@@ -53,6 +53,12 @@ public class KompaktorCoordinatorOptions
     /// </summary>
     public int CredentialCount { get; set; } = 2;
 
+    /// <summary>
+    /// Use Bulletproofs++ (BP++) for range proofs instead of classical sigma-protocol bit decomposition.
+    /// BP++ has O(log n) proof size vs O(n), making it much faster at higher credential arity (k).
+    /// </summary>
+    public bool UseBulletproofs { get; set; } = false;
+
     /// <summary>Maximum number of concurrent rounds.</summary>
     public int MaxConcurrentRounds { get; set; } = 10;
 

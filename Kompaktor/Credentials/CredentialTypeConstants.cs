@@ -1,6 +1,7 @@
 ﻿using Kompaktor.Models;
 using WabiSabi.Crypto;
 using WabiSabi.Crypto.Randomness;
+using WabiSabi.Crypto.ZeroKnowledge;
 
 namespace Kompaktor.Credentials;
 
@@ -11,6 +12,18 @@ public static class CredentialTypeConstants
 	/// Higher values reduce reissuance tree depth at the cost of larger proofs per round.
 	/// </summary>
 	public const int DefaultCredentialNumber = 2;
+
+	public static ICredentialIssuer CreateIssuer(this CredentialType credentialType, CredentialIssuerSecretKey secretKey, WasabiRandom random, int numberOfCredentials = DefaultCredentialNumber, bool useBulletproofs = false)
+	{
+		if (useBulletproofs)
+			return new BulletproofCredentialIssuer(secretKey, new BulletproofPlusPlusRangeProof(), random, credentialType.MaxAmountValue(), numberOfCredentials);
+		return new CredentialIssuer(secretKey, random, credentialType.MaxAmountValue(), numberOfCredentials);
+	}
+
+	public static ICredentialIssuer CreateIssuer(this CredentialType credentialType, WasabiRandom random, int numberOfCredentials = DefaultCredentialNumber, bool useBulletproofs = false)
+	{
+		return credentialType.CreateIssuer(new CredentialIssuerSecretKey(random), random, numberOfCredentials, useBulletproofs);
+	}
 
 	public static CredentialIssuer CredentialIssuer(this CredentialType credentialType, CredentialIssuerSecretKey secretKey, WasabiRandom random, int numberOfCredentials = DefaultCredentialNumber)
 	{
@@ -23,14 +36,16 @@ public static class CredentialTypeConstants
 
 	public static CredentialConfiguration CredentialConfiguration(
 		this CredentialType credentialType,
-		CredentialIssuer credentialIssuer)
+		ICredentialIssuer credentialIssuer,
+		bool useBulletproofs = false)
 	{
 		var k = credentialIssuer.NumberOfCredentials;
 		return new CredentialConfiguration(
 			credentialIssuer.MaxAmount,
 			credentialType.IssuanceIn(k),
 			credentialType.IssuanceOut(k),
-			credentialIssuer.CredentialIssuerSecretKey.ComputeCredentialIssuerParameters());
+			credentialIssuer.CredentialIssuerSecretKey.ComputeCredentialIssuerParameters(),
+			useBulletproofs);
 	}
 
     public static long MaxAmountValue(this CredentialType credentialType) => credentialType switch

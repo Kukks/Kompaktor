@@ -51,7 +51,7 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
         }
     }
 
-    public Dictionary<CredentialType, CredentialIssuer> CredentialIssuers { get; private set; } = new();
+    public Dictionary<CredentialType, ICredentialIssuer> CredentialIssuers { get; private set; } = new();
 
     public readonly ConcurrentDictionary<string, (RegisterInputQuoteRequest quoteRequest, InputRegistrationQuoteResponse response, Coin coin)> ActiveQuotes = new();
 
@@ -285,7 +285,7 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
         }
     }
 
-    public async Task Start(KompaktorRoundEventCreated created, Dictionary<CredentialType, CredentialIssuer> issuers)
+    public async Task Start(KompaktorRoundEventCreated created, Dictionary<CredentialType, ICredentialIssuer> issuers)
     {
         if (Events.Count() != 0)
             throw new KompaktorProtocolException(KompaktorProtocolErrorCode.RoundAlreadyStarted,
