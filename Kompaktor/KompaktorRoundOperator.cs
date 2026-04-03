@@ -22,6 +22,7 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
     private readonly KompaktorPrison? _prison;
     private readonly CancellationTokenSource _cts;
     private readonly SemaphoreSlim _statusSemaphore = new(1, 1);
+    private volatile bool _inputSoftTimeoutReached;
 
     public KompaktorRoundOperator(Network network, RPCClient rpcClient, WasabiRandom random, ILogger logger, KompaktorPrison? prison = null)
     {
@@ -39,6 +40,15 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
         if (roundEvent is KompaktorRoundEventStatusUpdate statusUpdate)
         {
             await HandleStatusChange(statusUpdate.Status);
+        }
+        else if (Status == KompaktorStatus.InputRegistration &&
+                 roundEvent is KompaktorRoundEventInputRegistered &&
+                 _inputSoftTimeoutReached &&
+                 RoundEventCreated.InputCount.Contains(Inputs.Count))
+        {
+            _logger.LogInformation("Soft timeout reached and minimum inputs met ({InputCount}), transitioning early",
+                Inputs.Count);
+            await UpdateStatus(KompaktorStatus.OutputRegistration);
         }
         else if (Status == KompaktorStatus.OutputRegistration && NotReadyToSign.IsEmpty)
         {
@@ -300,6 +310,33 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
         switch (newStatus)
         {
             case KompaktorStatus.InputRegistration:
+                // Soft timeout: if set, allows early transition when minimum inputs are met
+                if (created.InputRegistrationSoftTimeout is { } softTimeout)
+                {
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            await Task.Delay(softTimeout, _cts.Token);
+                            if (Status != KompaktorStatus.InputRegistration) return;
+                            _inputSoftTimeoutReached = true;
+                            _logger.LogInformation("Input registration soft timeout reached ({SoftTimeout}), {InputCount} inputs registered",
+                                softTimeout, Inputs.Count);
+                            // Check immediately — inputs may already meet minimum
+                            if (created.InputCount.Contains(Inputs.Count))
+                            {
+                                _logger.LogInformation("Minimum inputs met at soft timeout ({InputCount}), transitioning early",
+                                    Inputs.Count);
+                                await UpdateStatus(KompaktorStatus.OutputRegistration);
+                            }
+                            // Otherwise, HandleNewEvents will check on each subsequent InputRegistered
+                        }
+                        catch (OperationCanceledException) { }
+                        catch (Exception e) { _logger.LogException("Input soft timeout handler failed", e); }
+                    });
+                }
+
+                // Hard timeout: backstop that always fires
                 _ = Task.Run(async () =>
                 {
                     try

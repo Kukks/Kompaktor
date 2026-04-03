@@ -638,7 +638,8 @@ public class Test
                     new IntRange(1, scale * 3),
                     new MoneyRange(Money.Satoshis(10000), Money.Coins(100)),
                     issuers.ToDictionary(pair => pair.Key,
-                        pair => pair.Key.CredentialConfiguration(pair.Value, useBulletproofs: true))),
+                        pair => pair.Key.CredentialConfiguration(pair.Value, useBulletproofs: true)),
+                    InputRegistrationSoftTimeout: TimeSpan.FromSeconds(60)),
                 issuers);
 
             Eventually(() =>
@@ -1445,7 +1446,8 @@ public class Test
                     new IntRange(1, totalPaymentFlows * 4),
                     new MoneyRange(Money.Satoshis(10000), Money.Coins(100)),
                     issuers.ToDictionary(pair => pair.Key,
-                        pair => pair.Key.CredentialConfiguration(pair.Value, useBulletproofs: true))),
+                        pair => pair.Key.CredentialConfiguration(pair.Value, useBulletproofs: true)),
+                    InputRegistrationSoftTimeout: TimeSpan.FromSeconds(60)),
                 issuers);
 
             Eventually(() =>

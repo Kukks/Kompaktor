@@ -14,7 +14,8 @@ public record KompaktorRoundEventCreated : KompaktorRoundEventStatusUpdate
         MoneyRange InputAmount,
         IntRange OutputCount,
         MoneyRange OutputAmount,
-        Dictionary<CredentialType, CredentialConfiguration> Credentials) : base(KompaktorStatus.InputRegistration)
+        Dictionary<CredentialType, CredentialConfiguration> Credentials,
+        TimeSpan? InputRegistrationSoftTimeout = null) : base(KompaktorStatus.InputRegistration)
     {
         this.RoundId = RoundId;
         this.FeeRate = FeeRate;
@@ -26,6 +27,7 @@ public record KompaktorRoundEventCreated : KompaktorRoundEventStatusUpdate
         this.OutputCount = OutputCount;
         this.OutputAmount = OutputAmount;
         this.Credentials = Credentials;
+        this.InputRegistrationSoftTimeout = InputRegistrationSoftTimeout;
     }
 
     public string RoundId { get; init; }
@@ -38,6 +40,12 @@ public record KompaktorRoundEventCreated : KompaktorRoundEventStatusUpdate
     public IntRange OutputCount { get; init; }
     public MoneyRange OutputAmount { get; init; }
     public Dictionary<CredentialType, CredentialConfiguration> Credentials { get; init; }
+    /// <summary>
+    /// Optional soft timeout for input registration. After this period, the round will
+    /// transition to output registration if the minimum input count is met.
+    /// If null, the round waits for the full InputTimeout.
+    /// </summary>
+    public TimeSpan? InputRegistrationSoftTimeout { get; init; }
 
     public void Deconstruct(out string RoundId, out FeeRate FeeRate, out TimeSpan InputTimeout, out TimeSpan OutputTimeout, out TimeSpan SigningTimeout, out IntRange InputCount, out MoneyRange InputAmount, out IntRange OutputCount, out MoneyRange OutputAmount, out Dictionary<CredentialType, CredentialConfiguration> Credentials)
     {

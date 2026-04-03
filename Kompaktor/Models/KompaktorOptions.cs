@@ -59,6 +59,13 @@ public class KompaktorCoordinatorOptions
     /// </summary>
     public bool UseBulletproofs { get; set; } = false;
 
+    /// <summary>
+    /// Optional soft timeout for input registration. After this period, the round will
+    /// transition to output registration early if the minimum input count is already met.
+    /// If null, the round waits for the full InputTimeout before transitioning.
+    /// </summary>
+    public TimeSpan? InputRegistrationSoftTimeout { get; set; }
+
     /// <summary>Maximum number of concurrent rounds.</summary>
     public int MaxConcurrentRounds { get; set; } = 10;
 

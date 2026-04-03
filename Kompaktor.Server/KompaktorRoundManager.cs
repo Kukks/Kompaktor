@@ -72,7 +72,8 @@ public class KompaktorRoundManager : IDisposable
                     new CredentialConfiguration(_options.MaxCredentialValue, new IntRange(k, k), new IntRange(k, k),
                         issuerKey.ComputeCredentialIssuerParameters(), useBp)
                 }
-            }
+            },
+            _options.InputRegistrationSoftTimeout
         );
 
         _rounds[roundId] = op;
