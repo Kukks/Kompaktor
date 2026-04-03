@@ -779,6 +779,243 @@ public class Test
         }
     }
 
+    /// <summary>
+    /// Batched receiver scale test: 5 receivers each collect payments from 20 senders.
+    /// Verifies that each receiver consolidates all incoming payments into a single output,
+    /// regardless of how many senders paid them. This proves the credential aggregation
+    /// architecture works at scale — 100 inputs collapse into ~105 outputs (5 receiver +
+    /// 100 sender change), not 200+ (one per payment flow).
+    /// </summary>
+    [Fact]
+    [Trait("Category", "Scale")]
+    public async Task CanDoBatchedReceiverPaymentsAtScale()
+    {
+        var phaseLog = _loggerFactory.CreateLogger("PhaseTimer");
+        var totalSw = Stopwatch.StartNew();
+
+        const int receiverCount = 5;
+        const int sendersPerReceiver = 20;
+        var totalSenders = receiverCount * sendersPerReceiver;
+
+        var allWallets = new List<Wallet>();
+        var receiverWallets = new List<Wallet>();
+        var senderWallets = new List<Wallet>();
+
+        // Create receiver wallets
+        for (int r = 0; r < receiverCount; r++)
+        {
+            var w = new Wallet(Network, new Mnemonic(Wordlist.English, WordCount.Twelve),
+                _loggerFactory.CreateLogger($"Receiver_{r}"));
+            receiverWallets.Add(w);
+            allWallets.Add(w);
+        }
+
+        // Create sender wallets
+        for (int s = 0; s < totalSenders; s++)
+        {
+            var w = new Wallet(Network, new Mnemonic(Wordlist.English, WordCount.Twelve),
+                _loggerFactory.CreateLogger($"Sender_{s}"));
+            senderWallets.Add(w);
+            allWallets.Add(w);
+        }
+
+        // Fund senders only — receivers have no coins, they only receive
+        foreach (var sender in senderWallets)
+            await CashCow(RPC, sender.GetAddress(), Money.Coins(1), allWallets);
+        await RPC.GenerateAsync(1);
+
+        // Each receiver requests payments from their assigned senders
+        for (int r = 0; r < receiverCount; r++)
+        {
+            for (int s = 0; s < sendersPerReceiver; s++)
+            {
+                var senderIdx = r * sendersPerReceiver + s;
+                var payment = await receiverWallets[r].RequestPayment(Money.Coins(0.1m));
+                await senderWallets[senderIdx].SchedulePayment(payment.Destination, payment.Amount,
+                    payment.KompaktorKey.ToXPubKey(), true, payment.Id);
+            }
+        }
+
+        // Capture receiver addresses for output counting
+        var receiverAddresses = receiverWallets
+            .Select(w => w.GetAddress().ScriptPubKey)
+            .ToList();
+
+        phaseLog.LogInformation("[TIMER] Setup complete ({Senders} senders, {Receivers} receivers): {Elapsed}",
+            totalSenders, receiverCount, totalSw.Elapsed);
+
+        using (var roundOperator = new KompaktorRoundOperator(Network, RPC, SecureRandom.Instance,
+                   _loggerFactory.CreateLogger<KompaktorRoundOperator>()))
+        {
+            ConcurrentBag<KompaktorRoundEvent> roundEvents = new();
+            var phaseTimestamps = new ConcurrentDictionary<string, TimeSpan>();
+
+            roundOperator.NewEvent += (sender, args) =>
+            {
+                roundEvents.Add(args);
+                if (args is KompaktorRoundEventStatusUpdate statusUpdate)
+                {
+                    phaseTimestamps[statusUpdate.Status.ToString()] = totalSw.Elapsed;
+                    phaseLog.LogInformation("[TIMER] Phase → {Phase} at {Elapsed}", statusUpdate.Status, totalSw.Elapsed);
+                }
+                return Task.CompletedTask;
+            };
+
+            var issuerKey = new CredentialIssuerSecretKey(SecureRandom.Instance);
+            var rangeProofSystem = new BulletproofPlusPlusRangeProof();
+            Dictionary<CredentialType, ICredentialIssuer> issuers = new()
+            {
+                {
+                    CredentialType.Amount, new BulletproofCredentialIssuer(issuerKey, rangeProofSystem,
+                        SecureRandom.Instance, Money.Coins(100_000m).Satoshi)
+                }
+            };
+
+            await roundOperator.Start(new KompaktorRoundEventCreated(
+                    Guid.NewGuid().ToString(),
+                    new FeeRate(2m),
+                    TimeSpan.FromMinutes(10),
+                    TimeSpan.FromMinutes(10),
+                    TimeSpan.FromMinutes(10),
+                    new IntRange(1, totalSenders + 50),
+                    new MoneyRange(Money.Satoshis(10000), Money.Coins(100)),
+                    new IntRange(1, totalSenders * 3),
+                    new MoneyRange(Money.Satoshis(10000), Money.Coins(100)),
+                    issuers.ToDictionary(pair => pair.Key,
+                        pair => pair.Key.CredentialConfiguration(pair.Value, useBulletproofs: true)),
+                    InputRegistrationSoftTimeout: TimeSpan.FromSeconds(60)),
+                issuers);
+
+            Eventually(() =>
+                Assert.IsType<KompaktorRoundEventCreated>(Assert.Single(roundEvents)));
+
+            var kompaktorRoundApiFactory = new LocalKompaktorRoundApiFactory(roundOperator);
+            var allClients = new List<KompaktorRoundClient>();
+
+            // Receiver clients — receive only, no coins to register
+            for (int r = 0; r < receiverCount; r++)
+            {
+                var ri = r;
+                var logger = _loggerFactory.CreateLogger($"ReceiverClient_{r}");
+                var messagingApi = new KompaktorMessagingApi(logger, roundOperator, roundOperator);
+                var client = new KompaktorRoundClient(
+                    SecureRandom.Instance, Network, roundOperator, kompaktorRoundApiFactory,
+                    [
+                        new InteractivePaymentReceiverBehaviorTrait(receiverWallets[ri],
+                            messagingApi, sendersPerReceiver),
+                        new ConsolidationBehaviorTrait(),
+                        new SelfSendChangeBehaviorTrait(() => receiverWallets[ri].GetAddress().ScriptPubKey,
+                            TimeSpan.FromSeconds(90))
+                    ],
+                    receiverWallets[ri], logger);
+                allClients.Add(client);
+            }
+
+            // Sender clients — fund and pay
+            for (int s = 0; s < totalSenders; s++)
+            {
+                var si = s;
+                var logger = _loggerFactory.CreateLogger($"SenderClient_{s}");
+                var messagingApi = new KompaktorMessagingApi(logger, roundOperator, roundOperator);
+                var client = new KompaktorRoundClient(
+                    SecureRandom.Instance, Network, roundOperator, kompaktorRoundApiFactory,
+                    [
+                        new InteractivePaymentSenderBehaviorTrait(senderWallets[si], messagingApi),
+                        new ConsolidationBehaviorTrait(),
+                        new SelfSendChangeBehaviorTrait(() => senderWallets[si].GetAddress().ScriptPubKey,
+                            TimeSpan.FromSeconds(90))
+                    ],
+                    senderWallets[si], logger);
+                allClients.Add(client);
+            }
+
+            await Eventually(async () =>
+            {
+                foreach (var client in allClients)
+                {
+                    if (client.PhasesTask.IsFaulted || client.PhasesTask.IsCompleted)
+                        await client.PhasesTask;
+                }
+
+                Assert.Equal(totalSenders,
+                    roundEvents.Count(e => e is KompaktorRoundEventInputRegistered));
+                Assert.NotNull(roundEvents.SingleOrDefault(e =>
+                    e is KompaktorRoundEventStatusUpdate { Status: KompaktorStatus.OutputRegistration }));
+                Assert.NotNull(roundEvents.SingleOrDefault(e =>
+                    e is KompaktorRoundEventStatusUpdate { Status: KompaktorStatus.Signing }));
+                Assert.Equal(totalSenders,
+                    roundEvents.Count(e => e is KompaktorRoundEventSignaturePosted));
+                Assert.NotNull(roundEvents.SingleOrDefault(e =>
+                    e is KompaktorRoundEventStatusUpdate { Status: KompaktorStatus.Completed }));
+
+                var txid = allClients[0].Round.GetTransaction(Network).GetHash();
+                var tx = await RPC.GetRawTransactionAsync(txid);
+                foreach (var wallet in allWallets)
+                    wallet.AddTransaction(tx);
+
+                // --- KEY ASSERTION: Each receiver gets exactly 1 output ---
+                for (int r = 0; r < receiverCount; r++)
+                {
+                    var receiverScript = receiverAddresses[r];
+                    var receiverOutputs = tx.Outputs.Where(o => o.ScriptPubKey == receiverScript).ToList();
+                    phaseLog.LogInformation("[BATCH] Receiver_{Index}: {Count} outputs, total {Amount} BTC",
+                        r, receiverOutputs.Count, receiverOutputs.Sum(o => o.Value.ToDecimal(MoneyUnit.BTC)));
+
+                    Assert.Single(receiverOutputs);
+
+                    // Each receiver should have ~2 BTC worth (20 senders × 0.1 BTC, minus fees)
+                    var receivedAmount = receiverOutputs[0].Value.ToDecimal(MoneyUnit.BTC);
+                    Assert.True(receivedAmount > 1.9m,
+                        $"Receiver_{r} got {receivedAmount} BTC, expected ~2.0 BTC (20 × 0.1)");
+                }
+
+                // Verify all payments settled
+                foreach (var wallet in allWallets)
+                {
+                    Assert.Empty(await wallet.GetOutboundPendingPayments(true));
+                    Assert.Empty(await wallet.GetInboundPendingPayments(true));
+                }
+
+                phaseLog.LogInformation("[BATCH] Transaction: {Inputs} inputs, {Outputs} outputs",
+                    tx.Inputs.Count, tx.Outputs.Count);
+
+            }, 900_000); // 15 minutes
+
+            totalSw.Stop();
+            var finalOutputCount = roundEvents.Count(e => e is KompaktorRoundEventOutputRegistered);
+            var summary = new StringBuilder();
+            summary.AppendLine();
+            summary.AppendLine("╔══════════════════════════════════════════════════════════════╗");
+            summary.AppendLine("║       BATCHED RECEIVER SCALE TEST TIMING BREAKDOWN          ║");
+            summary.AppendLine("╠══════════════════════════════════════════════════════════════╣");
+
+            var phases = new[] { "InputRegistration", "OutputRegistration", "Signing", "Broadcasting", "Completed" };
+            TimeSpan prev = TimeSpan.Zero;
+            foreach (var phase in phases)
+            {
+                if (phaseTimestamps.TryGetValue(phase, out var ts))
+                {
+                    var duration = ts - prev;
+                    var pct = totalSw.Elapsed.TotalSeconds > 0 ? duration.TotalSeconds / totalSw.Elapsed.TotalSeconds * 100 : 0;
+                    summary.AppendLine($"║  {phase,-25} {duration.TotalSeconds,8:F1}s  ({pct,4:F0}%)          ║");
+                    prev = ts;
+                }
+            }
+
+            summary.AppendLine("╠══════════════════════════════════════════════════════════════╣");
+            summary.AppendLine($"║  Total elapsed              {totalSw.Elapsed.TotalSeconds,8:F1}s                       ║");
+            summary.AppendLine($"║  Senders                    {totalSenders,8}                        ║");
+            summary.AppendLine($"║  Receivers                  {receiverCount,8}                        ║");
+            summary.AppendLine($"║  Outputs registered         {finalOutputCount,8}                        ║");
+            summary.AppendLine($"║  Target: {receiverCount} receiver outputs + {totalSenders} sender change = {receiverCount + totalSenders} ideal  ║");
+            summary.AppendLine("╚══════════════════════════════════════════════════════════════╝");
+            phaseLog.LogInformation(summary.ToString());
+
+            foreach (var client in allClients)
+                client.Dispose();
+        }
+    }
+
     [Fact]
     public async Task CanDoInteractivePaymentsMultipleReceivers()
     {
