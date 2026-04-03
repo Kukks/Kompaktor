@@ -836,7 +836,7 @@ public class Test
             }
         }
 
-        // Capture receiver addresses for output counting
+        // Pre-compute receiver output addresses — used by both SelfSendChangeBehaviorTrait and assertions
         var receiverAddresses = receiverWallets
             .Select(w => w.GetAddress().ScriptPubKey)
             .ToList();
@@ -904,7 +904,7 @@ public class Test
                         new InteractivePaymentReceiverBehaviorTrait(receiverWallets[ri],
                             messagingApi, sendersPerReceiver),
                         new ConsolidationBehaviorTrait(),
-                        new SelfSendChangeBehaviorTrait(() => receiverWallets[ri].GetAddress().ScriptPubKey,
+                        new SelfSendChangeBehaviorTrait(() => receiverAddresses[ri],
                             TimeSpan.FromSeconds(90))
                     ],
                     receiverWallets[ri], logger);
