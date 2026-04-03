@@ -74,6 +74,7 @@ jobs:
             fallbackfee=0.0002
             maxtxfee=10
             txindex=1
+            rpcworkqueue=128
 
     steps:
       - uses: actions/checkout@v4
