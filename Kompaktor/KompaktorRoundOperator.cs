@@ -198,16 +198,6 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
             throw new KompaktorProtocolException(KompaktorProtocolErrorCode.InputAlreadyRegistered,
                 "Connection already confirmed");
 
-        // Re-validate UTXO is still unspent (double-spend detection)
-        var txOutStatus = await _rpcClient.GetTxOutAsync(outpoint.Hash, (int)outpoint.N);
-        if (txOutStatus is null)
-        {
-            _confirmedConnections.TryRemove(request.Secret, out _);
-            _prison?.Ban(outpoint, BanReason.DoubleSpend);
-            throw new KompaktorProtocolException(KompaktorProtocolErrorCode.InputNotValid,
-                "Input has been spent (double-spend detected)");
-        }
-
         _logger.LogInformation("Connection confirmed for {Outpoint}. Confirmed: {Count}/{Total}",
             outpoint, _confirmedConnections.Count, _registeredSecrets.Count);
 
