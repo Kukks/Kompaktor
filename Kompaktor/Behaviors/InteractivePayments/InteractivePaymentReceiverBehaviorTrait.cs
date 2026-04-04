@@ -32,7 +32,6 @@ public class InteractivePaymentReceiverBehaviorTrait : KompaktorClientBaseBehavi
     public override void Start(KompaktorRoundClient client)
     {
         base.Start(client);
-        Client.DoNotSignKillSwitches[this] = true;
         _ = StartListen();
     }
 
@@ -49,7 +48,7 @@ public class InteractivePaymentReceiverBehaviorTrait : KompaktorClientBaseBehavi
         switch (phase)
         {
             case KompaktorStatus.Signing:
-                // Release kill switch unconditionally — output phase is over
+                // Safety release — output phase is over, no more draining can occur
                 Client.DoNotSignKillSwitches[this] = false;
                 foreach (var interactivePendingPaymentReceiverFlow in _flows)
                 {
@@ -101,25 +100,22 @@ public class InteractivePaymentReceiverBehaviorTrait : KompaktorClientBaseBehavi
                     async creds =>
                     {
                         try { await ReissueReceivedCredentials(creds); }
-                        finally { Interlocked.Decrement(ref _pendingReissuances); }
+                        finally
+                        {
+                            if (Interlocked.Decrement(ref _pendingReissuances) == 0)
+                            {
+                                Logger.LogInformation("All in-flight reissuances completed, releasing kill switch");
+                                Client.DoNotSignKillSwitches[this] = false;
+                            }
+                        }
                     }, WaitUntilReady));
 
         if (pp.Count == 0)
-        {
-            Client.DoNotSignKillSwitches[this] = false;
             return;
-        }
-
-        // Stop listening well before the output phase ends so the kill switch
-        // can release and ReadyToSign can signal the coordinator in time.
-        var timeLeft = Client.Round.OutputPhaseEnd - DateTimeOffset.UtcNow;
-        var listenDeadline = TimeSpan.FromMilliseconds(Math.Max(0, timeLeft.TotalMilliseconds * 0.6));
-        using var listenCts = CancellationTokenSource.CreateLinkedTokenSource(_flowCts.Token);
-        listenCts.CancelAfter(listenDeadline);
 
         try
         {
-            await foreach (var msg in _kompaktorPeerCommunicationApi.Messages(true, listenCts.Token))
+            await foreach (var msg in _kompaktorPeerCommunicationApi.Messages(true, _flowCts.Token))
             {
                 if (msg.Length != 64 || !ECXOnlyPubKey.TryCreate(msg[..32], out var p1) ||
                     !pp.Remove(p1, out var flow))
@@ -133,6 +129,7 @@ public class InteractivePaymentReceiverBehaviorTrait : KompaktorClientBaseBehavi
                 if (await _inboundPaymentManager.Commit(flow.Payment.Id))
                 {
                     Interlocked.Increment(ref _pendingReissuances);
+                    Client.DoNotSignKillSwitches[this] = true;
                     _ = flow.Start(p2, _flowCts.Token);
                     _flows.Add(flow);
                     if (_flows.Count >= MaxConcurrentFlows)
@@ -147,18 +144,8 @@ public class InteractivePaymentReceiverBehaviorTrait : KompaktorClientBaseBehavi
         }
         catch (OperationCanceledException)
         {
-            // Listener cancelled — timeout or output phase ending
-            Logger.LogInformation("Payment listener stopped with {Unmatched} unmatched payments remaining", pp.Count);
+            // Listener cancelled — output phase ending
         }
-
-        // Wait for all in-flight reissuances to complete before releasing the kill switch
-        while (Volatile.Read(ref _pendingReissuances) > 0 && !_flowCts.IsCancellationRequested)
-        {
-            await Task.Delay(50, _flowCts.Token).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
-        }
-
-        Logger.LogInformation("All interactive payment reissuances completed, releasing kill switch");
-        Client.DoNotSignKillSwitches[this] = false;
     }
 
     private async Task<bool> WaitUntilReady()
