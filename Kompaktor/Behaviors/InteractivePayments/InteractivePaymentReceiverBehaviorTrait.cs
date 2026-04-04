@@ -99,6 +99,8 @@ public class InteractivePaymentReceiverBehaviorTrait : KompaktorClientBaseBehavi
                 payment => new InteractivePendingPaymentReceiverFlow(Logger, payment, _kompaktorPeerCommunicationApi,
                     async creds =>
                     {
+                        Interlocked.Increment(ref _pendingReissuances);
+                        Client.DoNotSignKillSwitches[this] = true;
                         try { await ReissueReceivedCredentials(creds); }
                         finally
                         {
@@ -128,8 +130,6 @@ public class InteractivePaymentReceiverBehaviorTrait : KompaktorClientBaseBehavi
 
                 if (await _inboundPaymentManager.Commit(flow.Payment.Id))
                 {
-                    Interlocked.Increment(ref _pendingReissuances);
-                    Client.DoNotSignKillSwitches[this] = true;
                     _ = flow.Start(p2, _flowCts.Token);
                     _flows.Add(flow);
                     if (_flows.Count >= MaxConcurrentFlows)
