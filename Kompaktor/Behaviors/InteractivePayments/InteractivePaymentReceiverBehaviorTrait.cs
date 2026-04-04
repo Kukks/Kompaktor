@@ -110,9 +110,16 @@ public class InteractivePaymentReceiverBehaviorTrait : KompaktorClientBaseBehavi
             return;
         }
 
+        // Stop listening well before the output phase ends so the kill switch
+        // can release and ReadyToSign can signal the coordinator in time.
+        var timeLeft = Client.Round.OutputPhaseEnd - DateTimeOffset.UtcNow;
+        var listenDeadline = TimeSpan.FromMilliseconds(Math.Max(0, timeLeft.TotalMilliseconds * 0.6));
+        using var listenCts = CancellationTokenSource.CreateLinkedTokenSource(_flowCts.Token);
+        listenCts.CancelAfter(listenDeadline);
+
         try
         {
-            await foreach (var msg in _kompaktorPeerCommunicationApi.Messages(true, _flowCts.Token))
+            await foreach (var msg in _kompaktorPeerCommunicationApi.Messages(true, listenCts.Token))
             {
                 if (msg.Length != 64 || !ECXOnlyPubKey.TryCreate(msg[..32], out var p1) ||
                     !pp.Remove(p1, out var flow))
@@ -140,7 +147,8 @@ public class InteractivePaymentReceiverBehaviorTrait : KompaktorClientBaseBehavi
         }
         catch (OperationCanceledException)
         {
-            // Listener cancelled — output phase ending
+            // Listener cancelled — timeout or output phase ending
+            Logger.LogInformation("Payment listener stopped with {Unmatched} unmatched payments remaining", pp.Count);
         }
 
         // Wait for all in-flight reissuances to complete before releasing the kill switch
