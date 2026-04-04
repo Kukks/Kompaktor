@@ -27,9 +27,12 @@ public class InteractivePaymentReceiverBehaviorTrait : KompaktorClientBaseBehavi
     }
 
 
+    private int _pendingReissuances;
+
     public override void Start(KompaktorRoundClient client)
     {
         base.Start(client);
+        Client.DoNotSignKillSwitches[this] = true;
         _ = StartListen();
     }
 
@@ -46,6 +49,8 @@ public class InteractivePaymentReceiverBehaviorTrait : KompaktorClientBaseBehavi
         switch (phase)
         {
             case KompaktorStatus.Signing:
+                // Release kill switch unconditionally — output phase is over
+                Client.DoNotSignKillSwitches[this] = false;
                 foreach (var interactivePendingPaymentReceiverFlow in _flows)
                 {
                     interactivePendingPaymentReceiverFlow.TxId = Client.GetTransaction().GetHash();
@@ -93,28 +98,59 @@ public class InteractivePaymentReceiverBehaviorTrait : KompaktorClientBaseBehavi
             .OfType<InteractiveReceiverPendingPayment>().ToDictionary(
                 payment => (XPubKey) payment.KompaktorKey!.Key.CreateXOnlyPubKey(),
                 payment => new InteractivePendingPaymentReceiverFlow(Logger, payment, _kompaktorPeerCommunicationApi,
-                    ReissueReceivedCredentials, WaitUntilReady));
-        await foreach (var msg in _kompaktorPeerCommunicationApi.Messages(true, _flowCts.Token))
+                    async creds =>
+                    {
+                        try { await ReissueReceivedCredentials(creds); }
+                        finally { Interlocked.Decrement(ref _pendingReissuances); }
+                    }, WaitUntilReady));
+
+        if (pp.Count == 0)
         {
-            if (msg.Length != 64 || !ECXOnlyPubKey.TryCreate(msg[..32], out var p1) ||
-                !pp.Remove(p1, out var flow))
-            {
-                continue;
-            }
+            Client.DoNotSignKillSwitches[this] = false;
+            return;
+        }
 
-            Logger.LogInformation($"Received message for intent of payment {flow.Payment.Id}");
-            var p2 = ECXOnlyPubKey.Create(msg[32..]);
-
-            if (await _inboundPaymentManager.Commit(flow.Payment.Id))
+        try
+        {
+            await foreach (var msg in _kompaktorPeerCommunicationApi.Messages(true, _flowCts.Token))
             {
-                _ = flow.Start(p2, _flowCts.Token);
-                _flows.Add(flow);
-                if (_flows.Count >= MaxConcurrentFlows)
+                if (msg.Length != 64 || !ECXOnlyPubKey.TryCreate(msg[..32], out var p1) ||
+                    !pp.Remove(p1, out var flow))
                 {
-                   break;
+                    continue;
                 }
+
+                Logger.LogInformation($"Received message for intent of payment {flow.Payment.Id}");
+                var p2 = ECXOnlyPubKey.Create(msg[32..]);
+
+                if (await _inboundPaymentManager.Commit(flow.Payment.Id))
+                {
+                    Interlocked.Increment(ref _pendingReissuances);
+                    _ = flow.Start(p2, _flowCts.Token);
+                    _flows.Add(flow);
+                    if (_flows.Count >= MaxConcurrentFlows)
+                    {
+                        break;
+                    }
+                }
+
+                if (pp.Count == 0)
+                    break;
             }
         }
+        catch (OperationCanceledException)
+        {
+            // Listener cancelled — output phase ending
+        }
+
+        // Wait for all in-flight reissuances to complete before releasing the kill switch
+        while (Volatile.Read(ref _pendingReissuances) > 0 && !_flowCts.IsCancellationRequested)
+        {
+            await Task.Delay(50, _flowCts.Token).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+        }
+
+        Logger.LogInformation("All interactive payment reissuances completed, releasing kill switch");
+        Client.DoNotSignKillSwitches[this] = false;
     }
 
     private async Task<bool> WaitUntilReady()
