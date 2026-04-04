@@ -203,6 +203,12 @@ public class KompaktorRoundManager : IDisposable
         return op;
     }
 
+    /// <summary>Gets all active round operators (not yet completed/removed).</summary>
+    public IReadOnlyList<KompaktorRoundOperator> GetActiveRoundOperators()
+    {
+        return _rounds.Values.ToList();
+    }
+
     /// <summary>Gets information about all active rounds.</summary>
     public object[] GetActiveRounds()
     {

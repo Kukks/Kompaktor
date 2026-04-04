@@ -1,6 +1,7 @@
 using Kompaktor.Models;
 using Kompaktor.Prison;
 using Kompaktor.Server;
+using Kompaktor.Server.Orchestration;
 using Kompaktor.JsonConverters;
 using NBitcoin;
 using NBitcoin.RPC;
@@ -39,16 +40,14 @@ builder.Services.AddSingleton<KompaktorRoundManager>(sp =>
         coordinatorOptions,
         sp.GetRequiredService<KompaktorPrison>()));
 
+// Round orchestration
+builder.Services.AddSingleton<IRoundSchedulingPolicy>(new DemandAdaptiveSchedulingPolicy());
+builder.Services.AddSingleton<KompaktorRoundOrchestrator>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<KompaktorRoundOrchestrator>());
+
 var app = builder.Build();
 
 // Map Kompaktor API endpoints
 app.MapKompaktorEndpoints();
-
-// Create initial round on startup
-app.Lifetime.ApplicationStarted.Register(() =>
-{
-    var manager = app.Services.GetRequiredService<KompaktorRoundManager>();
-    _ = manager.CreateRound();
-});
 
 app.Run();

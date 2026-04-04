@@ -1206,3 +1206,164 @@ public class BulletproofVsClassicalBenchmark
 }
 
 #endregion
+
+#region Round Orchestration Tests
+
+public class SchedulingPolicyTests
+{
+    [Fact]
+    public void IntervalPolicy_NoRegistrationRound_CreatesOne()
+    {
+        var policy = new Kompaktor.Server.Orchestration.IntervalSchedulingPolicy();
+        var ctx = new Kompaktor.Server.Orchestration.RoundOrchestrationContext
+        {
+            RoundsInRegistration = 0,
+            RoundsInProgress = 0,
+            TotalActiveRounds = 0,
+            MaxConcurrentRounds = 10,
+            TimeSinceLastRoundCreated = TimeSpan.MaxValue,
+            RoundInterval = TimeSpan.FromMinutes(5)
+        };
+        Assert.Equal(1, policy.EvaluateRoundCreation(ctx));
+    }
+
+    [Fact]
+    public void IntervalPolicy_RegistrationRoundExists_SkipsCreation()
+    {
+        var policy = new Kompaktor.Server.Orchestration.IntervalSchedulingPolicy();
+        var ctx = new Kompaktor.Server.Orchestration.RoundOrchestrationContext
+        {
+            RoundsInRegistration = 1,
+            TotalActiveRounds = 1,
+            MaxConcurrentRounds = 10,
+            TimeSinceLastRoundCreated = TimeSpan.FromMinutes(10),
+            RoundInterval = TimeSpan.FromMinutes(5)
+        };
+        Assert.Equal(0, policy.EvaluateRoundCreation(ctx));
+    }
+
+    [Fact]
+    public void IntervalPolicy_IntervalNotElapsed_SkipsCreation()
+    {
+        var policy = new Kompaktor.Server.Orchestration.IntervalSchedulingPolicy();
+        var ctx = new Kompaktor.Server.Orchestration.RoundOrchestrationContext
+        {
+            RoundsInRegistration = 0,
+            TotalActiveRounds = 0,
+            MaxConcurrentRounds = 10,
+            TimeSinceLastRoundCreated = TimeSpan.FromMinutes(1),
+            RoundInterval = TimeSpan.FromMinutes(5)
+        };
+        Assert.Equal(0, policy.EvaluateRoundCreation(ctx));
+    }
+
+    [Fact]
+    public void DemandPolicy_NoRegistrationRound_CreatesOne()
+    {
+        var policy = new Kompaktor.Server.Orchestration.DemandAdaptiveSchedulingPolicy();
+        var ctx = new Kompaktor.Server.Orchestration.RoundOrchestrationContext
+        {
+            RoundsInRegistration = 0,
+            TotalActiveRounds = 0,
+            MaxConcurrentRounds = 10,
+            TimeSinceLastRoundCreated = TimeSpan.MaxValue,
+            RoundInterval = TimeSpan.FromMinutes(5)
+        };
+        Assert.Equal(1, policy.EvaluateRoundCreation(ctx));
+    }
+
+    [Fact]
+    public void DemandPolicy_NearlyFullRound_CreatesAnother()
+    {
+        var policy = new Kompaktor.Server.Orchestration.DemandAdaptiveSchedulingPolicy();
+        var ctx = new Kompaktor.Server.Orchestration.RoundOrchestrationContext
+        {
+            RoundsInRegistration = 1,
+            NearlyFullRounds = 1,
+            TotalActiveRounds = 1,
+            MaxConcurrentRounds = 10,
+            TimeSinceLastRoundCreated = TimeSpan.FromMinutes(1),
+            RoundInterval = TimeSpan.FromMinutes(5)
+        };
+        Assert.Equal(1, policy.EvaluateRoundCreation(ctx));
+    }
+
+    [Fact]
+    public void DemandPolicy_HighFillRate_KeepsBuffer()
+    {
+        var policy = new Kompaktor.Server.Orchestration.DemandAdaptiveSchedulingPolicy();
+        var ctx = new Kompaktor.Server.Orchestration.RoundOrchestrationContext
+        {
+            RoundsInRegistration = 1,
+            NearlyFullRounds = 0,
+            TotalActiveRounds = 1,
+            MaxConcurrentRounds = 10,
+            RecentFillRate = 0.85,
+            TimeSinceLastRoundCreated = TimeSpan.FromMinutes(1),
+            RoundInterval = TimeSpan.FromMinutes(5)
+        };
+        Assert.Equal(1, policy.EvaluateRoundCreation(ctx));
+    }
+
+    [Fact]
+    public void DemandPolicy_LowDemand_SkipsCreation()
+    {
+        var policy = new Kompaktor.Server.Orchestration.DemandAdaptiveSchedulingPolicy();
+        var ctx = new Kompaktor.Server.Orchestration.RoundOrchestrationContext
+        {
+            RoundsInRegistration = 1,
+            NearlyFullRounds = 0,
+            TotalActiveRounds = 1,
+            MaxConcurrentRounds = 10,
+            RecentFillRate = 0.1,
+            RecentCompletedRounds = 5,
+            TimeSinceLastRoundCreated = TimeSpan.FromMinutes(1),
+            RoundInterval = TimeSpan.FromMinutes(5)
+        };
+        Assert.Equal(0, policy.EvaluateRoundCreation(ctx));
+    }
+}
+
+public class DemandTrackerTests
+{
+    [Fact]
+    public void EmptyTracker_ReturnsZeros()
+    {
+        var tracker = new Kompaktor.Server.Orchestration.DemandTracker();
+        Assert.Equal(0, tracker.AverageFillRate);
+        Assert.Equal(0, tracker.RecentCompletedCount);
+        Assert.Equal(0, tracker.RecentFailedCount);
+    }
+
+    [Fact]
+    public void RecordCompletion_TracksFillRate()
+    {
+        var tracker = new Kompaktor.Server.Orchestration.DemandTracker();
+        tracker.RecordCompletion("r1", 8, 10, true);
+        tracker.RecordCompletion("r2", 5, 10, true);
+        Assert.Equal(0.65, tracker.AverageFillRate, 2);
+        Assert.Equal(2, tracker.RecentCompletedCount);
+        Assert.Equal(0, tracker.RecentFailedCount);
+    }
+
+    [Fact]
+    public void RecordCompletion_TracksFailed()
+    {
+        var tracker = new Kompaktor.Server.Orchestration.DemandTracker();
+        tracker.RecordCompletion("r1", 3, 10, false);
+        Assert.Equal(0, tracker.RecentCompletedCount);
+        Assert.Equal(1, tracker.RecentFailedCount);
+    }
+
+    [Fact]
+    public void ExpiredRecords_ArePurged()
+    {
+        var tracker = new Kompaktor.Server.Orchestration.DemandTracker(TimeSpan.FromMilliseconds(1));
+        tracker.RecordCompletion("r1", 8, 10, true);
+        Thread.Sleep(10);
+        Assert.Equal(0, tracker.AverageFillRate);
+        Assert.Equal(0, tracker.RecentCompletedCount);
+    }
+}
+
+#endregion
