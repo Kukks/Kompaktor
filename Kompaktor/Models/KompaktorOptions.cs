@@ -13,6 +13,9 @@ public class KompaktorCoordinatorOptions
     /// <summary>Duration of the input registration phase.</summary>
     public TimeSpan InputTimeout { get; set; } = TimeSpan.FromSeconds(60);
 
+    /// <summary>Duration of the connection confirmation phase.</summary>
+    public TimeSpan ConnectionConfirmationTimeout { get; set; } = TimeSpan.FromSeconds(60);
+
     /// <summary>Duration of the output registration phase.</summary>
     public TimeSpan OutputTimeout { get; set; } = TimeSpan.FromSeconds(60);
 
@@ -65,6 +68,28 @@ public class KompaktorCoordinatorOptions
     /// If null, the round waits for the full InputTimeout before transitioning.
     /// </summary>
     public TimeSpan? InputRegistrationSoftTimeout { get; set; }
+
+    /// <summary>Allow P2WPKH (SegWit v0) inputs and outputs.</summary>
+    public bool AllowP2wpkh { get; set; } = true;
+
+    /// <summary>Allow P2TR (Taproot) inputs and outputs.</summary>
+    public bool AllowP2tr { get; set; } = true;
+
+    /// <summary>Allow P2PKH (legacy) outputs only.</summary>
+    public bool AllowP2pkhOutputs { get; set; } = false;
+
+    /// <summary>Allow P2SH outputs only.</summary>
+    public bool AllowP2shOutputs { get; set; } = false;
+
+    /// <summary>Allow P2WSH outputs only.</summary>
+    public bool AllowP2wshOutputs { get; set; } = false;
+
+    /// <summary>
+    /// Base amount for the round tiering system. Tiers are powers of 10 from this base.
+    /// For example, 0.1 BTC base creates tiers: 0.1, 1.0, 10.0 BTC.
+    /// If null, all rounds use the full input range (no tiering).
+    /// </summary>
+    public Money? MaxSuggestedAmountBase { get; set; }
 
     /// <summary>Maximum number of concurrent rounds.</summary>
     public int MaxConcurrentRounds { get; set; } = 10;

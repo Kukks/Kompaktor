@@ -177,6 +177,11 @@ public class LocalKompaktorApi : IKompaktorRoundApi
         return await _roundOperator.RegisterInput(quoteRequest);
     }
 
+    public async Task ConfirmConnection(ConfirmConnectionRequest request)
+    {
+        await _roundOperator.ConfirmConnection(request);
+    }
+
     public async Task<KompaktorRoundCredentialReissuanceResponse> ReissueCredentials(
         CredentialReissuanceRequest request)
     {

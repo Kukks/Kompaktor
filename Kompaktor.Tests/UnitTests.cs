@@ -175,10 +175,13 @@ public class KompaktorPrisonTests
 
     [Theory]
     [InlineData(BanReason.FailedToSign)]
+    [InlineData(BanReason.FailedToSignalReady)]
+    [InlineData(BanReason.FailedToConfirm)]
     [InlineData(BanReason.FailedToVerify)]
     [InlineData(BanReason.DoubleSpend)]
     [InlineData(BanReason.RepeatedFailure)]
     [InlineData(BanReason.BannedCoinReuse)]
+    [InlineData(BanReason.CoordinatorStabilitySafety)]
     public void AllBanReasons_ProduceBan(BanReason reason)
     {
         var prison = new KompaktorPrison();
@@ -501,7 +504,7 @@ public class RoundEventCreatedTests
 
         var evt = new KompaktorRoundEventCreated(
             roundId, feeRate,
-            TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30),
+            TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30),
             new IntRange(1, 10), new MoneyRange(Money.Satoshis(1000), Money.Coins(1)),
             new IntRange(1, 20), new MoneyRange(Money.Satoshis(500), Money.Coins(1)),
             creds);
@@ -518,16 +521,17 @@ public class RoundEventCreatedTests
         var creds = new Dictionary<CredentialType, CredentialConfiguration>();
         var evt = new KompaktorRoundEventCreated(
             "r1", new FeeRate(1m),
-            TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(20), TimeSpan.FromSeconds(30),
+            TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(15), TimeSpan.FromSeconds(20), TimeSpan.FromSeconds(30),
             new IntRange(1, 5), new MoneyRange(Money.Satoshis(100), Money.Coins(1)),
             new IntRange(1, 10), new MoneyRange(Money.Satoshis(50), Money.Coins(1)),
             creds);
 
-        var (roundId, feeRate, inputTimeout, outputTimeout, signingTimeout,
+        var (roundId, feeRate, inputTimeout, connectionConfirmationTimeout, outputTimeout, signingTimeout,
             inputCount, inputAmount, outputCount, outputAmount, credentials) = evt;
 
         Assert.Equal("r1", roundId);
         Assert.Equal(TimeSpan.FromSeconds(10), inputTimeout);
+        Assert.Equal(TimeSpan.FromSeconds(15), connectionConfirmationTimeout);
         Assert.Equal(TimeSpan.FromSeconds(20), outputTimeout);
         Assert.Equal(TimeSpan.FromSeconds(30), signingTimeout);
     }

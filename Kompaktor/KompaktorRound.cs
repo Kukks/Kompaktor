@@ -99,9 +99,14 @@ public class KompaktorRound : IDisposable
             .FirstOrDefault(e => e.Status > KompaktorStatus.InputRegistration)?.Timestamp ??
         RoundEventCreated.Timestamp + RoundEventCreated.InputTimeout;
 
+    public DateTimeOffset ConnectionConfirmationPhaseEnd =>
+        Events.OfType<KompaktorRoundEventStatusUpdate>()
+            .FirstOrDefault(e => e.Status > KompaktorStatus.ConnectionConfirmation)?.Timestamp ?? InputPhaseEnd +
+        RoundEventCreated.ConnectionConfirmationTimeout;
+
     public DateTimeOffset OutputPhaseEnd =>
         Events.OfType<KompaktorRoundEventStatusUpdate>()
-            .FirstOrDefault(e => e.Status > KompaktorStatus.OutputRegistration)?.Timestamp ?? InputPhaseEnd +
+            .FirstOrDefault(e => e.Status > KompaktorStatus.OutputRegistration)?.Timestamp ?? ConnectionConfirmationPhaseEnd +
         RoundEventCreated.OutputTimeout;
 
     public DateTimeOffset SigningPhaseEnd =>
@@ -110,6 +115,30 @@ public class KompaktorRound : IDisposable
 
     public byte[][] Messages =>
         Events.OfType<KompaktorRoundEventMessage>().Select(x => x.Request.Message).ToArray();
+
+    /// <summary>
+    /// Returns events since the given checkpoint ID (exclusive).
+    /// If checkpointId is null, returns all events.
+    /// </summary>
+    public IReadOnlyList<KompaktorRoundEvent> GetEventsSince(string? checkpointId)
+    {
+        var allEvents = Events.ToArray();
+        if (checkpointId is null)
+            return allEvents;
+
+        var found = false;
+        var result = new List<KompaktorRoundEvent>();
+        foreach (var evt in allEvents)
+        {
+            if (found)
+                result.Add(evt);
+            else if (evt.Id == checkpointId)
+                found = true;
+        }
+
+        // If checkpoint not found, return all events (client may have stale checkpoint)
+        return found ? result : allEvents;
+    }
 
     public virtual void Dispose()
     {

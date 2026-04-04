@@ -254,6 +254,9 @@ public class KompaktorRoundClient : IDisposable
 
                     Logger.LogInformation($"Finished coin registration. Registered {Identities.Count} identities");
                     break;
+                case KompaktorStatus.ConnectionConfirmation:
+                    await ConfirmConnections();
+                    break;
                 case KompaktorStatus.OutputRegistration:
                     Logger.LogInformation($"Starting output registration");
                     await StartOutputRegistration.InvokeIfNotNullAsync(this);
@@ -559,6 +562,33 @@ public class KompaktorRoundClient : IDisposable
     //         FailedOutputs.Add(txOut);
     //     }
     // }
+
+    private async Task ConfirmConnections()
+    {
+        var toConfirm = Identities
+            .Where(identity => identity.RegisteredInputs?.Any() is true && identity.Secret is not null)
+            .ToList();
+
+        if (toConfirm.Count == 0)
+        {
+            Logger.LogInformation("No connections to confirm");
+            return;
+        }
+
+        Logger.LogInformation($"Confirming {toConfirm.Count} connections");
+        await Task.WhenAll(toConfirm.Select(async identity =>
+        {
+            try
+            {
+                await identity.Api.ConfirmConnection(new ConfirmConnectionRequest(identity.Secret!));
+            }
+            catch (Exception e)
+            {
+                Logger.LogException($"Failed to confirm connection for {identity.Secret}", e);
+            }
+        }));
+        Logger.LogInformation("Finished confirming connections");
+    }
 
     private async Task RegisterCoins()
     {

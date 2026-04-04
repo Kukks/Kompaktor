@@ -45,6 +45,21 @@ public static class KompaktorEndpoints
             }
         });
 
+        group.MapPost("/confirm-connection", async (string roundId, ConfirmConnectionRequest request, KompaktorRoundManager manager) =>
+        {
+            var op = manager.GetOperator(roundId);
+            if (op is null) return Results.NotFound(new { error = "Round not found" });
+            try
+            {
+                await op.ConfirmConnection(request);
+                return Results.Ok();
+            }
+            catch (KompaktorProtocolException ex)
+            {
+                return Results.BadRequest(new { error = ex.Message, code = ex.ErrorCode.ToString() });
+            }
+        });
+
         group.MapPost("/reissue-credentials", async (string roundId, CredentialReissuanceRequest request, KompaktorRoundManager manager) =>
         {
             var op = manager.GetOperator(roundId);
@@ -126,17 +141,22 @@ public static class KompaktorEndpoints
             return Results.Ok(manager.GetActiveRounds());
         }).WithTags("Round Management");
 
-        app.MapGet("/api/round/{roundId}/status", (string roundId, KompaktorRoundManager manager) =>
+        app.MapGet("/api/round/{roundId}/status", (string roundId, string? checkpoint, KompaktorRoundManager manager) =>
         {
             var op = manager.GetOperator(roundId);
             if (op is null) return Results.NotFound(new { error = "Round not found" });
+
+            var events = op.GetEventsSince(checkpoint);
             return Results.Ok(new
             {
                 roundId,
                 status = op.Status.ToString(),
                 inputCount = op.Inputs.Count,
                 outputCount = op.Outputs.Count,
-                signatureCount = op.SignatureCount
+                signatureCount = op.SignatureCount,
+                events = events.Select(e => new { type = e.GetType().Name, id = e.Id, timestamp = e.Timestamp }),
+                isBlameRound = op.RoundEventCreated.IsBlameRound,
+                blameOf = op.RoundEventCreated.BlameOf
             });
         }).WithTags("Round Management");
     }

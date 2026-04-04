@@ -48,7 +48,7 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
         {
             _logger.LogInformation("Soft timeout reached and minimum inputs met ({InputCount}), transitioning early",
                 Inputs.Count);
-            await UpdateStatus(KompaktorStatus.OutputRegistration);
+            await UpdateStatus(KompaktorStatus.ConnectionConfirmation);
         }
         else if (Status == KompaktorStatus.OutputRegistration && NotReadyToSign.IsEmpty)
         {
@@ -60,6 +60,12 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
             await UpdateStatus(KompaktorStatus.Broadcasting);
         }
     }
+
+    /// <summary>
+    /// Fired when signing fails and a blame round should be created.
+    /// Contains the outpoints of participants who DID sign (honest participants).
+    /// </summary>
+    public event Func<string, HashSet<OutPoint>, Task>? BlameRoundRequested;
 
     public Dictionary<CredentialType, ICredentialIssuer> CredentialIssuers { get; private set; } = new();
 
@@ -102,6 +108,12 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
             throw new KompaktorProtocolException(KompaktorProtocolErrorCode.InputAlreadyRegistered,
                 "Coin already registered");
 
+        // Blame round: only whitelisted inputs allowed
+        if (RoundEventCreated is { IsBlameRound: true, BlameWhitelist: not null } &&
+            !RoundEventCreated.BlameWhitelist.Contains(txIn.PrevOut))
+            throw new KompaktorProtocolException(KompaktorProtocolErrorCode.InputNotWhitelisted,
+                "Input not whitelisted for this blame round");
+
         var txOutStatus = await _rpcClient.GetTxOutAsync(txIn.PrevOut.Hash, (int)txIn.PrevOut.N);
 
         if (txOutStatus is null or { Confirmations: < 1 } or { Confirmations: < 100, IsCoinBase: true })
@@ -143,6 +155,15 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
 
     public ConcurrentDictionary<string, OutPoint> NotReadyToSign { get; set; } = new();
 
+    /// <summary>Tracks which input registration secrets have confirmed their connection.</summary>
+    private readonly ConcurrentDictionary<string, OutPoint> _confirmedConnections = new();
+
+    /// <summary>
+    /// Maps secrets to their registered outpoints, populated during RegisterInput.
+    /// Used during ConnectionConfirmation to look up who needs to confirm.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, OutPoint> _registeredSecrets = new();
+
     public async Task<KompaktorRoundEventInputRegistered> RegisterInput(RegisterInputRequest request)
     {
         if (ActiveQuotes.Remove(request.Secret, out var quote))
@@ -153,11 +174,48 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
             var credentialsResponse = await CredentialIssuers[CredentialType.Amount]
                 .HandleRequestAsync(request.CredentialsRequest, _cts.Token);
             if (NotReadyToSign.TryAdd(request.Secret, quote.coin.Outpoint))
+            {
+                _registeredSecrets[request.Secret] = quote.coin.Outpoint;
                 return await AddEvent(new KompaktorRoundEventInputRegistered(quote.quoteRequest, credentialsResponse, quote.coin));
+            }
         }
 
         throw new KompaktorProtocolException(KompaktorProtocolErrorCode.InvalidQuote,
             "Invalid quote");
+    }
+
+    public async Task ConfirmConnection(ConfirmConnectionRequest request)
+    {
+        if (Status != KompaktorStatus.ConnectionConfirmation)
+            throw new KompaktorProtocolException(KompaktorProtocolErrorCode.WrongPhase,
+                "Round is not in connection confirmation phase");
+
+        if (!_registeredSecrets.TryGetValue(request.Secret, out var outpoint))
+            throw new KompaktorProtocolException(KompaktorProtocolErrorCode.SecretNotFound,
+                "Secret not found");
+
+        if (!_confirmedConnections.TryAdd(request.Secret, outpoint))
+            throw new KompaktorProtocolException(KompaktorProtocolErrorCode.InputAlreadyRegistered,
+                "Connection already confirmed");
+
+        // Re-validate UTXO is still unspent (double-spend detection)
+        var txOutStatus = await _rpcClient.GetTxOutAsync(outpoint.Hash, (int)outpoint.N);
+        if (txOutStatus is null)
+        {
+            _confirmedConnections.TryRemove(request.Secret, out _);
+            _prison?.Ban(outpoint, BanReason.DoubleSpend);
+            throw new KompaktorProtocolException(KompaktorProtocolErrorCode.InputNotValid,
+                "Input has been spent (double-spend detected)");
+        }
+
+        _logger.LogInformation("Connection confirmed for {Outpoint}. Confirmed: {Count}/{Total}",
+            outpoint, _confirmedConnections.Count, _registeredSecrets.Count);
+
+        // Check if all inputs confirmed — transition early
+        if (_confirmedConnections.Count == _registeredSecrets.Count)
+        {
+            await UpdateStatus(KompaktorStatus.OutputRegistration);
+        }
     }
 
     protected override Task<T> AddEvent<T>(T @event)
@@ -327,7 +385,7 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
                             {
                                 _logger.LogInformation("Minimum inputs met at soft timeout ({InputCount}), transitioning early",
                                     Inputs.Count);
-                                await UpdateStatus(KompaktorStatus.OutputRegistration);
+                                await UpdateStatus(KompaktorStatus.ConnectionConfirmation);
                             }
                             // Otherwise, HandleNewEvents will check on each subsequent InputRegistered
                         }
@@ -351,10 +409,67 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
                         }
                         _logger.LogDebug("Input registration completed with {InputCount} inputs and {QuoteCount} remaining quotes",
                             Inputs.Count, ActiveQuotes.Count);
-                        await UpdateStatus(KompaktorStatus.OutputRegistration);
+                        await UpdateStatus(KompaktorStatus.ConnectionConfirmation);
                     }
                     catch (OperationCanceledException) { }
                     catch (Exception e) { _logger.LogException("Input phase timeout handler failed", e); }
+                });
+                break;
+
+            case KompaktorStatus.ConnectionConfirmation:
+                _logger.LogDebug("Connection confirmation started (expires in {Timeout})", created.ConnectionConfirmationTimeout);
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await Task.Delay(created.ConnectionConfirmationTimeout, _cts.Token);
+                        if (Status != KompaktorStatus.ConnectionConfirmation) return;
+
+                        // Remove unconfirmed inputs and ban them
+                        var unconfirmed = _registeredSecrets
+                            .Where(kvp => !_confirmedConnections.ContainsKey(kvp.Key))
+                            .Select(kvp => kvp.Value).ToList();
+
+                        if (unconfirmed.Count > 0 && _prison is not null)
+                        {
+                            // Safety valve: if too many failed, assume coordinator issue
+                            if (unconfirmed.Count > _registeredSecrets.Count / 2)
+                            {
+                                _logger.LogWarning("Too many unconfirmed inputs ({Unconfirmed}/{Total}), applying light safety ban",
+                                    unconfirmed.Count, _registeredSecrets.Count);
+                                foreach (var outpoint in unconfirmed)
+                                    _prison.Ban(outpoint, BanReason.CoordinatorStabilitySafety);
+                            }
+                            else
+                            {
+                                _logger.LogWarning("Banning {Count} inputs that failed to confirm connection", unconfirmed.Count);
+                                foreach (var outpoint in unconfirmed)
+                                    _prison.Ban(outpoint, BanReason.FailedToConfirm);
+                            }
+                        }
+
+                        // Remove unconfirmed from NotReadyToSign (they can't participate)
+                        var unconfirmedSet = unconfirmed.ToHashSet();
+                        foreach (var kvp in NotReadyToSign)
+                        {
+                            if (unconfirmedSet.Contains(kvp.Value))
+                                NotReadyToSign.TryRemove(kvp.Key, out _);
+                        }
+
+                        var confirmedCount = _confirmedConnections.Count;
+                        if (!created.InputCount.Contains(confirmedCount))
+                        {
+                            _logger.LogWarning("Not enough confirmed inputs ({Confirmed}), round failing", confirmedCount);
+                            await UpdateStatus(KompaktorStatus.Failed);
+                            return;
+                        }
+
+                        _logger.LogInformation("Connection confirmation completed: {Confirmed}/{Total} inputs confirmed",
+                            confirmedCount, _registeredSecrets.Count);
+                        await UpdateStatus(KompaktorStatus.OutputRegistration);
+                    }
+                    catch (OperationCanceledException) { }
+                    catch (Exception e) { _logger.LogException("Connection confirmation timeout handler failed", e); }
                 });
                 break;
 
@@ -366,15 +481,24 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
                     {
                         await Task.Delay(created.OutputTimeout, _cts.Token);
                         if (Status != KompaktorStatus.OutputRegistration) return;
+
+                        // Fast-signing mode: if some participants didn't signal ready,
+                        // ban them with lighter penalty and proceed if enough remain
+                        if (!NotReadyToSign.IsEmpty && _prison is not null)
+                        {
+                            var notReadyOutpoints = NotReadyToSign.Values.ToList();
+                            _logger.LogWarning("Fast-signing: {Count} inputs did not signal ready, applying light ban",
+                                notReadyOutpoints.Count);
+                            foreach (var outpoint in notReadyOutpoints)
+                                _prison.Ban(outpoint, BanReason.FailedToSignalReady);
+
+                            // Remove them so the round can proceed
+                            NotReadyToSign.Clear();
+                        }
+
                         if (!created.OutputCount.Contains(Outputs.Count))
                         {
                             _logger.LogDebug("Output registration failed due to output count not met");
-                            await UpdateStatus(KompaktorStatus.Failed);
-                            return;
-                        }
-                        if (!NotReadyToSign.IsEmpty)
-                        {
-                            _logger.LogDebug("Output registration failed due to not all inputs signalled ready");
                             await UpdateStatus(KompaktorStatus.Failed);
                             return;
                         }
@@ -393,15 +517,24 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
                         await Task.Delay(created.SigningTimeout, _cts.Token);
                         if (Status != KompaktorStatus.Signing) return;
 
+                        var signedOutpoints = Events.OfType<KompaktorRoundEventSignaturePosted>()
+                            .Select(s => s.Request.OutPoint).ToHashSet();
+                        var disruptors = Inputs
+                            .Where(c => !signedOutpoints.Contains(c.Outpoint))
+                            .Select(c => c.Outpoint).ToList();
+
                         // Ban coins that didn't sign (disruptors)
-                        if (_prison is not null)
+                        if (_prison is not null && disruptors.Count > 0)
                         {
-                            var signedOutpoints = Events.OfType<KompaktorRoundEventSignaturePosted>()
-                                .Select(s => s.Request.OutPoint).ToHashSet();
-                            var disruptors = Inputs
-                                .Where(c => !signedOutpoints.Contains(c.Outpoint))
-                                .Select(c => c.Outpoint).ToList();
-                            if (disruptors.Count > 0)
+                            // Safety valve: if too many failed, assume coordinator issue
+                            if (disruptors.Count > Inputs.Count / 2)
+                            {
+                                _logger.LogWarning("Too many signing failures ({Disruptors}/{Total}), applying light safety ban",
+                                    disruptors.Count, Inputs.Count);
+                                foreach (var outpoint in disruptors)
+                                    _prison.Ban(outpoint, BanReason.CoordinatorStabilitySafety);
+                            }
+                            else
                             {
                                 _logger.LogWarning("Banning {Count} disruptors that failed to sign", disruptors.Count);
                                 _prison.BanDisruptors(disruptors);
@@ -409,6 +542,19 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
                         }
 
                         await UpdateStatus(KompaktorStatus.Failed);
+
+                        // Request blame round if enough honest participants remain
+                        var minForBlame = Math.Max(created.InputCount.Min, (int)(created.InputCount.Max * 0.4));
+                        if (signedOutpoints.Count >= minForBlame && BlameRoundRequested is not null)
+                        {
+                            _logger.LogInformation("Requesting blame round with {Count} honest participants", signedOutpoints.Count);
+                            // Filter out any currently banned outpoints from the whitelist
+                            var whitelist = _prison is not null
+                                ? signedOutpoints.Where(o => !_prison.IsBanned(o)).ToHashSet()
+                                : signedOutpoints;
+                            if (whitelist.Count >= minForBlame)
+                                await BlameRoundRequested(created.RoundId, whitelist);
+                        }
                     }
                     catch (OperationCanceledException) { }
                     catch (Exception e) { _logger.LogException("Signing phase timeout handler failed", e); }

@@ -45,6 +45,11 @@ public class HttpKompaktorRoundApi : IKompaktorRoundApi, IDisposable
         return await PostAsync<KompaktorRoundEventInputRegistered>($"/api/round/{_roundId}/register-input", request);
     }
 
+    public async Task ConfirmConnection(ConfirmConnectionRequest request)
+    {
+        await PostAsync($"/api/round/{_roundId}/confirm-connection", request);
+    }
+
     public async Task<KompaktorRoundCredentialReissuanceResponse> ReissueCredentials(CredentialReissuanceRequest request)
     {
         return await PostAsync<KompaktorRoundCredentialReissuanceResponse>($"/api/round/{_roundId}/reissue-credentials", request);

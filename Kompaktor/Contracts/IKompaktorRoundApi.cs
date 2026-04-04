@@ -9,6 +9,7 @@ public interface IKompaktorRoundApi
     Task<KompaktorRoundEventMessage> SendMessage(MessageRequest request);
     Task<InputRegistrationQuoteResponse> PreRegisterInput(RegisterInputQuoteRequest quoteRequest);
     Task<KompaktorRoundEventInputRegistered> RegisterInput(RegisterInputRequest quoteRequest);
+    Task ConfirmConnection(ConfirmConnectionRequest request);
     Task<KompaktorRoundCredentialReissuanceResponse> ReissueCredentials(CredentialReissuanceRequest request);
     Task<KompaktorRoundEventOutputRegistered> RegisterOutput(RegisterOutputRequest request);
     Task<KompaktorRoundEventSignaturePosted> Sign(SignRequest request);

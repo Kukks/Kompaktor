@@ -11,6 +11,12 @@ public enum BanReason
     /// <summary>Failed to sign during signing phase, disrupting the round.</summary>
     FailedToSign,
 
+    /// <summary>Failed to signal ready to sign during output registration phase (lighter penalty — hardware wallets may be slow).</summary>
+    FailedToSignalReady,
+
+    /// <summary>Failed to confirm connection after input registration.</summary>
+    FailedToConfirm,
+
     /// <summary>Failed ownership proof verification.</summary>
     FailedToVerify,
 
@@ -21,7 +27,10 @@ public enum BanReason
     RepeatedFailure,
 
     /// <summary>Attempted to register an already banned coin.</summary>
-    BannedCoinReuse
+    BannedCoinReuse,
+
+    /// <summary>Coordinator stability safety — too many simultaneous offenders suggest coordinator fault.</summary>
+    CoordinatorStabilitySafety
 }
 
 /// <summary>
@@ -31,6 +40,12 @@ public class PrisonOptions
 {
     /// <summary>Base ban duration for failing to sign.</summary>
     public TimeSpan FailedToSignDuration { get; set; } = TimeSpan.FromHours(1);
+
+    /// <summary>Base ban duration for failing to signal ready (lighter — hardware wallets).</summary>
+    public TimeSpan FailedToSignalReadyDuration { get; set; } = TimeSpan.FromMinutes(10);
+
+    /// <summary>Base ban duration for failing to confirm connection.</summary>
+    public TimeSpan FailedToConfirmDuration { get; set; } = TimeSpan.FromMinutes(20);
 
     /// <summary>Base ban duration for failed ownership verification.</summary>
     public TimeSpan FailedToVerifyDuration { get; set; } = TimeSpan.FromHours(24);
@@ -109,10 +124,13 @@ public class KompaktorPrison
         var baseDuration = reason switch
         {
             BanReason.FailedToSign => _options.FailedToSignDuration,
+            BanReason.FailedToSignalReady => _options.FailedToSignalReadyDuration,
+            BanReason.FailedToConfirm => _options.FailedToConfirmDuration,
             BanReason.FailedToVerify => _options.FailedToVerifyDuration,
             BanReason.DoubleSpend => _options.DoubleSpendDuration,
             BanReason.RepeatedFailure => _options.RepeatedFailureDuration,
             BanReason.BannedCoinReuse => _options.FailedToVerifyDuration,
+            BanReason.CoordinatorStabilitySafety => _options.FailedToConfirmDuration,
             _ => _options.RepeatedFailureDuration
         };
 
@@ -149,6 +167,28 @@ public class KompaktorPrison
     /// </summary>
     public IReadOnlyCollection<BanRecord> ActiveBans =>
         _bannedCoins.Values.Where(r => r.ExpiresAt > DateTimeOffset.UtcNow).ToList();
+
+    /// <summary>
+    /// Inherits punishment from an ancestor outpoint to a descendant.
+    /// The descendant receives half the remaining ban duration of the ancestor.
+    /// Used to prevent ban evasion by spending a banned UTXO.
+    /// </summary>
+    public BanRecord? InheritPunishment(OutPoint ancestor, OutPoint descendant)
+    {
+        var ancestorBan = GetBan(ancestor);
+        if (ancestorBan is null) return null;
+
+        var remaining = ancestorBan.ExpiresAt - DateTimeOffset.UtcNow;
+        if (remaining <= TimeSpan.Zero) return null;
+
+        var inheritedDuration = TimeSpan.FromTicks(remaining.Ticks / 2);
+        if (inheritedDuration < TimeSpan.FromMinutes(1)) return null; // Not worth inheriting
+
+        var now = DateTimeOffset.UtcNow;
+        var record = new BanRecord(descendant, BanReason.BannedCoinReuse, now, now + inheritedDuration, 1);
+        _bannedCoins[descendant] = record;
+        return record;
+    }
 
     /// <summary>
     /// Removes expired bans. Call periodically to prevent memory growth.

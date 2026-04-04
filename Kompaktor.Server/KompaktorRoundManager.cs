@@ -59,6 +59,7 @@ public class KompaktorRoundManager : IDisposable
             roundId,
             _options.FeeRate,
             _options.InputTimeout,
+            _options.ConnectionConfirmationTimeout,
             _options.OutputTimeout,
             _options.SigningTimeout,
             new IntRange(_options.MinInputCount, _options.MaxInputCount),
@@ -94,8 +95,104 @@ public class KompaktorRoundManager : IDisposable
             }
         };
 
+        // Blame round creation on signing failure
+        op.BlameRoundRequested += async (parentRoundId, whitelist) =>
+        {
+            try
+            {
+                var blameRoundId = await CreateBlameRound(parentRoundId, whitelist);
+                logger.LogInformation("Blame round {BlameRoundId} created from {ParentRoundId} with {Count} whitelisted inputs",
+                    blameRoundId, parentRoundId, whitelist.Count);
+            }
+            catch (Exception e)
+            {
+                logger.LogError(e, "Failed to create blame round from {ParentRoundId}", parentRoundId);
+            }
+        };
+
         await op.Start(created, issuers);
         logger.LogInformation("Round {RoundId} created", roundId);
+        return roundId;
+    }
+
+    /// <summary>Creates a blame round from a failed parent round with a whitelist of honest participants.</summary>
+    public async Task<string> CreateBlameRound(string parentRoundId, HashSet<OutPoint> whitelist)
+    {
+        var roundId = Guid.NewGuid().ToString();
+        var logger = _loggerFactory.CreateLogger($"BlameRound-{roundId[..8]}");
+        var op = new KompaktorRoundOperator(_network, _rpcClient, _random, logger, _prison);
+
+        var issuerKey = new CredentialIssuerSecretKey(_random);
+        var k = _options.CredentialCount;
+        var useBp = _options.UseBulletproofs;
+        var issuer = CredentialType.Amount.CreateIssuer(issuerKey, _random, k, useBp);
+        var issuers = new Dictionary<CredentialType, ICredentialIssuer>
+        {
+            { CredentialType.Amount, issuer }
+        };
+
+        // Blame rounds have shorter input registration (3 min) and same output/signing timeouts
+        var blameInputTimeout = TimeSpan.FromMinutes(3);
+        var minInputCount = Math.Max(1, (int)(whitelist.Count * 0.4));
+
+        var created = new KompaktorRoundEventCreated(
+            roundId,
+            _options.FeeRate,
+            blameInputTimeout,
+            _options.ConnectionConfirmationTimeout,
+            _options.OutputTimeout,
+            _options.SigningTimeout,
+            new IntRange(minInputCount, whitelist.Count),
+            new MoneyRange(_options.MinInputAmount, _options.MaxInputAmount),
+            new IntRange(_options.MinOutputCount, _options.MaxOutputCount),
+            new MoneyRange(_options.MinOutputAmount, _options.MaxOutputAmount),
+            new Dictionary<CredentialType, CredentialConfiguration>
+            {
+                {
+                    CredentialType.Amount,
+                    new CredentialConfiguration(_options.MaxCredentialValue, new IntRange(k, k), new IntRange(k, k),
+                        issuerKey.ComputeCredentialIssuerParameters(), useBp)
+                }
+            },
+            _options.InputRegistrationSoftTimeout)
+        {
+            BlameOf = parentRoundId,
+            BlameWhitelist = whitelist
+        };
+
+        _rounds[roundId] = op;
+
+        // Clean up completed/failed blame rounds
+        op.NewEvent += async (sender, evt) =>
+        {
+            if (evt is KompaktorRoundEventStatusUpdate status &&
+                status.Status is KompaktorStatus.Completed or KompaktorStatus.Failed)
+            {
+                _ = Task.Run(async () =>
+                {
+                    await Task.Delay(TimeSpan.FromMinutes(5));
+                    if (_rounds.TryRemove(roundId, out var r))
+                        r.Dispose();
+                });
+            }
+        };
+
+        // Blame rounds can also trigger further blame rounds
+        op.BlameRoundRequested += async (blameParentId, blameWhitelist) =>
+        {
+            try
+            {
+                await CreateBlameRound(blameParentId, blameWhitelist);
+            }
+            catch (Exception e)
+            {
+                logger.LogError(e, "Failed to create nested blame round from {ParentRoundId}", blameParentId);
+            }
+        };
+
+        await op.Start(created, issuers);
+        logger.LogInformation("Blame round {RoundId} created from parent {ParentRoundId} with {WhitelistCount} whitelisted inputs (min: {MinInputs})",
+            roundId, parentRoundId, whitelist.Count, minInputCount);
         return roundId;
     }
 
