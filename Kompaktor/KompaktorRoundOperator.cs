@@ -420,7 +420,16 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
                 {
                     try
                     {
-                        var result = await _rpcClient.SendRawTransactionAsync(GetTransaction(_network));
+                        var tx = GetTransaction(_network);
+                        var fee = tx.GetFee(Inputs.ToArray());
+                        if (fee > Money.Coins(0.01m))
+                            _logger.LogWarning("High transaction fee detected: {Fee} on {Inputs} inputs / {Outputs} outputs",
+                                fee, Inputs.Count, tx.Outputs.Count);
+                        // Pass maxfeerate=0 to skip the per-kVB fee rate check;
+                        // the node's -maxtxfee still caps the absolute fee.
+                        var resp = await _rpcClient.SendCommandAsync("sendrawtransaction", tx.ToHex(), 0);
+                        resp.ThrowIfError();
+                        var result = uint256.Parse(resp.Result.ToString());
                         if (Status != KompaktorStatus.Broadcasting) return;
                         await UpdateStatus(result is not null ? KompaktorStatus.Completed : KompaktorStatus.Failed);
                     }
