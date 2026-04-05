@@ -99,14 +99,9 @@ public class KompaktorRound : IDisposable
             .FirstOrDefault(e => e.Status > KompaktorStatus.InputRegistration)?.Timestamp ??
         RoundEventCreated.Timestamp + RoundEventCreated.InputTimeout;
 
-    public DateTimeOffset ConnectionConfirmationPhaseEnd =>
-        Events.OfType<KompaktorRoundEventStatusUpdate>()
-            .FirstOrDefault(e => e.Status > KompaktorStatus.ConnectionConfirmation)?.Timestamp ?? InputPhaseEnd +
-        RoundEventCreated.ConnectionConfirmationTimeout;
-
     public DateTimeOffset OutputPhaseEnd =>
         Events.OfType<KompaktorRoundEventStatusUpdate>()
-            .FirstOrDefault(e => e.Status > KompaktorStatus.OutputRegistration)?.Timestamp ?? ConnectionConfirmationPhaseEnd +
+            .FirstOrDefault(e => e.Status > KompaktorStatus.OutputRegistration)?.Timestamp ?? InputPhaseEnd +
         RoundEventCreated.OutputTimeout;
 
     public DateTimeOffset SigningPhaseEnd =>

@@ -16,7 +16,6 @@ public static class RoundHasher
         DateTimeOffset startTime,
         FeeRate feeRate,
         TimeSpan inputTimeout,
-        TimeSpan connectionConfirmationTimeout,
         TimeSpan outputTimeout,
         TimeSpan signingTimeout,
         IntRange inputCount,
@@ -31,7 +30,6 @@ public static class RoundHasher
         sb.Append(startTime.ToUnixTimeMilliseconds());
         sb.Append(feeRate.FeePerK.Satoshi);
         sb.Append(inputTimeout.Ticks);
-        sb.Append(connectionConfirmationTimeout.Ticks);
         sb.Append(outputTimeout.Ticks);
         sb.Append(signingTimeout.Ticks);
         sb.Append(inputCount.Min).Append(inputCount.Max);

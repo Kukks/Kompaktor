@@ -253,9 +253,8 @@ public class KompaktorRoundClient : IDisposable
                     await FinishedCoinRegistration.InvokeIfNotNullAsync(this);
 
                     Logger.LogInformation($"Finished coin registration. Registered {Identities.Count} identities");
-                    break;
-                case KompaktorStatus.ConnectionConfirmation:
-                    await ConfirmConnections();
+                    // Establish persistent connections for all registered inputs
+                    ConnectRegisteredInputs();
                     break;
                 case KompaktorStatus.OutputRegistration:
                     Logger.LogInformation($"Starting output registration");
@@ -563,31 +562,34 @@ public class KompaktorRoundClient : IDisposable
     //     }
     // }
 
-    private async Task ConfirmConnections()
+    /// <summary>
+    /// Establishes persistent connections for all identities that registered inputs.
+    /// The connection stays open until the round completes or the client disposes.
+    /// </summary>
+    private void ConnectRegisteredInputs()
     {
-        var toConfirm = Identities
+        var toConnect = Identities
             .Where(identity => identity.RegisteredInputs?.Any() is true && identity.Secret is not null)
             .ToList();
 
-        if (toConfirm.Count == 0)
+        if (toConnect.Count == 0)
         {
-            Logger.LogInformation("No connections to confirm");
+            Logger.LogInformation("No connections to establish (no registered inputs)");
             return;
         }
 
-        Logger.LogInformation($"Confirming {toConfirm.Count} connections");
-        await Task.WhenAll(toConfirm.Select(async identity =>
+        foreach (var identity in toConnect)
         {
             try
             {
-                await identity.Api.ConfirmConnection(new ConfirmConnectionRequest(identity.Secret!));
+                identity.Api.Connect(identity.Secret!);
             }
             catch (Exception e)
             {
-                Logger.LogException($"Failed to confirm connection for {identity.Secret}", e);
+                Logger.LogException($"Failed to connect for {identity.Secret}", e);
             }
-        }));
-        Logger.LogInformation("Finished confirming connections");
+        }
+        Logger.LogInformation($"Established {toConnect.Count} persistent connections");
     }
 
     private async Task RegisterCoins()

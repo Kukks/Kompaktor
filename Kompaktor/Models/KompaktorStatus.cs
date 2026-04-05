@@ -6,7 +6,6 @@ namespace Kompaktor.Models;
 public enum KompaktorStatus
 {
     InputRegistration,
-    ConnectionConfirmation,
     OutputRegistration,
     Signing,
     Broadcasting,

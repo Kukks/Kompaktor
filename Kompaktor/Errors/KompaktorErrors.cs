@@ -44,8 +44,7 @@ public enum KompaktorProtocolErrorCode
 	// Ready to sign errors
 	SecretNotFound,
 
-	// Connection confirmation errors
-	InputNotConfirmed,
+	// Blame round errors
 	InputNotWhitelisted,
 
 	// Abuse prevention

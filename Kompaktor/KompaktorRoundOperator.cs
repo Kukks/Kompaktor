@@ -48,7 +48,7 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
         {
             _logger.LogInformation("Soft timeout reached and minimum inputs met ({InputCount}), transitioning early",
                 Inputs.Count);
-            await UpdateStatus(KompaktorStatus.ConnectionConfirmation);
+            await UpdateStatus(KompaktorStatus.OutputRegistration);
         }
         else if (Status == KompaktorStatus.OutputRegistration && NotReadyToSign.IsEmpty)
         {
@@ -155,14 +155,12 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
 
     public ConcurrentDictionary<string, OutPoint> NotReadyToSign { get; set; } = new();
 
-    /// <summary>Tracks which input registration secrets have confirmed their connection.</summary>
-    private readonly ConcurrentDictionary<string, OutPoint> _confirmedConnections = new();
-
     /// <summary>
-    /// Maps secrets to their registered outpoints, populated during RegisterInput.
-    /// Used during ConnectionConfirmation to look up who needs to confirm.
+    /// Tracks which input secrets have an active persistent connection (WebSocket or in-process).
+    /// Populated during RegisterInput, used at phase transitions to prune disconnected inputs.
+    /// Key = secret, Value = outpoint.
     /// </summary>
-    private readonly ConcurrentDictionary<string, OutPoint> _registeredSecrets = new();
+    private readonly ConcurrentDictionary<string, OutPoint> _connectedSecrets = new();
 
     public async Task<KompaktorRoundEventInputRegistered> RegisterInput(RegisterInputRequest request)
     {
@@ -175,7 +173,6 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
                 .HandleRequestAsync(request.CredentialsRequest, _cts.Token);
             if (NotReadyToSign.TryAdd(request.Secret, quote.coin.Outpoint))
             {
-                _registeredSecrets[request.Secret] = quote.coin.Outpoint;
                 return await AddEvent(new KompaktorRoundEventInputRegistered(quote.quoteRequest, credentialsResponse, quote.coin));
             }
         }
@@ -184,28 +181,70 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
             "Invalid quote");
     }
 
-    public async Task ConfirmConnection(ConfirmConnectionRequest request)
+    /// <summary>
+    /// Marks a secret as having an active persistent connection.
+    /// Called when a client establishes a WebSocket (or in-process equivalent).
+    /// The secret must match one used during RegisterInput.
+    /// </summary>
+    public bool Connect(string secret)
     {
-        if (Status != KompaktorStatus.ConnectionConfirmation)
-            throw new KompaktorProtocolException(KompaktorProtocolErrorCode.WrongPhase,
-                "Round is not in connection confirmation phase");
+        if (!NotReadyToSign.ContainsKey(secret))
+            return false;
+        var outpoint = NotReadyToSign[secret];
+        _connectedSecrets[secret] = outpoint;
+        _logger.LogDebug("Connection opened for {Outpoint}. Connected: {Count}",
+            outpoint, _connectedSecrets.Count);
+        return true;
+    }
 
-        if (!_registeredSecrets.TryGetValue(request.Secret, out var outpoint))
-            throw new KompaktorProtocolException(KompaktorProtocolErrorCode.SecretNotFound,
-                "Secret not found");
+    /// <summary>
+    /// Marks a secret as disconnected.
+    /// Called when the client's WebSocket closes.
+    /// The client may reconnect later — pruning only happens at phase transitions.
+    /// </summary>
+    public void Disconnect(string secret)
+    {
+        if (_connectedSecrets.TryRemove(secret, out var outpoint))
+            _logger.LogDebug("Connection closed for {Outpoint}. Connected: {Count}",
+                outpoint, _connectedSecrets.Count);
+    }
 
-        if (!_confirmedConnections.TryAdd(request.Secret, outpoint))
-            throw new KompaktorProtocolException(KompaktorProtocolErrorCode.InputAlreadyRegistered,
-                "Connection already confirmed");
+    /// <summary>
+    /// Removes inputs that have no active connection and bans them.
+    /// Called at phase transitions (e.g., InputRegistration → OutputRegistration).
+    /// Returns the number of inputs pruned.
+    /// </summary>
+    private int PruneDisconnectedInputs()
+    {
+        var disconnected = NotReadyToSign
+            .Where(kvp => !_connectedSecrets.ContainsKey(kvp.Key))
+            .ToList();
 
-        _logger.LogInformation("Connection confirmed for {Outpoint}. Confirmed: {Count}/{Total}",
-            outpoint, _confirmedConnections.Count, _registeredSecrets.Count);
+        if (disconnected.Count == 0)
+            return 0;
 
-        // Check if all inputs confirmed — transition early
-        if (_confirmedConnections.Count == _registeredSecrets.Count)
+        if (_prison is not null)
         {
-            await UpdateStatus(KompaktorStatus.OutputRegistration);
+            // Safety valve: if too many disconnected, assume coordinator fault
+            if (disconnected.Count > NotReadyToSign.Count / 2)
+            {
+                _logger.LogWarning("Too many disconnected inputs ({Disconnected}/{Total}), applying light safety ban",
+                    disconnected.Count, NotReadyToSign.Count);
+                foreach (var kvp in disconnected)
+                    _prison.Ban(kvp.Value, BanReason.CoordinatorStabilitySafety);
+            }
+            else
+            {
+                _logger.LogWarning("Pruning {Count} disconnected inputs", disconnected.Count);
+                foreach (var kvp in disconnected)
+                    _prison.Ban(kvp.Value, BanReason.FailedToConfirm);
+            }
         }
+
+        foreach (var kvp in disconnected)
+            NotReadyToSign.TryRemove(kvp.Key, out _);
+
+        return disconnected.Count;
     }
 
     protected override Task<T> AddEvent<T>(T @event)
@@ -375,7 +414,8 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
                             {
                                 _logger.LogInformation("Minimum inputs met at soft timeout ({InputCount}), transitioning early",
                                     Inputs.Count);
-                                await UpdateStatus(KompaktorStatus.ConnectionConfirmation);
+                                PruneDisconnectedInputs();
+                                await UpdateStatus(KompaktorStatus.OutputRegistration);
                             }
                             // Otherwise, HandleNewEvents will check on each subsequent InputRegistered
                         }
@@ -399,67 +439,11 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
                         }
                         _logger.LogDebug("Input registration completed with {InputCount} inputs and {QuoteCount} remaining quotes",
                             Inputs.Count, ActiveQuotes.Count);
-                        await UpdateStatus(KompaktorStatus.ConnectionConfirmation);
-                    }
-                    catch (OperationCanceledException) { }
-                    catch (Exception e) { _logger.LogException("Input phase timeout handler failed", e); }
-                });
-                break;
-
-            case KompaktorStatus.ConnectionConfirmation:
-                _logger.LogDebug("Connection confirmation started (expires in {Timeout})", created.ConnectionConfirmationTimeout);
-                _ = Task.Run(async () =>
-                {
-                    try
-                    {
-                        await Task.Delay(created.ConnectionConfirmationTimeout, _cts.Token);
-                        if (Status != KompaktorStatus.ConnectionConfirmation) return;
-
-                        // Remove unconfirmed inputs and ban them
-                        var unconfirmed = _registeredSecrets
-                            .Where(kvp => !_confirmedConnections.ContainsKey(kvp.Key))
-                            .Select(kvp => kvp.Value).ToList();
-
-                        if (unconfirmed.Count > 0 && _prison is not null)
-                        {
-                            // Safety valve: if too many failed, assume coordinator issue
-                            if (unconfirmed.Count > _registeredSecrets.Count / 2)
-                            {
-                                _logger.LogWarning("Too many unconfirmed inputs ({Unconfirmed}/{Total}), applying light safety ban",
-                                    unconfirmed.Count, _registeredSecrets.Count);
-                                foreach (var outpoint in unconfirmed)
-                                    _prison.Ban(outpoint, BanReason.CoordinatorStabilitySafety);
-                            }
-                            else
-                            {
-                                _logger.LogWarning("Banning {Count} inputs that failed to confirm connection", unconfirmed.Count);
-                                foreach (var outpoint in unconfirmed)
-                                    _prison.Ban(outpoint, BanReason.FailedToConfirm);
-                            }
-                        }
-
-                        // Remove unconfirmed from NotReadyToSign (they can't participate)
-                        var unconfirmedSet = unconfirmed.ToHashSet();
-                        foreach (var kvp in NotReadyToSign)
-                        {
-                            if (unconfirmedSet.Contains(kvp.Value))
-                                NotReadyToSign.TryRemove(kvp.Key, out _);
-                        }
-
-                        var confirmedCount = _confirmedConnections.Count;
-                        if (!created.InputCount.Contains(confirmedCount))
-                        {
-                            _logger.LogWarning("Not enough confirmed inputs ({Confirmed}), round failing", confirmedCount);
-                            await UpdateStatus(KompaktorStatus.Failed);
-                            return;
-                        }
-
-                        _logger.LogInformation("Connection confirmation completed: {Confirmed}/{Total} inputs confirmed",
-                            confirmedCount, _registeredSecrets.Count);
+                        PruneDisconnectedInputs();
                         await UpdateStatus(KompaktorStatus.OutputRegistration);
                     }
                     catch (OperationCanceledException) { }
-                    catch (Exception e) { _logger.LogException("Connection confirmation timeout handler failed", e); }
+                    catch (Exception e) { _logger.LogException("Input phase timeout handler failed", e); }
                 });
                 break;
 

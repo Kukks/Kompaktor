@@ -1,4 +1,4 @@
-﻿using Kompaktor.Credentials;
+using Kompaktor.Credentials;
 using NBitcoin;
 
 namespace Kompaktor.Models;
@@ -8,7 +8,6 @@ public record KompaktorRoundEventCreated : KompaktorRoundEventStatusUpdate
     public KompaktorRoundEventCreated(string RoundId,
         FeeRate FeeRate,
         TimeSpan InputTimeout,
-        TimeSpan ConnectionConfirmationTimeout,
         TimeSpan OutputTimeout,
         TimeSpan SigningTimeout,
         IntRange InputCount,
@@ -21,7 +20,6 @@ public record KompaktorRoundEventCreated : KompaktorRoundEventStatusUpdate
         this.RoundId = RoundId;
         this.FeeRate = FeeRate;
         this.InputTimeout = InputTimeout;
-        this.ConnectionConfirmationTimeout = ConnectionConfirmationTimeout;
         this.OutputTimeout = OutputTimeout;
         this.SigningTimeout = SigningTimeout;
         this.InputCount = InputCount;
@@ -35,7 +33,6 @@ public record KompaktorRoundEventCreated : KompaktorRoundEventStatusUpdate
     public string RoundId { get; init; }
     public FeeRate FeeRate { get; init; }
     public TimeSpan InputTimeout { get; init; }
-    public TimeSpan ConnectionConfirmationTimeout { get; init; }
     public TimeSpan OutputTimeout { get; init; }
     public TimeSpan SigningTimeout { get; init; }
     public IntRange InputCount { get; init; }
@@ -63,12 +60,11 @@ public record KompaktorRoundEventCreated : KompaktorRoundEventStatusUpdate
 
     public bool IsBlameRound => BlameOf is not null;
 
-    public void Deconstruct(out string RoundId, out FeeRate FeeRate, out TimeSpan InputTimeout, out TimeSpan ConnectionConfirmationTimeout, out TimeSpan OutputTimeout, out TimeSpan SigningTimeout, out IntRange InputCount, out MoneyRange InputAmount, out IntRange OutputCount, out MoneyRange OutputAmount, out Dictionary<CredentialType, CredentialConfiguration> Credentials)
+    public void Deconstruct(out string RoundId, out FeeRate FeeRate, out TimeSpan InputTimeout, out TimeSpan OutputTimeout, out TimeSpan SigningTimeout, out IntRange InputCount, out MoneyRange InputAmount, out IntRange OutputCount, out MoneyRange OutputAmount, out Dictionary<CredentialType, CredentialConfiguration> Credentials)
     {
         RoundId = this.RoundId;
         FeeRate = this.FeeRate;
         InputTimeout = this.InputTimeout;
-        ConnectionConfirmationTimeout = this.ConnectionConfirmationTimeout;
         OutputTimeout = this.OutputTimeout;
         SigningTimeout = this.SigningTimeout;
         InputCount = this.InputCount;

@@ -13,9 +13,6 @@ public class KompaktorCoordinatorOptions
     /// <summary>Duration of the input registration phase.</summary>
     public TimeSpan InputTimeout { get; set; } = TimeSpan.FromSeconds(60);
 
-    /// <summary>Duration of the connection confirmation phase.</summary>
-    public TimeSpan ConnectionConfirmationTimeout { get; set; } = TimeSpan.FromSeconds(60);
-
     /// <summary>Duration of the output registration phase.</summary>
     public TimeSpan OutputTimeout { get; set; } = TimeSpan.FromSeconds(60);
 

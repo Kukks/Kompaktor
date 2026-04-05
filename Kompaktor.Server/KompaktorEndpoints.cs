@@ -45,21 +45,6 @@ public static class KompaktorEndpoints
             }
         });
 
-        group.MapPost("/confirm-connection", async (string roundId, ConfirmConnectionRequest request, KompaktorRoundManager manager) =>
-        {
-            var op = manager.GetOperator(roundId);
-            if (op is null) return Results.NotFound(new { error = "Round not found" });
-            try
-            {
-                await op.ConfirmConnection(request);
-                return Results.Ok();
-            }
-            catch (KompaktorProtocolException ex)
-            {
-                return Results.BadRequest(new { error = ex.Message, code = ex.ErrorCode.ToString() });
-            }
-        });
-
         group.MapPost("/reissue-credentials", async (string roundId, CredentialReissuanceRequest request, KompaktorRoundManager manager) =>
         {
             var op = manager.GetOperator(roundId);

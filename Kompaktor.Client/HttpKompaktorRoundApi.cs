@@ -45,9 +45,17 @@ public class HttpKompaktorRoundApi : IKompaktorRoundApi, IDisposable
         return await PostAsync<KompaktorRoundEventInputRegistered>($"/api/round/{_roundId}/register-input", request);
     }
 
-    public async Task ConfirmConnection(ConfirmConnectionRequest request)
+    public bool Connect(string secret)
     {
-        await PostAsync($"/api/round/{_roundId}/confirm-connection", request);
+        // HTTP clients use WebSocket for persistent connection — not a simple POST.
+        // The WebSocket connection is managed separately by the client.
+        throw new NotSupportedException("Use WebSocket connection instead");
+    }
+
+    public void Disconnect(string secret)
+    {
+        // Disconnection happens when the WebSocket closes.
+        throw new NotSupportedException("Use WebSocket connection instead");
     }
 
     public async Task<KompaktorRoundCredentialReissuanceResponse> ReissueCredentials(CredentialReissuanceRequest request)
