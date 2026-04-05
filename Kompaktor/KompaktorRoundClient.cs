@@ -456,7 +456,7 @@ public class KompaktorRoundClient : IDisposable
 
                 var ownershipProof = await _walletInterface.GenerateOwnershipProof(Round.RoundEventCreated.RoundId, [coin]);
 
-                var inputFee = ownershipProof.FundProofs.Sum(@in => @in.GetFee(Round.RoundEventCreated.FeeRate));
+                var inputFee = ownershipProof.FundProofs.Sum(@in => coin.ScriptPubKey.EstimateFee(Round.RoundEventCreated.FeeRate));
                 var expectedCredentialAmount = coin.Amount - inputFee;
 
                 var credentialClient = GetCredentialClient(CredentialType.Amount);

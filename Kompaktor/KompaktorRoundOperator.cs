@@ -135,7 +135,7 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
                 "Invalid signature");
 
         var feeRate = RoundEventCreated.FeeRate;
-        var inputFee = txIn.GetFee(feeRate);
+        var inputFee = coin.ScriptPubKey.EstimateFee(feeRate);
         var credentialAmount = txOutStatus.TxOut.Value - inputFee;
 
         if (credentialAmount.Satoshi <= 0)
@@ -344,7 +344,7 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
 
         var inputRegistration = Events.OfType<KompaktorRoundEventInputRegistered>()
             .Single(input => input.Coin.Outpoint == request.OutPoint);
-        var allowedVsize = inputRegistration.QuoteRequest.Signature.FundProofs[0].GetSize();
+        var allowedVsize = inputRegistration.Coin.ScriptPubKey.EstimateInputVsize();
 
         inputToSign.WitScript = request.Witness;
 
