@@ -350,6 +350,19 @@ public class KompaktorRoundClient : IDisposable
 
     private async Task Sign()
     {
+        // Verify fee transparency before signing — ensure no hidden coordinator surplus
+        var feeBreakdown = Round.GetFeeBreakdown();
+        Logger.LogInformation(
+            $"Fee audit: inputs={feeBreakdown.TotalInputs} outputs={feeBreakdown.TotalOutputs} " +
+            $"fee={feeBreakdown.ActualFee} expected={feeBreakdown.ExpectedMiningFee} surplus={feeBreakdown.Surplus}");
+        if (feeBreakdown.HasExcessiveSurplus())
+        {
+            Logger.LogError(
+                $"EXCESSIVE FEE SURPLUS: {feeBreakdown.Surplus} sats beyond expected mining fee. " +
+                "Possible coordinator fee extraction. Refusing to sign.");
+            return;
+        }
+
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
         var subsetSign = !ShouldSign();
         var inputIdentities = Identities

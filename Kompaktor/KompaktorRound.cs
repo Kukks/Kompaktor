@@ -154,6 +154,31 @@ public class KompaktorRound : IDisposable
         return transaction;
     }
 
+    /// <summary>
+    /// Computes a fee breakdown for the round's transaction, allowing clients to verify
+    /// that no surplus goes to the coordinator (all fees are mining fees).
+    /// Returns (totalInputs, totalOutputs, actualFee, expectedMiningFee, surplus).
+    /// Surplus should be zero or very small (rounding) — a large surplus indicates
+    /// the coordinator is extracting value.
+    /// </summary>
+    public FeeBreakdown GetFeeBreakdown()
+    {
+        var feeRate = RoundEventCreated.FeeRate;
+        var totalInputs = Inputs.Sum(c => c.Amount);
+        var totalOutputs = Outputs.Sum(o => o.Value);
+        var actualFee = totalInputs - totalOutputs;
+
+        // Expected fee = sum of per-input fees + sum of per-output fees + tx overhead
+        var inputFees = Inputs.Sum(c => c.ScriptPubKey.EstimateFee(feeRate));
+        var outputFees = Outputs.Sum(o => feeRate.GetFee(o.GetSerializedSize()));
+        // Transaction overhead: ~10.5 vbytes for version(4) + locktime(4) + segwit marker(0.5) + input/output count(~2)
+        var overheadFee = feeRate.GetFee(11);
+        var expectedMiningFee = inputFees + outputFees + overheadFee;
+        var surplus = actualFee - expectedMiningFee;
+
+        return new FeeBreakdown(totalInputs, totalOutputs, actualFee, expectedMiningFee, surplus);
+    }
+
     private void InvalidateCache(KompaktorRoundEvent @event)
     {
         _cachedEvents = null;
