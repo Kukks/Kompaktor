@@ -22,7 +22,8 @@ public static class RoundHasher
         MoneyRange inputAmount,
         IntRange outputCount,
         MoneyRange outputAmount,
-        Dictionary<CredentialType, CredentialConfiguration> credentials)
+        Dictionary<CredentialType, CredentialConfiguration> credentials,
+        string? blameOf = null)
     {
         using var sha = SHA256.Create();
         var sb = new StringBuilder();
@@ -45,6 +46,9 @@ public static class RoundHasher
             sb.Append(config.IssuanceOut.Min).Append(config.IssuanceOut.Max);
             sb.Append(config.UseBulletproofs);
         }
+
+        if (blameOf is not null)
+            sb.Append(blameOf);
 
         var hash = sha.ComputeHash(Encoding.UTF8.GetBytes(sb.ToString()));
         return Convert.ToHexString(hash).ToLower();
