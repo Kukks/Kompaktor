@@ -48,6 +48,8 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
         {
             _logger.LogInformation("Soft timeout reached and minimum inputs met ({InputCount}), transitioning early",
                 Inputs.Count);
+            PruneDisconnectedInputs();
+            WarnIfNoP2trInput();
             await UpdateStatus(KompaktorStatus.OutputRegistration);
         }
         else if (Status == KompaktorStatus.OutputRegistration && NotReadyToSign.IsEmpty)
@@ -122,9 +124,9 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
 
         var coin = new Coin(txIn.PrevOut, new TxOut(txOutStatus.TxOut.Value, txOutStatus.TxOut.ScriptPubKey));
 
-        // Enforce allowed input script types
+        // Enforce allowed input script types (empty set = allow all)
         var scriptType = coin.ScriptPubKey.TryGetScriptType();
-        if (scriptType is null || !RoundEventCreated.AllowedInputTypes.Contains(scriptType.Value))
+        if (scriptType is null || (RoundEventCreated.AllowedInputTypes.Count > 0 && !RoundEventCreated.AllowedInputTypes.Contains(scriptType.Value)))
             throw new KompaktorProtocolException(KompaktorProtocolErrorCode.ScriptTypeNotAllowed,
                 $"Input script type {scriptType?.ToString() ?? "unknown"} is not allowed in this round");
 
