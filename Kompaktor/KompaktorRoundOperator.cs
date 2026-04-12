@@ -76,6 +76,11 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
         throw new NotImplementedException("GetEvents is not yet implemented");
     }
 
+    public Task<RoundInfoResponse> GetRoundInfo()
+    {
+        return Task.FromResult(RoundInfoResponse.FromCreatedEvent(RoundEventCreated));
+    }
+
     public async Task<KompaktorRoundEventMessage> SendMessage(MessageRequest request)
     {
         if (Status > KompaktorStatus.Signing)

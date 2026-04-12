@@ -30,6 +30,26 @@ public class HttpKompaktorRoundApi : IKompaktorRoundApi, IDisposable
         throw new NotImplementedException("GetEvents over HTTP is not yet implemented");
     }
 
+    public async Task<RoundInfoResponse> GetRoundInfo()
+    {
+        using var response = await _httpClient.GetAsync($"/api/round/{_roundId}/info");
+
+        if (!response.IsSuccessStatusCode)
+        {
+            var errorBody = await response.Content.ReadAsStringAsync();
+            throw new KompaktorProtocolException(
+                KompaktorProtocolErrorCode.InternalError,
+                $"HTTP {response.StatusCode}: {errorBody}",
+                _roundId);
+        }
+
+        var result = await response.Content.ReadFromJsonAsync<RoundInfoResponse>(_jsonOptions);
+        return result ?? throw new KompaktorProtocolException(
+            KompaktorProtocolErrorCode.InternalError,
+            "Null response from server",
+            _roundId);
+    }
+
     public async Task<KompaktorRoundEventMessage> SendMessage(MessageRequest request)
     {
         return await PostAsync<KompaktorRoundEventMessage>($"/api/round/{_roundId}/send-message", request);
