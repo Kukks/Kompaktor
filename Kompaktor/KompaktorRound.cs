@@ -171,8 +171,9 @@ public class KompaktorRound : IDisposable
         // Expected fee = sum of per-input fees + sum of per-output fees + tx overhead
         var inputFees = Inputs.Sum(c => c.ScriptPubKey.EstimateFee(feeRate));
         var outputFees = Outputs.Sum(o => feeRate.GetFee(o.GetSerializedSize()));
-        // Transaction overhead: ~10.5 vbytes for version(4) + locktime(4) + segwit marker(0.5) + input/output count(~2)
-        var overheadFee = feeRate.GetFee(11);
+        // Transaction overhead: version(4) + locktime(4) + segwit marker/flag(0.5) + CompactSize counts
+        var txOverhead = 4 + 4 + 1 + CompactSizeSize(Inputs.Count) + CompactSizeSize(Outputs.Count);
+        var overheadFee = feeRate.GetFee(txOverhead);
         var expectedMiningFee = inputFees + outputFees + overheadFee;
         var surplus = actualFee - expectedMiningFee;
 
@@ -221,4 +222,12 @@ public class KompaktorRound : IDisposable
             return cached;
         }
     }
+
+    private static int CompactSizeSize(int count) => count switch
+    {
+        < 253 => 1,
+        <= 0xFFFF => 3,
+        <= 0xFFFFFF => 5,
+        _ => 9
+    };
 }
