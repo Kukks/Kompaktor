@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using Kompaktor.Models;
 using Kompaktor.Utils;
 using NBitcoin;
+using ScriptType = NBitcoin.ScriptType;
 
 namespace Kompaktor;
 
@@ -93,6 +94,14 @@ public class KompaktorRound : IDisposable
     }
 
     public int SignatureCount => _cachedSignatureCount;
+
+    /// <summary>
+    /// Whether at least one P2TR (Taproot) input is registered in this round.
+    /// BIP 341 signing commits to all input scriptPubKeys, which means having
+    /// at least one honest P2TR input forces all ownership proofs to be consistent
+    /// (faked proofs would produce invalid Taproot signatures).
+    /// </summary>
+    public bool HasP2trInput => Inputs.Any(c => c.ScriptPubKey.IsScriptType(ScriptType.Taproot));
 
     public DateTimeOffset InputPhaseEnd =>
         Events.OfType<KompaktorRoundEventStatusUpdate>()
