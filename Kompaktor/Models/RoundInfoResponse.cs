@@ -144,6 +144,12 @@ public record RoundInfoResponse
                 mismatches.Add($"Credentials[{key}].IssuerParameters");
         }
 
+        foreach (var key in Credentials.Keys)
+        {
+            if (!local.Credentials.ContainsKey(Enum.Parse<CredentialType>(key)))
+                mismatches.Add($"Credentials[{key}].Extra");
+        }
+
         return mismatches;
     }
 }
