@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using Kompaktor.Contracts;
 using NBitcoin;
 
 namespace Kompaktor.Utils;
@@ -12,7 +13,7 @@ namespace Kompaktor.Utils;
 /// 2. Evaluating whether a proposed coin selection would reveal new pairings
 /// 3. Suggesting which coins to exclude to limit cluster disclosure
 /// </summary>
-public class RoundHistoryTracker
+public class RoundHistoryTracker : IRoundHistoryTracker
 {
     private readonly ConcurrentBag<HashSet<OutPoint>> _failedRoundInputs = new();
     private readonly int _maxConsecutiveFailures;

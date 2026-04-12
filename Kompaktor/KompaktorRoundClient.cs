@@ -35,7 +35,7 @@ public class KompaktorRoundClient : IDisposable
     private readonly Network _network;
     public readonly KompaktorRound Round;
     private readonly Channel<KompaktorStatus> _statusChannel;
-    private readonly RoundHistoryTracker? _roundHistoryTracker;
+    private readonly IRoundHistoryTracker? _roundHistoryTracker;
 
     public KompaktorRoundClient(
         WasabiRandom random,
@@ -45,7 +45,7 @@ public class KompaktorRoundClient : IDisposable
         List<KompaktorClientBaseBehaviorTrait> behaviorTraits,
         IKompaktorWalletInterface walletInterface,
         ILogger logger,
-        RoundHistoryTracker? roundHistoryTracker = null)
+        IRoundHistoryTracker? roundHistoryTracker = null)
     {
         _random = random;
         _network = network;
