@@ -251,6 +251,8 @@ public class KompaktorRoundClient : IDisposable
                     {
                         Logger.LogInformation($"Pre-registration delay: {preRegDelay}ms");
                         await Task.Delay(preRegDelay, _cts.Token);
+                        if (Round.Status != KompaktorStatus.InputRegistration)
+                            break;
                     }
 
                     CoinCandidates = (await _walletInterface.GetCoins())

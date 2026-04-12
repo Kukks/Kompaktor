@@ -28,6 +28,7 @@ public static class TaskScheduler
             {
                 if (t.delay > 0)
                     await Task.Delay(t.delay, token);
+                token.ThrowIfCancellationRequested();
                 await t.task().WithCancellation(token);
             })
             .ToArray();
