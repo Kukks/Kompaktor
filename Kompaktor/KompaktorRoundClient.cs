@@ -301,7 +301,8 @@ public class KompaktorRoundClient : IDisposable
                 case KompaktorStatus.Broadcasting:
                     break;
                 case KompaktorStatus.Completed:
-                    _roundHistoryTracker?.RecordSuccess();
+                    if (RegisteredInputs.Length > 0)
+                        _roundHistoryTracker?.RecordSuccess();
                     exit = true;
                     break;
                 case KompaktorStatus.Failed:

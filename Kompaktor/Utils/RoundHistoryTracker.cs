@@ -17,69 +17,106 @@ public class RoundHistoryTracker : IRoundHistoryTracker
 {
     private readonly ConcurrentBag<HashSet<OutPoint>> _failedRoundInputs = new();
     private readonly int _maxConsecutiveFailures;
+    private int _consecutiveFailures;
 
-    /// <summary>Number of consecutive round failures tracked.</summary>
-    public int ConsecutiveFailures => _failedRoundInputs.Count;
+    public int ConsecutiveFailures => _consecutiveFailures;
 
     public RoundHistoryTracker(int maxConsecutiveFailures = 3)
     {
         _maxConsecutiveFailures = maxConsecutiveFailures;
     }
 
-    /// <summary>
-    /// Records the set of inputs that were registered in a failed round.
-    /// </summary>
     public void RecordFailedRound(IEnumerable<OutPoint> registeredInputs)
     {
         _failedRoundInputs.Add(new HashSet<OutPoint>(registeredInputs));
+        Interlocked.Increment(ref _consecutiveFailures);
     }
 
-    /// <summary>
-    /// Resets the failure history (call after a successful round).
-    /// </summary>
     public void RecordSuccess()
     {
-        _failedRoundInputs.Clear();
+        Interlocked.Exchange(ref _consecutiveFailures, 0);
     }
 
-    /// <summary>
-    /// Returns true if too many consecutive rounds have failed,
-    /// suggesting the coordinator may be deliberately failing rounds to harvest clusters.
-    /// The client should back off or switch coordinators.
-    /// </summary>
     public bool ShouldBackOff()
     {
-        return _failedRoundInputs.Count >= _maxConsecutiveFailures;
+        return _consecutiveFailures >= _maxConsecutiveFailures;
     }
 
     /// <summary>
     /// Given a proposed set of coins, returns the subset that should be excluded
     /// to avoid revealing new input pairings beyond what's already known.
     ///
-    /// Strategy: if a coin appeared in a previous failed round, at most ONE such coin
-    /// should appear in the new selection (to avoid confirming that the others also
-    /// belong to the same wallet).
+    /// Strategy: build connected components from all previous failed rounds (coins
+    /// that appeared together form edges). From each component, allow at most ONE
+    /// coin in the new selection to prevent confirming cross-cluster links.
     /// </summary>
     public HashSet<OutPoint> GetCoinsToExclude(IEnumerable<Coin> proposedCoins)
     {
         var proposed = proposedCoins.Select(c => c.Outpoint).ToHashSet();
+        if (_failedRoundInputs.IsEmpty)
+            return new HashSet<OutPoint>();
+
+        var components = BuildConnectedComponents();
         var toExclude = new HashSet<OutPoint>();
 
-        foreach (var previousSet in _failedRoundInputs)
+        foreach (var component in components)
         {
-            // How many of the proposed coins were in this previous failed round?
-            var overlap = proposed.Where(o => previousSet.Contains(o)).ToList();
-
-            // If more than 1 coin from a previous round appears in the new selection,
-            // exclude all but one to avoid confirming they're in the same wallet
+            var overlap = proposed.Where(component.Contains).ToList();
             if (overlap.Count > 1)
             {
-                // Keep the first one, exclude the rest
                 foreach (var outpoint in overlap.Skip(1))
                     toExclude.Add(outpoint);
             }
         }
 
         return toExclude;
+    }
+
+    private List<HashSet<OutPoint>> BuildConnectedComponents()
+    {
+        var parent = new Dictionary<OutPoint, OutPoint>();
+
+        OutPoint Find(OutPoint x)
+        {
+            while (parent[x] != x)
+            {
+                parent[x] = parent[parent[x]];
+                x = parent[x];
+            }
+            return x;
+        }
+
+        void Union(OutPoint a, OutPoint b)
+        {
+            var ra = Find(a);
+            var rb = Find(b);
+            if (ra != rb) parent[ra] = rb;
+        }
+
+        foreach (var roundInputs in _failedRoundInputs)
+        {
+            OutPoint? first = null;
+            foreach (var op in roundInputs)
+            {
+                parent.TryAdd(op, op);
+                if (first is not null)
+                    Union(first, op);
+                first ??= op;
+            }
+        }
+
+        var groups = new Dictionary<OutPoint, HashSet<OutPoint>>();
+        foreach (var op in parent.Keys)
+        {
+            var root = Find(op);
+            if (!groups.TryGetValue(root, out var set))
+            {
+                set = new HashSet<OutPoint>();
+                groups[root] = set;
+            }
+            set.Add(op);
+        }
+
+        return groups.Values.ToList();
     }
 }
