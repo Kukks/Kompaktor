@@ -89,7 +89,7 @@ public class KompaktorRoundManager : IDisposable
             new MoneyRange(_options.MinOutputAmount, _options.MaxOutputAmount),
             credentials,
             _options.InputRegistrationSoftTimeout
-        );
+        ) { Timestamp = startTime };
 
         _rounds[roundId] = op;
 
@@ -184,6 +184,7 @@ public class KompaktorRoundManager : IDisposable
             credentials,
             _options.InputRegistrationSoftTimeout)
         {
+            Timestamp = startTime,
             BlameOf = parentRoundId,
             BlameWhitelist = whitelist
         };
