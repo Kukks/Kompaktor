@@ -350,6 +350,9 @@ public class KompaktorRoundClient : IDisposable
 
     private async Task Sign()
     {
+        // Verify other participants' inputs exist in the UTXO set (if we have full node access)
+        await VerifyInputUtxos();
+
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
         var subsetSign = !ShouldSign();
         var inputIdentities = Identities
@@ -561,6 +564,47 @@ public class KompaktorRoundClient : IDisposable
     //         FailedOutputs.Add(txOut);
     //     }
     // }
+
+    /// <summary>
+    /// Verifies other participants' inputs against the UTXO set before signing.
+    /// Detects fabricated inputs from a malicious coordinator that could be used
+    /// to forge ownership proofs (especially for P2WPKH inputs that don't commit
+    /// to all scriptPubKeys at signing time unlike P2TR).
+    /// Only runs if the wallet supports UTXO verification (full node clients).
+    /// </summary>
+    private async Task VerifyInputUtxos()
+    {
+        var myOutpoints = RegisteredInputs.ToHashSet();
+        var otherInputs = Round.Inputs.Where(c => !myOutpoints.Contains(c.Outpoint)).ToList();
+
+        if (otherInputs.Count == 0)
+            return;
+
+        var invalidInputs = new List<OutPoint>();
+        foreach (var coin in otherInputs)
+        {
+            var result = await _walletInterface.VerifyUtxo(coin.Outpoint, coin.TxOut);
+            if (result == false)
+            {
+                invalidInputs.Add(coin.Outpoint);
+                Logger.LogError("UTXO verification failed for input {Outpoint} — claimed {Amount} at {Script}",
+                    coin.Outpoint, coin.Amount, coin.ScriptPubKey);
+            }
+        }
+
+        if (invalidInputs.Count > 0)
+        {
+            Logger.LogError(
+                "REFUSING TO SIGN: {Count} inputs failed UTXO verification. " +
+                "Coordinator may be injecting fabricated inputs.", invalidInputs.Count);
+            throw new Errors.KompaktorProtocolException(
+                Errors.KompaktorProtocolErrorCode.InputNotValid,
+                $"{invalidInputs.Count} inputs failed UTXO verification",
+                Round.RoundEventCreated.RoundId);
+        }
+
+        Logger.LogInformation("UTXO verification passed for {Count} other participants' inputs", otherInputs.Count);
+    }
 
     /// <summary>
     /// Establishes persistent connections for all identities that registered inputs.
