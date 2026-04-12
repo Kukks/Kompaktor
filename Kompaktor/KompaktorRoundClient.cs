@@ -279,6 +279,18 @@ public class KompaktorRoundClient : IDisposable
                     exit = true;
                     break;
                 case KompaktorStatus.Failed:
+                    // Mark all output scripts we disclosed as burned so the wallet
+                    // won't reuse them in future rounds (prevents cross-round linking)
+                    var exposedScripts = AllocatedPlannedOutputs.Keys
+                        .Select(o => o.ScriptPubKey)
+                        .Concat(RegisteredOutputs.Select(o => o.ScriptPubKey))
+                        .Distinct()
+                        .ToList();
+                    if (exposedScripts.Count > 0)
+                    {
+                        Logger.LogInformation($"Round failed — marking {exposedScripts.Count} output scripts as exposed");
+                        await _walletInterface.MarkScriptsExposed(exposedScripts);
+                    }
                     exit = true;
                     break;
                 default:
