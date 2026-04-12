@@ -244,9 +244,9 @@ public class KompaktorRoundClient : IDisposable
             switch (phase)
             {
                 case KompaktorStatus.InputRegistration:
-                    // Random delay (0-3s) before starting input registration to prevent
-                    // timing correlation of when clients join a round
-                    var preRegDelay = _random.GetInt(0, 3000);
+                    var remainingMs = (int)Math.Max(0, (Round.InputPhaseEnd - DateTimeOffset.UtcNow).TotalMilliseconds);
+                    var maxPreRegDelay = Math.Min(3000, remainingMs / 4);
+                    var preRegDelay = maxPreRegDelay > 0 ? _random.GetInt(0, maxPreRegDelay) : 0;
                     if (preRegDelay > 0)
                     {
                         Logger.LogInformation($"Pre-registration delay: {preRegDelay}ms");
