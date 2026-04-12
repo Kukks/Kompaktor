@@ -1,10 +1,12 @@
 using System.Collections.Concurrent;
+using System.Security.Cryptography;
 using Kompaktor.Credentials;
 using Kompaktor.Models;
 using Kompaktor.Prison;
 using Microsoft.Extensions.Logging;
 using NBitcoin;
 using NBitcoin.RPC;
+using NBitcoin.Secp256k1;
 using WabiSabi.Crypto;
 using WabiSabi.Crypto.Randomness;
 
@@ -22,6 +24,7 @@ public class KompaktorRoundManager : IDisposable
     private readonly ILoggerFactory _loggerFactory;
     private readonly KompaktorCoordinatorOptions _options;
     private readonly KompaktorPrison _prison;
+    private readonly ECPrivKey? _coordinatorSigningKey;
 
     public KompaktorRoundManager(
         Network network,
@@ -29,7 +32,8 @@ public class KompaktorRoundManager : IDisposable
         WasabiRandom random,
         ILoggerFactory loggerFactory,
         KompaktorCoordinatorOptions? options = null,
-        KompaktorPrison? prison = null)
+        KompaktorPrison? prison = null,
+        ECPrivKey? coordinatorSigningKey = null)
     {
         _network = network;
         _rpcClient = rpcClient;
@@ -37,6 +41,7 @@ public class KompaktorRoundManager : IDisposable
         _loggerFactory = loggerFactory;
         _options = options ?? new KompaktorCoordinatorOptions();
         _prison = prison ?? new KompaktorPrison();
+        _coordinatorSigningKey = coordinatorSigningKey ?? ECPrivKey.Create(RandomNumberGenerator.GetBytes(32));
     }
 
     /// <summary>Creates a new round with the configured options and starts it.</summary>
@@ -45,6 +50,8 @@ public class KompaktorRoundManager : IDisposable
         var roundId = Guid.NewGuid().ToString();
         var logger = _loggerFactory.CreateLogger($"Round-{roundId[..8]}");
         var op = new KompaktorRoundOperator(_network, _rpcClient, _random, logger, _prison);
+        if (_coordinatorSigningKey is not null)
+            op.SetCoordinatorSigningKey(_coordinatorSigningKey);
 
         var issuerKey = new CredentialIssuerSecretKey(_random);
         var k = _options.CredentialCount;
@@ -120,6 +127,8 @@ public class KompaktorRoundManager : IDisposable
         var roundId = Guid.NewGuid().ToString();
         var logger = _loggerFactory.CreateLogger($"BlameRound-{roundId[..8]}");
         var op = new KompaktorRoundOperator(_network, _rpcClient, _random, logger, _prison);
+        if (_coordinatorSigningKey is not null)
+            op.SetCoordinatorSigningKey(_coordinatorSigningKey);
 
         var issuerKey = new CredentialIssuerSecretKey(_random);
         var k = _options.CredentialCount;
