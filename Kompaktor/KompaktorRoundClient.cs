@@ -244,6 +244,15 @@ public class KompaktorRoundClient : IDisposable
             switch (phase)
             {
                 case KompaktorStatus.InputRegistration:
+                    // Random delay (0-3s) before starting input registration to prevent
+                    // timing correlation of when clients join a round
+                    var preRegDelay = _random.GetInt(0, 3000);
+                    if (preRegDelay > 0)
+                    {
+                        Logger.LogInformation($"Pre-registration delay: {preRegDelay}ms");
+                        await Task.Delay(preRegDelay, _cts.Token);
+                    }
+
                     CoinCandidates = (await _walletInterface.GetCoins())
                         .Where(coin => Round.RoundEventCreated.InputAmount.Contains(coin.Amount)).ToList();
                     await StartCoinSelection.InvokeIfNotNullAsync(this);
