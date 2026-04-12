@@ -64,11 +64,23 @@ public class KompaktorRound : IDisposable
             var cached = _cachedInputs;
             if (cached is not null) return cached;
 
+            // Canonical sort first, then apply transcript-seeded shuffle if in signing phase.
+            // The canonical sort ensures all clients start from the same base ordering
+            // before the deterministic shuffle is applied.
             var inputs = Events.OfType<KompaktorRoundEventInputRegistered>()
                 .Select(x => x.Coin)
                 .OrderByDescending(x => x.Amount)
                 .ThenBy(x => x.Outpoint.ToBytes(), ByteArrayComparer.Comparer)
                 .ToList();
+
+            // Apply transcript-seeded shuffle in signing phase for anti-equivocation
+            if (Status >= KompaktorStatus.Signing)
+            {
+                var seed = GetTranscriptSeed();
+                if (seed is not null)
+                    TranscriptShuffler.Shuffle(inputs, seed);
+            }
+
             _cachedInputs = inputs;
             return inputs;
         }
@@ -87,9 +99,34 @@ public class KompaktorRound : IDisposable
                 .OrderByDescending(x => x.Value)
                 .ThenBy(x => x.ScriptPubKey.ToBytes(true), ByteArrayComparer.Comparer)
                 .ToList();
+
+            // Apply transcript-seeded shuffle in signing phase for anti-equivocation
+            if (Status >= KompaktorStatus.Signing)
+            {
+                var seed = GetTranscriptSeed();
+                if (seed is not null)
+                    TranscriptShuffler.Shuffle(outputs, seed);
+            }
+
             _cachedOutputs = outputs;
             return outputs;
         }
+    }
+
+    /// <summary>
+    /// Computes the transcript seed from all input and output registration event IDs.
+    /// Returns null if the round hasn't reached the signing phase yet.
+    /// </summary>
+    private byte[]? GetTranscriptSeed()
+    {
+        var registrationEventIds = Events
+            .Where(e => e is KompaktorRoundEventInputRegistered or KompaktorRoundEventOutputRegistered)
+            .Select(e => e.Id)
+            .ToList();
+
+        return registrationEventIds.Count > 0
+            ? TranscriptShuffler.ComputeTranscriptSeed(registrationEventIds)
+            : null;
     }
 
     public int SignatureCount => _cachedSignatureCount;
