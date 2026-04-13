@@ -17,7 +17,7 @@ public static class TaskScheduler
         if (tasks.Length == 0)
             return;
         var fromNow = (int)Math.Max(0, (expiry - DateTimeOffset.UtcNow).TotalMilliseconds);
-        var maxDelay = (int)(fromNow * 0.75);
+        var maxDelay = Math.Min((int)(fromNow * 0.75), 10_000);
         var delays = tasks.Select(_ => maxDelay > 0 ? random.GetInt(0, maxDelay) : 0).ToArray();
         logger.LogInformation(
             $"Scheduling {tasks.Length} {taskName} tasks with random delays before {expiry} ({fromNow}ms from now): [{string.Join(",", delays)}]ms");
