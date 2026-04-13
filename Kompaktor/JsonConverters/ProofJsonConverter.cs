@@ -1,4 +1,3 @@
-using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using WabiSabi.Crypto;
@@ -27,9 +26,7 @@ public class ProofJsonConverter : JsonConverter<Proof>
         {
             if (reader.TokenType == JsonTokenType.EndObject)
             {
-                return (Proof)Activator.CreateInstance(typeof(Proof),
-                    BindingFlags.NonPublic | BindingFlags.Instance, null,
-                    [publicNonces, responses], null)!;
+                return Proof.FromComponents(publicNonces!, responses!);
             }
 
             if (reader.TokenType != JsonTokenType.PropertyName)

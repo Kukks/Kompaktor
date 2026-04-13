@@ -9,7 +9,7 @@ namespace Kompaktor.Models;
 public abstract record KompaktorRoundEvent
 {
     [JsonIgnore]
-    public virtual string Id => SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(this)).ToHex();
+    public virtual string Id => SHA256.HashData(KompaktorJsonHelper.SerializeToUtf8Bytes(this)).ToHex();
     [JsonPropertyName("parentEventId")]
     public string? ParentEventId { get; }
     [JsonConverter(typeof(UnixToNullableDateTimOffsetConverter))]

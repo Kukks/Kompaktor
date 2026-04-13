@@ -54,6 +54,24 @@ public static class KompaktorJsonHelper
 #pragma warning restore IL2026,IL3050
     }
     
+    public static byte[] SerializeToUtf8Bytes<T>(T value)
+    {
+        var o = CreateSerializerOptions();
+        o.TypeInfoResolver = SourceGenerationContext.Default;
+#pragma warning disable IL2026,IL3050
+        return JsonSerializer.SerializeToUtf8Bytes(value, o);
+#pragma warning restore IL2026,IL3050
+    }
+
+    public static T? DeserializeFromBytes<T>(byte[] utf8Json)
+    {
+        var o = CreateSerializerOptions();
+        o.TypeInfoResolver = SourceGenerationContext.Default;
+#pragma warning disable IL2026,IL3050
+        return JsonSerializer.Deserialize<T>(utf8Json, o);
+#pragma warning restore IL2026,IL3050
+    }
+
     public static void WriteProperty<T>(this Utf8JsonWriter writer, string propertyName, T value, JsonSerializerOptions options)
     {
         writer.WritePropertyName(propertyName);

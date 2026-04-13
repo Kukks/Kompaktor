@@ -1,4 +1,3 @@
-using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using NBitcoin.Secp256k1;
@@ -28,9 +27,7 @@ public class MACJsonConverter : JsonConverter<MAC>
         {
             if (reader.TokenType == JsonTokenType.EndObject)
             {
-                return (MAC)Activator.CreateInstance(typeof(MAC),
-                    BindingFlags.NonPublic | BindingFlags.Instance, null,
-                    [t, v], null)!;
+                return MAC.FromComponents(t.Value, v!);
             }
 
             if (reader.TokenType != JsonTokenType.PropertyName)
