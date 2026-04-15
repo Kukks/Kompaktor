@@ -26,10 +26,7 @@ public static class KompaktorJsonHelper
 
     public static void Serialize<T>(this Utf8JsonWriter writer, T value, JsonSerializerOptions options)
     {
-        var o = new JsonSerializerOptions(options)
-        {
-            TypeInfoResolver = SourceGenerationContext.Default
-        };
+        var o = new JsonSerializerOptions(options);
         foreach (var converter in SourceGenerationContext.DefaultConverters)
         {
             o.Converters.Add(converter);
@@ -39,12 +36,9 @@ public static class KompaktorJsonHelper
 #pragma warning restore IL2026,IL3050
     }
 
-    public static T? Deserialize<T>(this Utf8JsonReader reader, JsonSerializerOptions options)
+    public static T? Deserialize<T>(this ref Utf8JsonReader reader, JsonSerializerOptions options)
     {
-        var o = new JsonSerializerOptions(options)
-        {
-            TypeInfoResolver = SourceGenerationContext.Default
-        };
+        var o = new JsonSerializerOptions(options);
         foreach (var converter in SourceGenerationContext.DefaultConverters)
         {
             o.Converters.Add(converter);
@@ -53,22 +47,18 @@ public static class KompaktorJsonHelper
         return JsonSerializer.Deserialize<T>(ref reader, o);
 #pragma warning restore IL2026,IL3050
     }
-    
+
     public static byte[] SerializeToUtf8Bytes<T>(T value)
     {
-        var o = CreateSerializerOptions();
-        o.TypeInfoResolver = SourceGenerationContext.Default;
 #pragma warning disable IL2026,IL3050
-        return JsonSerializer.SerializeToUtf8Bytes(value, o);
+        return JsonSerializer.SerializeToUtf8Bytes(value, CreateSerializerOptions());
 #pragma warning restore IL2026,IL3050
     }
 
     public static T? DeserializeFromBytes<T>(byte[] utf8Json)
     {
-        var o = CreateSerializerOptions();
-        o.TypeInfoResolver = SourceGenerationContext.Default;
 #pragma warning disable IL2026,IL3050
-        return JsonSerializer.Deserialize<T>(utf8Json, o);
+        return JsonSerializer.Deserialize<T>(utf8Json, CreateSerializerOptions());
 #pragma warning restore IL2026,IL3050
     }
 
