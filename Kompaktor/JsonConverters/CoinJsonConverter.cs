@@ -44,13 +44,13 @@ public class CoinJsonConverter:JsonConverter<Coin>
             switch(propertyName)
             {
                 case nameof(Coin.TxOut):
-                    txout = JsonSerializer.Deserialize<TxOut>(ref reader, options);
+                    txout = reader.Deserialize<TxOut>(options);
                     break;
                 case nameof(Coin.Outpoint):
-                    outpoint = JsonSerializer.Deserialize<OutPoint>(ref reader, options);
+                    outpoint = reader.Deserialize<OutPoint>(options);
                     break;
                 case nameof(ScriptCoin.Redeem):
-                    redeem = JsonSerializer.Deserialize<Script>(ref reader, options);
+                    redeem = reader.Deserialize<Script>(options);
                     break;
                 default:
                     reader.Skip();

@@ -1,4 +1,3 @@
-using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using WabiSabi.Crypto;
@@ -27,9 +26,7 @@ public class ProofJsonConverter : JsonConverter<Proof>
         {
             if (reader.TokenType == JsonTokenType.EndObject)
             {
-                return (Proof)Activator.CreateInstance(typeof(Proof),
-                    BindingFlags.NonPublic | BindingFlags.Instance, null,
-                    [publicNonces, responses], null)!;
+                return Proof.FromComponents(publicNonces!, responses!);
             }
 
             if (reader.TokenType != JsonTokenType.PropertyName)
@@ -58,6 +55,9 @@ public class ProofJsonConverter : JsonConverter<Proof>
 
     public override void Write(Utf8JsonWriter writer, Proof value, JsonSerializerOptions options)
     {
-        throw new NotImplementedException();
+        writer.WriteStartObject();
+        writer.WriteProperty(nameof(Proof.PublicNonces), value.PublicNonces, options);
+        writer.WriteProperty(nameof(Proof.Responses), value.Responses, options);
+        writer.WriteEndObject();
     }
 }
