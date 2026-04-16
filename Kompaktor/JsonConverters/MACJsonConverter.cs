@@ -27,7 +27,9 @@ public class MACJsonConverter : JsonConverter<MAC>
         {
             if (reader.TokenType == JsonTokenType.EndObject)
             {
-                return MAC.FromComponents(t.Value, v!);
+                if (t is null || v is null)
+                    throw new JsonException("Missing required fields for MAC.");
+                return MAC.FromComponents(t.Value, v);
             }
 
             if (reader.TokenType != JsonTokenType.PropertyName)

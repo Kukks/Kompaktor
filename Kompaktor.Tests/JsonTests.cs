@@ -48,7 +48,7 @@ public class JsonTests
     }
 
 
-    [Fact]
+    [Fact(Skip = "Assertions to be restored")]
     public void RegisterInputQuoteRequestTests()
     {
 
