@@ -580,6 +580,11 @@ public class KompaktorRoundClient : IDisposable
         if (otherInputs.Count == 0)
             return;
 
+        // Build lookup from OutPoint to registration event for BIP322 signature verification
+        var registrationEvents = Round.GetEventsSince(null)
+            .OfType<KompaktorRoundEventInputRegistered>()
+            .ToDictionary(e => e.Coin.Outpoint, e => e);
+
         var invalidInputs = new List<OutPoint>();
         foreach (var coin in otherInputs)
         {
@@ -589,21 +594,41 @@ public class KompaktorRoundClient : IDisposable
                 invalidInputs.Add(coin.Outpoint);
                 Logger.LogError("UTXO verification failed for input {Outpoint} — claimed {Amount} at {Script}",
                     coin.Outpoint, coin.Amount, coin.ScriptPubKey);
+                continue;
+            }
+
+            // Verify BIP322 ownership proof
+            if (!registrationEvents.TryGetValue(coin.Outpoint, out var regEvent))
+            {
+                invalidInputs.Add(coin.Outpoint);
+                Logger.LogError("No registration event found for input {Outpoint} — cannot verify ownership proof",
+                    coin.Outpoint);
+                continue;
+            }
+
+            var address = coin.ScriptPubKey.GetDestinationAddress(_network);
+            if (address is null ||
+                !address.VerifyBIP322(Round.RoundEventCreated.RoundId, regEvent.QuoteRequest.Signature, [coin]))
+            {
+                invalidInputs.Add(coin.Outpoint);
+                Logger.LogError("BIP322 ownership proof verification failed for input {Outpoint}",
+                    coin.Outpoint);
             }
         }
 
         if (invalidInputs.Count > 0)
         {
             Logger.LogError(
-                "REFUSING TO SIGN: {Count} inputs failed UTXO verification. " +
+                "REFUSING TO SIGN: {Count} inputs failed verification. " +
                 "Coordinator may be injecting fabricated inputs.", invalidInputs.Count);
             throw new Errors.KompaktorProtocolException(
                 Errors.KompaktorProtocolErrorCode.InputNotValid,
-                $"{invalidInputs.Count} inputs failed UTXO verification",
+                $"{invalidInputs.Count} inputs failed verification",
                 Round.RoundEventCreated.RoundId);
         }
 
-        Logger.LogInformation("UTXO verification passed for {Count} other participants' inputs", otherInputs.Count);
+        Logger.LogInformation("UTXO and BIP322 ownership verification passed for {Count} other participants' inputs",
+            otherInputs.Count);
     }
 
     /// <summary>
