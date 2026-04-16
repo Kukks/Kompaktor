@@ -8,6 +8,7 @@ using Microsoft.Extensions.Logging.Console;
 using Microsoft.Extensions.Options;
 using NBitcoin.Secp256k1;
 using WabiSabi;
+using WabiSabi.CredentialRequesting;
 using WabiSabi.Crypto;
 using WabiSabi.Crypto.Groups;
 using WabiSabi.Crypto.ZeroKnowledge;
@@ -48,10 +49,72 @@ public class JsonTests
     }
 
 
-    [Fact(Skip = "Assertions to be restored")]
-    public void RegisterInputQuoteRequestTests()
+    [Fact]
+    public void ZeroCredentialsRequest_RoundTrip()
     {
+        var options = KompaktorJsonHelper.CreateSerializerOptions();
 
+        var issuanceRequest = IssuanceRequest.FromComponents(Generators.Gg, new[] { Generators.Ga, Generators.Gh });
+        var proof = Proof.FromComponents(
+            GroupElementVector.FromElements(new[] { Generators.G, Generators.Gg }),
+            ScalarVector.FromScalars(new[] { new Scalar(5), new Scalar(10) }));
+        var request = new ZeroCredentialsRequest(new[] { issuanceRequest }, new[] { proof });
+
+        var json = JsonSerializer.Serialize<ICredentialsRequest>(request, options);
+        var deserialized = JsonSerializer.Deserialize<ICredentialsRequest>(json, options)!;
+
+        Assert.Equal(0, deserialized.Delta);
+        Assert.Empty(deserialized.Presented);
+        Assert.Single(deserialized.Requested);
+        Assert.Single(deserialized.Proofs);
+
+        // Verify nested IssuanceRequest
+        var rtIr = deserialized.Requested.First();
+        Assert.Equal(issuanceRequest.Ma, rtIr.Ma);
+        Assert.Equal(issuanceRequest.BitCommitments.Count(), rtIr.BitCommitments.Count());
+        foreach (var (orig, rt) in issuanceRequest.BitCommitments.Zip(rtIr.BitCommitments))
+            Assert.Equal(orig, rt);
+
+        // Verify nested Proof
+        var rtProof = deserialized.Proofs.First();
+        foreach (var (orig, rt) in proof.PublicNonces.Zip(rtProof.PublicNonces))
+            Assert.Equal(orig, rt);
+        foreach (var (orig, rt) in proof.Responses.Zip(rtProof.Responses))
+            Assert.Equal(orig, rt);
+    }
+
+    [Fact]
+    public void RealCredentialsRequest_RoundTrip()
+    {
+        var options = KompaktorJsonHelper.CreateSerializerOptions();
+
+        var presentation = CredentialPresentation.FromComponents(
+            Generators.Ga, Generators.Gx0, Generators.Gx1, Generators.GV, Generators.Gs);
+        var issuanceRequest = IssuanceRequest.FromComponents(Generators.Gg, new[] { Generators.Ga });
+        var proof = Proof.FromComponents(
+            GroupElementVector.FromElements(new[] { Generators.G }),
+            ScalarVector.FromScalars(new[] { new Scalar(7) }));
+        var request = new RealCredentialsRequest(
+            delta: 100_000,
+            presented: new[] { presentation },
+            requested: new[] { issuanceRequest },
+            proofs: new[] { proof });
+
+        var json = JsonSerializer.Serialize<ICredentialsRequest>(request, options);
+        var deserialized = JsonSerializer.Deserialize<ICredentialsRequest>(json, options)!;
+
+        Assert.Equal(100_000, deserialized.Delta);
+        Assert.Single(deserialized.Presented);
+        Assert.Single(deserialized.Requested);
+        Assert.Single(deserialized.Proofs);
+
+        // Verify CredentialPresentation survives round-trip
+        var rtCp = deserialized.Presented.First();
+        Assert.Equal(presentation.Ca, rtCp.Ca);
+        Assert.Equal(presentation.Cx0, rtCp.Cx0);
+        Assert.Equal(presentation.Cx1, rtCp.Cx1);
+        Assert.Equal(presentation.CV, rtCp.CV);
+        Assert.Equal(presentation.S, rtCp.S);
     }
 }
 

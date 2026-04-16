@@ -1,4 +1,5 @@
 ﻿using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
 using JsonSerializer = System.Text.Json.JsonSerializer;
 
 namespace Kompaktor.JsonConverters;
@@ -17,6 +18,11 @@ public static class KompaktorJsonHelper
 
     public static void ConfigureJsonOptions(JsonSerializerOptions options)
     {
+#pragma warning disable IL2026,IL3050
+        options.TypeInfoResolver = JsonTypeInfoResolver.Combine(
+            Kompaktor.JsonConverters.SourceGenerationContext.Default,
+            new DefaultJsonTypeInfoResolver());
+#pragma warning restore IL2026,IL3050
         foreach (var converter in Kompaktor.JsonConverters.SourceGenerationContext.DefaultConverters)
         {
             if (!options.Converters.Contains(converter))

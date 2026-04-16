@@ -55,6 +55,9 @@ public class ProofJsonConverter : JsonConverter<Proof>
 
     public override void Write(Utf8JsonWriter writer, Proof value, JsonSerializerOptions options)
     {
-        throw new NotImplementedException();
+        writer.WriteStartObject();
+        writer.WriteProperty(nameof(Proof.PublicNonces), value.PublicNonces, options);
+        writer.WriteProperty(nameof(Proof.Responses), value.Responses, options);
+        writer.WriteEndObject();
     }
 }
