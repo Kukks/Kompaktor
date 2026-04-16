@@ -578,7 +578,12 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
 
     private void WarnIfNoP2trInput()
     {
-        if (!HasP2trInput)
+        var activeOutpoints = NotReadyToSign.Values.ToHashSet();
+        var hasActiveP2trInput = Inputs.Any(c =>
+            activeOutpoints.Contains(c.Outpoint) &&
+            c.ScriptPubKey.IsScriptType(ScriptType.Taproot));
+
+        if (!hasActiveP2trInput)
             _logger.LogWarning("No P2TR inputs in round — BIP 341 scriptPubKey commitment protection is not active. " +
                                "Ownership proof equivocation by a malicious coordinator cannot be detected at signing time.");
     }
