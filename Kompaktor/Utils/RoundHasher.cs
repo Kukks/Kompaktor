@@ -28,27 +28,27 @@ public static class RoundHasher
         using var sha = SHA256.Create();
         var sb = new StringBuilder();
 
-        sb.Append(startTime.ToUnixTimeMilliseconds());
-        sb.Append(feeRate.FeePerK.Satoshi);
-        sb.Append(inputTimeout.Ticks);
-        sb.Append(outputTimeout.Ticks);
-        sb.Append(signingTimeout.Ticks);
-        sb.Append(inputCount.Min).Append(inputCount.Max);
-        sb.Append(inputAmount.Min.Satoshi).Append(inputAmount.Max.Satoshi);
-        sb.Append(outputCount.Min).Append(outputCount.Max);
-        sb.Append(outputAmount.Min.Satoshi).Append(outputAmount.Max.Satoshi);
+        sb.Append(startTime.ToUnixTimeSeconds());
+        sb.Append('|').Append(feeRate.FeePerK.Satoshi);
+        sb.Append('|').Append(inputTimeout.Ticks);
+        sb.Append('|').Append(outputTimeout.Ticks);
+        sb.Append('|').Append(signingTimeout.Ticks);
+        sb.Append('|').Append(inputCount.Min).Append('|').Append(inputCount.Max);
+        sb.Append('|').Append(inputAmount.Min.Satoshi).Append('|').Append(inputAmount.Max.Satoshi);
+        sb.Append('|').Append(outputCount.Min).Append('|').Append(outputCount.Max);
+        sb.Append('|').Append(outputAmount.Min.Satoshi).Append('|').Append(outputAmount.Max.Satoshi);
 
         foreach (var (type, config) in credentials.OrderBy(kvp => kvp.Key))
         {
-            sb.Append(type);
-            sb.Append(config.Max);
-            sb.Append(config.IssuanceIn.Min).Append(config.IssuanceIn.Max);
-            sb.Append(config.IssuanceOut.Min).Append(config.IssuanceOut.Max);
-            sb.Append(config.UseBulletproofs);
+            sb.Append('|').Append(type);
+            sb.Append('|').Append(config.Max);
+            sb.Append('|').Append(config.IssuanceIn.Min).Append('|').Append(config.IssuanceIn.Max);
+            sb.Append('|').Append(config.IssuanceOut.Min).Append('|').Append(config.IssuanceOut.Max);
+            sb.Append('|').Append(config.UseBulletproofs);
         }
 
         if (blameOf is not null)
-            sb.Append(blameOf);
+            sb.Append('|').Append(blameOf);
 
         var hash = sha.ComputeHash(Encoding.UTF8.GetBytes(sb.ToString()));
         return Convert.ToHexString(hash).ToLower();
