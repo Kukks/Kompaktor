@@ -3,8 +3,10 @@ using Kompaktor.Prison;
 using Kompaktor.Server;
 using Kompaktor.Server.Orchestration;
 using Kompaktor.JsonConverters;
+using Kompaktor.Utils;
 using NBitcoin;
 using NBitcoin.RPC;
+using NBitcoin.Secp256k1;
 using WabiSabi.Crypto.Randomness;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -28,6 +30,19 @@ var network = Network.RegTest;
 
 var rpcClient = new RPCClient($"{rpcUser}:{rpcPassword}", rpcUri, network);
 
+// Load coordinator signing key from config, or generate ephemeral
+ECPrivKey? coordinatorSigningKey = null;
+if (!string.IsNullOrEmpty(coordinatorOptions.CoordinatorSigningKeyHex))
+{
+    coordinatorSigningKey = coordinatorOptions.CoordinatorSigningKeyHex.ToPrivKey();
+}
+else
+{
+    var logger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Startup");
+    logger.LogWarning("No CoordinatorSigningKeyHex configured — using ephemeral key. " +
+                       "Transcript signatures will not survive restarts.");
+}
+
 // Register services
 builder.Services.AddSingleton(coordinatorOptions);
 builder.Services.AddSingleton(new KompaktorPrison());
@@ -38,7 +53,8 @@ builder.Services.AddSingleton<KompaktorRoundManager>(sp =>
         new InsecureRandom(),
         sp.GetRequiredService<ILoggerFactory>(),
         coordinatorOptions,
-        sp.GetRequiredService<KompaktorPrison>()));
+        sp.GetRequiredService<KompaktorPrison>(),
+        coordinatorSigningKey));
 
 // Round orchestration
 builder.Services.AddSingleton<IRoundSchedulingPolicy>(new DemandAdaptiveSchedulingPolicy());
