@@ -291,9 +291,8 @@ public class KompaktorRoundClient : IDisposable
                 // This applies to ALL terminal statuses — once the coordinator has
                 // seen the mapping between input identity and output script, reusing
                 // that script in a future round enables intersection attacks.
-                var exposedScripts = AllocatedPlannedOutputs.Keys
+                var exposedScripts = RegisteredOutputs
                     .Select(o => o.ScriptPubKey)
-                    .Concat(RegisteredOutputs.Select(o => o.ScriptPubKey))
                     .Distinct()
                     .ToList();
                 if (exposedScripts.Count > 0)
