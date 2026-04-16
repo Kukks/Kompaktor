@@ -355,7 +355,10 @@ public class KompaktorRoundClient : IDisposable
         Logger.LogInformation(
             $"Fee audit: inputs={feeBreakdown.TotalInputs} outputs={feeBreakdown.TotalOutputs} " +
             $"fee={feeBreakdown.ActualFee} expected={feeBreakdown.ExpectedMiningFee} surplus={feeBreakdown.Surplus}");
-        if (feeBreakdown.HasExcessiveSurplus())
+        // Scale threshold with transaction size: each input/output contributes up to feeRate sats
+        // of rounding error from per-element vs whole-transaction fee computation differences.
+        var surplusThreshold = Money.Satoshis(546 + (Round.Inputs.Count + Round.Outputs.Count) * 3);
+        if (feeBreakdown.HasExcessiveSurplus(surplusThreshold))
         {
             Logger.LogError(
                 $"EXCESSIVE FEE SURPLUS: {feeBreakdown.Surplus} sats beyond expected mining fee. " +
