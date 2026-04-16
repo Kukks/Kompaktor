@@ -1936,7 +1936,8 @@ public class Test
                     new MoneyRange(Money.Satoshis(10000), Money.Coins(100)),
                     new IntRange(1, 100),
                     new MoneyRange(Money.Satoshis(10000), Money.Coins(100)),
-                    issuers.ToDictionary(pair => pair.Key, pair => pair.Key.CredentialConfiguration(pair.Value))),
+                    issuers.ToDictionary(pair => pair.Key, pair => pair.Key.CredentialConfiguration(pair.Value)),
+                    TimeSpan.FromSeconds(5)), // soft timeout so we don't wait the full 30s
                 issuers);
 
             Eventually(() =>
@@ -1974,12 +1975,10 @@ public class Test
                 SecureRandom.Instance, Network, round, apiFactory, disruptorTraits,
                 disruptorWallet, _loggerFactory.CreateLogger("Disruptor"));
 
-            // Kill the disruptor when signing starts so it never submits signatures
+            // Kill the disruptor when signing starts so it never submits signatures.
+            // Throwing prevents Sign() from executing (Dispose() alone races with the signing code).
             disruptorClient.StartSigning += (_) =>
-            {
-                disruptorClient.Dispose();
-                return Task.CompletedTask;
-            };
+                throw new OperationCanceledException("Disruptor refusing to sign");
 
             // Wait for the round to fail and blame to be requested
             var blameResult = await blameRequested.Task.WaitAsync(TimeSpan.FromMinutes(3));
@@ -2004,6 +2003,7 @@ public class Test
 
             foreach (var client in honestClients)
                 client.Dispose();
+            disruptorClient.Dispose();
         }
 
         Assert.NotNull(blameWhitelist);
