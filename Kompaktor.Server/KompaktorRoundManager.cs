@@ -6,7 +6,7 @@ using Kompaktor.Prison;
 using Kompaktor.Utils;
 using Microsoft.Extensions.Logging;
 using NBitcoin;
-using NBitcoin.RPC;
+using Kompaktor.Blockchain;
 using NBitcoin.Secp256k1;
 using WabiSabi.Crypto;
 using WabiSabi.Crypto.Randomness;
@@ -20,7 +20,7 @@ public class KompaktorRoundManager : IDisposable
 {
     private readonly ConcurrentDictionary<string, KompaktorRoundOperator> _rounds = new();
     private readonly Network _network;
-    private readonly RPCClient _rpcClient;
+    private readonly IBlockchainBackend _blockchain;
     private readonly WasabiRandom _random;
     private readonly ILoggerFactory _loggerFactory;
     private readonly KompaktorCoordinatorOptions _options;
@@ -29,7 +29,7 @@ public class KompaktorRoundManager : IDisposable
 
     public KompaktorRoundManager(
         Network network,
-        RPCClient rpcClient,
+        IBlockchainBackend blockchain,
         WasabiRandom random,
         ILoggerFactory loggerFactory,
         KompaktorCoordinatorOptions? options = null,
@@ -37,7 +37,7 @@ public class KompaktorRoundManager : IDisposable
         ECPrivKey? coordinatorSigningKey = null)
     {
         _network = network;
-        _rpcClient = rpcClient;
+        _blockchain = blockchain;
         _random = random;
         _loggerFactory = loggerFactory;
         _options = options ?? new KompaktorCoordinatorOptions();
@@ -49,7 +49,7 @@ public class KompaktorRoundManager : IDisposable
     public async Task<string> CreateRound()
     {
         var logger = _loggerFactory.CreateLogger("Round-pending");
-        var op = new KompaktorRoundOperator(_network, _rpcClient, _random, logger, _prison);
+        var op = new KompaktorRoundOperator(_network, _blockchain, _random, logger, _prison);
         if (_coordinatorSigningKey is not null)
             op.SetCoordinatorSigningKey(_coordinatorSigningKey);
 
@@ -148,7 +148,7 @@ public class KompaktorRoundManager : IDisposable
     public async Task<string> CreateBlameRound(string parentRoundId, HashSet<OutPoint> whitelist)
     {
         var logger = _loggerFactory.CreateLogger("BlameRound-pending");
-        var op = new KompaktorRoundOperator(_network, _rpcClient, _random, logger, _prison);
+        var op = new KompaktorRoundOperator(_network, _blockchain, _random, logger, _prison);
         if (_coordinatorSigningKey is not null)
             op.SetCoordinatorSigningKey(_coordinatorSigningKey);
 

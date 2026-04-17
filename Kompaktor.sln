@@ -27,6 +27,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NBullet.Secp256k1", "lib\NB
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Kompaktor.AotTest", "Kompaktor.AotTest\Kompaktor.AotTest.csproj", "{22DEF210-DFFF-4559-BC36-C8BA2DFDC2B4}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Kompaktor.Blockchain", "Kompaktor.Blockchain\Kompaktor.Blockchain.csproj", "{3B1C6579-BA85-437E-BE53-20EB3BF996D7}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -133,6 +135,18 @@ Global
 		{22DEF210-DFFF-4559-BC36-C8BA2DFDC2B4}.Release|x64.Build.0 = Release|Any CPU
 		{22DEF210-DFFF-4559-BC36-C8BA2DFDC2B4}.Release|x86.ActiveCfg = Release|Any CPU
 		{22DEF210-DFFF-4559-BC36-C8BA2DFDC2B4}.Release|x86.Build.0 = Release|Any CPU
+		{3B1C6579-BA85-437E-BE53-20EB3BF996D7}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{3B1C6579-BA85-437E-BE53-20EB3BF996D7}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{3B1C6579-BA85-437E-BE53-20EB3BF996D7}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{3B1C6579-BA85-437E-BE53-20EB3BF996D7}.Debug|x64.Build.0 = Debug|Any CPU
+		{3B1C6579-BA85-437E-BE53-20EB3BF996D7}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{3B1C6579-BA85-437E-BE53-20EB3BF996D7}.Debug|x86.Build.0 = Debug|Any CPU
+		{3B1C6579-BA85-437E-BE53-20EB3BF996D7}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{3B1C6579-BA85-437E-BE53-20EB3BF996D7}.Release|Any CPU.Build.0 = Release|Any CPU
+		{3B1C6579-BA85-437E-BE53-20EB3BF996D7}.Release|x64.ActiveCfg = Release|Any CPU
+		{3B1C6579-BA85-437E-BE53-20EB3BF996D7}.Release|x64.Build.0 = Release|Any CPU
+		{3B1C6579-BA85-437E-BE53-20EB3BF996D7}.Release|x86.ActiveCfg = Release|Any CPU
+		{3B1C6579-BA85-437E-BE53-20EB3BF996D7}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

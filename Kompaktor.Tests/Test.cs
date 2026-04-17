@@ -4,6 +4,7 @@ using System.Net;
 using System.Text;
 using Kompaktor.Behaviors;
 using Kompaktor.Behaviors.InteractivePayments;
+using Kompaktor.Blockchain;
 using Kompaktor.Credentials;
 using Kompaktor.Models;
 using Kompaktor.Utils;
@@ -40,6 +41,7 @@ public class Test
             UserPassword = new NetworkCredential("ceiwHEbqWI83", "DwubwWsoo3"),
             Server = "http://localhost:53782"
         }, Network);
+        Blockchain = new BitcoinCoreBackend(RPC);
         for (int attempt = 0; attempt < 30; attempt++)
         {
             try
@@ -58,6 +60,8 @@ public class Test
     public Network Network { get; }
 
     public RPCClient RPC { get; }
+
+    public IBlockchainBackend Blockchain { get; }
 
 
     [Fact]
@@ -124,7 +128,7 @@ public class Test
     [Fact]
     public async Task CanCreateRoundAndFail()
     {
-        using var roundOperator = new KompaktorRoundOperator(Network, RPC, SecureRandom.Instance,
+        using var roundOperator = new KompaktorRoundOperator(Network, Blockchain, SecureRandom.Instance,
             _loggerFactory.CreateLogger<KompaktorRoundOperator>());
         ConcurrentBag<KompaktorRoundEvent> roundEvents = new();
 
@@ -193,7 +197,7 @@ public class Test
         await RPC.GenerateAsync(1);
 
         // Round 1: Multi-wallet consolidation round
-        using (var roundOperator = new KompaktorRoundOperator(Network, RPC, SecureRandom.Instance,
+        using (var roundOperator = new KompaktorRoundOperator(Network, Blockchain, SecureRandom.Instance,
                    _loggerFactory.CreateLogger<KompaktorRoundOperator>()))
         {
             ConcurrentBag<KompaktorRoundEvent> roundEvents = new();
@@ -294,7 +298,7 @@ public class Test
 
         // Round 2: Payment round — first participant pays the receiver
         var wallet = wallets[1]; // First participant
-        using (var roundOperator = new KompaktorRoundOperator(Network, RPC, SecureRandom.Instance,
+        using (var roundOperator = new KompaktorRoundOperator(Network, Blockchain, SecureRandom.Instance,
                    _loggerFactory.CreateLogger<KompaktorRoundOperator>()))
         {
             ConcurrentBag<KompaktorRoundEvent> roundEvents = new();
@@ -397,7 +401,7 @@ public class Test
         await wallet.SchedulePayment(interactivePayment.Destination, interactivePayment.Amount,
             interactivePayment.KompaktorKey.ToXPubKey(), false);
 
-        using (var roundOperator = new KompaktorRoundOperator(Network, RPC, SecureRandom.Instance,
+        using (var roundOperator = new KompaktorRoundOperator(Network, Blockchain, SecureRandom.Instance,
                    _loggerFactory.CreateLogger<KompaktorRoundOperator>()))
         {
             ConcurrentBag<KompaktorRoundEvent> roundEvents = new();
@@ -572,7 +576,7 @@ public class Test
         phaseLog.LogInformation("[TIMER] Payment scheduling ({Count} payments): {Elapsed}", scale, phaseSw.Elapsed);
         phaseSw.Restart();
 
-        using (var roundOperator = new KompaktorRoundOperator(Network, RPC, SecureRandom.Instance,
+        using (var roundOperator = new KompaktorRoundOperator(Network, Blockchain, SecureRandom.Instance,
                    _loggerFactory.CreateLogger<KompaktorRoundOperator>()))
         {
             ConcurrentBag<KompaktorRoundEvent> roundEvents = new();
@@ -844,7 +848,7 @@ public class Test
         phaseLog.LogInformation("[TIMER] Setup complete ({Senders} senders, {Receivers} receivers): {Elapsed}",
             totalSenders, receiverCount, totalSw.Elapsed);
 
-        using (var roundOperator = new KompaktorRoundOperator(Network, RPC, SecureRandom.Instance,
+        using (var roundOperator = new KompaktorRoundOperator(Network, Blockchain, SecureRandom.Instance,
                    _loggerFactory.CreateLogger<KompaktorRoundOperator>()))
         {
             ConcurrentBag<KompaktorRoundEvent> roundEvents = new();
@@ -1090,7 +1094,7 @@ public class Test
         graph.AppendLine("╚══════════════════════════════════════════════════════╝");
         _loggerFactory.CreateLogger("PaymentGraph").LogInformation(graph.ToString());
 
-        using (var roundOperator = new KompaktorRoundOperator(Network, RPC, SecureRandom.Instance,
+        using (var roundOperator = new KompaktorRoundOperator(Network, Blockchain, SecureRandom.Instance,
                    _loggerFactory.CreateLogger<KompaktorRoundOperator>()))
         {
             ConcurrentBag<KompaktorRoundEvent> roundEvents = new();
@@ -1350,7 +1354,7 @@ public class Test
         graph.AppendLine("╚══════════════════════════════════════════════════════╝");
         _loggerFactory.CreateLogger("PaymentGraph").LogInformation(graph.ToString());
 
-        using (var roundOperator = new KompaktorRoundOperator(Network, RPC, SecureRandom.Instance,
+        using (var roundOperator = new KompaktorRoundOperator(Network, Blockchain, SecureRandom.Instance,
                    _loggerFactory.CreateLogger<KompaktorRoundOperator>()))
         {
             ConcurrentBag<KompaktorRoundEvent> roundEvents = new();
@@ -1647,7 +1651,7 @@ public class Test
 
         var totalInputs = walletsToFund.Count; // everyone who has coins registers
 
-        using (var roundOperator = new KompaktorRoundOperator(Network, RPC, SecureRandom.Instance,
+        using (var roundOperator = new KompaktorRoundOperator(Network, Blockchain, SecureRandom.Instance,
                    _loggerFactory.CreateLogger<KompaktorRoundOperator>()))
         {
             ConcurrentBag<KompaktorRoundEvent> roundEvents = new();
@@ -1903,7 +1907,7 @@ public class Test
         HashSet<OutPoint>? blameWhitelist = null;
         string? parentRoundId = null;
 
-        using (var roundOperator = new KompaktorRoundOperator(Network, RPC, SecureRandom.Instance,
+        using (var roundOperator = new KompaktorRoundOperator(Network, Blockchain, SecureRandom.Instance,
                    _loggerFactory.CreateLogger<KompaktorRoundOperator>(), prison))
         {
             ConcurrentBag<KompaktorRoundEvent> roundEvents = new();
@@ -2011,7 +2015,7 @@ public class Test
         Assert.Equal(honestCount, blameWhitelist.Count);
 
         // ── Blame Round: Only honest participants complete ──
-        using (var blameOperator = new KompaktorRoundOperator(Network, RPC, SecureRandom.Instance,
+        using (var blameOperator = new KompaktorRoundOperator(Network, Blockchain, SecureRandom.Instance,
                    _loggerFactory.CreateLogger<KompaktorRoundOperator>(), prison))
         {
             ConcurrentBag<KompaktorRoundEvent> blameEvents = new();
@@ -2268,7 +2272,7 @@ public class Test
 
         await RPC.GenerateAsync(1);
 
-        using var roundOperator = new KompaktorRoundOperator(Network, RPC, SecureRandom.Instance,
+        using var roundOperator = new KompaktorRoundOperator(Network, Blockchain, SecureRandom.Instance,
             _loggerFactory.CreateLogger<KompaktorRoundOperator>());
         ConcurrentBag<KompaktorRoundEvent> roundEvents = new();
 

@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <Description>Blockchain abstraction for Kompaktor — IBlockchainBackend interface and implementations</Description>
+        <IsAotCompatible>true</IsAotCompatible>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <PackageReference Include="NBitcoin" Version="7.0.46"/>
+    </ItemGroup>
+
+</Project>

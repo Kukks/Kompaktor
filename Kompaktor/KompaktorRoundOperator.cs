@@ -8,7 +8,7 @@ using Kompaktor.Prison;
 using Kompaktor.Utils;
 using Microsoft.Extensions.Logging;
 using NBitcoin;
-using NBitcoin.RPC;
+using Kompaktor.Blockchain;
 using NBitcoin.Secp256k1;
 using WabiSabi.Crypto;
 using WabiSabi.Crypto.Randomness;
@@ -20,17 +20,17 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
     private readonly Network _network;
     private readonly WasabiRandom _random;
     private readonly ILogger _logger;
-    private readonly RPCClient _rpcClient;
+    private readonly IBlockchainBackend _blockchain;
     private readonly KompaktorPrison? _prison;
     private readonly CancellationTokenSource _cts;
     private readonly SemaphoreSlim _statusSemaphore = new(1, 1);
     private volatile bool _inputSoftTimeoutReached;
     private ECPrivKey? _coordinatorSigningKey;
 
-    public KompaktorRoundOperator(Network network, RPCClient rpcClient, WasabiRandom random, ILogger logger, KompaktorPrison? prison = null)
+    public KompaktorRoundOperator(Network network, IBlockchainBackend blockchain, WasabiRandom random, ILogger logger, KompaktorPrison? prison = null)
     {
         _network = network;
-        _rpcClient = rpcClient;
+        _blockchain = blockchain;
         _random = random;
         _logger = logger;
         _prison = prison;
@@ -133,13 +133,13 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
             throw new KompaktorProtocolException(KompaktorProtocolErrorCode.InputNotWhitelisted,
                 "Input not whitelisted for this blame round");
 
-        var txOutStatus = await _rpcClient.GetTxOutAsync(txIn.PrevOut.Hash, (int)txIn.PrevOut.N);
+        var utxoInfo = await _blockchain.GetUtxoAsync(txIn.PrevOut);
 
-        if (txOutStatus is null or { Confirmations: < 1 } or { Confirmations: < 100, IsCoinBase: true })
+        if (utxoInfo is null or { Confirmations: < 1 } or { Confirmations: < 100, IsCoinBase: true })
             throw new KompaktorProtocolException(KompaktorProtocolErrorCode.InputNotValid,
                 "Coin not valid");
 
-        var coin = new Coin(txIn.PrevOut, new TxOut(txOutStatus.TxOut.Value, txOutStatus.TxOut.ScriptPubKey));
+        var coin = new Coin(txIn.PrevOut, utxoInfo.TxOut);
 
         // Enforce allowed input script types (empty set = allow all)
         var scriptType = coin.ScriptPubKey.TryGetScriptType();
@@ -154,14 +154,14 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
             throw new KompaktorProtocolException(KompaktorProtocolErrorCode.InputCountExceeded,
                 "Too many inputs in this round");
 
-        if (!txOutStatus.TxOut.ScriptPubKey.GetDestinationAddress(_network)!
+        if (!utxoInfo.TxOut.ScriptPubKey.GetDestinationAddress(_network)!
                 .VerifyBIP322(RoundEventCreated.RoundId, quoteRequest.Signature, [coin]))
             throw new KompaktorProtocolException(KompaktorProtocolErrorCode.InvalidOwnershipProof,
                 "Invalid signature");
 
         var feeRate = RoundEventCreated.FeeRate;
         var inputFee = coin.ScriptPubKey.EstimateFee(feeRate);
-        var credentialAmount = txOutStatus.TxOut.Value - inputFee;
+        var credentialAmount = utxoInfo.TxOut.Value - inputFee;
 
         if (credentialAmount.Satoshi <= 0)
             throw new KompaktorProtocolException(KompaktorProtocolErrorCode.InsufficientInputFee,
@@ -574,9 +574,7 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
                                 fee, Inputs.Count, tx.Outputs.Count);
                         // Pass maxfeerate=0 to skip the per-kVB fee rate check;
                         // the node's -maxtxfee still caps the absolute fee.
-                        var resp = await _rpcClient.SendCommandAsync("sendrawtransaction", tx.ToHex(), 0);
-                        resp.ThrowIfError();
-                        var result = uint256.Parse(resp.Result.ToString());
+                        var result = await _blockchain.BroadcastAsync(tx);
                         if (Status != KompaktorStatus.Broadcasting) return;
                         await UpdateStatus(result is not null ? KompaktorStatus.Completed : KompaktorStatus.Failed);
                     }

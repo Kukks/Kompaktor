@@ -6,6 +6,7 @@ using Kompaktor.Server.Orchestration;
 using Kompaktor.JsonConverters;
 using Kompaktor.Utils;
 using NBitcoin;
+using Kompaktor.Blockchain;
 using NBitcoin.RPC;
 using NBitcoin.Secp256k1;
 using WabiSabi.Crypto.Randomness;
@@ -30,6 +31,7 @@ var rpcPassword = builder.Configuration["Bitcoin:RpcPassword"] ?? "DwubwWsoo3";
 var network = Network.RegTest;
 
 var rpcClient = new RPCClient($"{rpcUser}:{rpcPassword}", rpcUri, network);
+var blockchain = new BitcoinCoreBackend(rpcClient);
 
 // Load coordinator signing key from config, or generate ephemeral
 ECPrivKey? coordinatorSigningKey = null;
@@ -52,7 +54,7 @@ builder.Services.AddSingleton(new KompaktorPrison());
 builder.Services.AddSingleton<KompaktorRoundManager>(sp =>
     new KompaktorRoundManager(
         network,
-        rpcClient,
+        blockchain,
         new InsecureRandom(),
         sp.GetRequiredService<ILoggerFactory>(),
         coordinatorOptions,

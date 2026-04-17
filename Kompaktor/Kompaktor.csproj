@@ -9,6 +9,7 @@
     <ItemGroup>
         <PackageReference Include="NBitcoin" Version="7.0.46"/>
         <PackageReference Include="NBitcoin.Secp256k1" Version="3.2.0"/>
+        <ProjectReference Include="..\Kompaktor.Blockchain\Kompaktor.Blockchain.csproj" />
         <ProjectReference Include="..\lib\NWabiSabi\WabiSabi\WabiSabi.csproj" />
     </ItemGroup>
 

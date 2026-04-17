@@ -20,6 +20,7 @@
 
     <ItemGroup>
       <ProjectReference Include="..\Kompaktor\Kompaktor.csproj" />
+      <ProjectReference Include="..\Kompaktor.Blockchain\Kompaktor.Blockchain.csproj" />
       <ProjectReference Include="..\Kompaktor.Server\Kompaktor.Server.csproj" />
     </ItemGroup>
 
