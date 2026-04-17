@@ -36,6 +36,7 @@ public class KompaktorRoundClient : IDisposable
     private readonly Network _network;
     public readonly KompaktorRound Round;
     private readonly Channel<KompaktorStatus> _statusChannel;
+    private readonly IRoundHistoryTracker? _roundHistoryTracker;
 
     public KompaktorRoundClient(
         WasabiRandom random,
@@ -44,7 +45,8 @@ public class KompaktorRoundClient : IDisposable
         IKompaktorRoundApiFactory factory,
         List<KompaktorClientBaseBehaviorTrait> behaviorTraits,
         IKompaktorWalletInterface walletInterface,
-        ILogger logger)
+        ILogger logger,
+        IRoundHistoryTracker? roundHistoryTracker = null)
     {
         _random = random;
         _network = network;
@@ -53,6 +55,7 @@ public class KompaktorRoundClient : IDisposable
         _behaviorTraits = behaviorTraits;
         _walletInterface = walletInterface;
         Logger = logger;
+        _roundHistoryTracker = roundHistoryTracker;
 
 
         foreach (var behaviorTrait in behaviorTraits) behaviorTrait.Start(this);
@@ -245,12 +248,39 @@ public class KompaktorRoundClient : IDisposable
             switch (phase)
             {
                 case KompaktorStatus.InputRegistration:
+                    // Check if too many consecutive failures suggest a malicious coordinator
+                    if (_roundHistoryTracker?.ShouldBackOff() == true)
+                    {
+                        Logger.LogError(
+                            $"Too many consecutive round failures ({_roundHistoryTracker.ConsecutiveFailures}). " +
+                            "Possible intersection attack — backing off.");
+                        exit = true;
+                        break;
+                    }
+
                     // Verify round parameters over a separate circuit before committing inputs.
                     // Detects coordinator equivocation (serving different params to different clients).
                     await VerifyRoundConsistency();
 
                     CoinCandidates = (await _walletInterface.GetCoins())
                         .Where(coin => Round.RoundEventCreated.InputAmount.Contains(coin.Amount)).ToList();
+
+                    // Exclude coins that would reveal new wallet cluster pairings
+                    if (_roundHistoryTracker != null && CoinCandidates.Count > 0)
+                    {
+                        var toExclude = _roundHistoryTracker.GetCoinsToExclude(CoinCandidates);
+                        if (toExclude.Count > 0)
+                        {
+                            Logger.LogInformation(
+                                $"Excluding {toExclude.Count} coins to limit cross-round cluster disclosure");
+                            CoinCandidates.RemoveAll(c => toExclude.Contains(c.Outpoint));
+                        }
+                    }
+
+                    // Shuffle candidates so behavior traits don't deterministically pick the same
+                    // coins across rounds. Without this, a malicious coordinator can predict which
+                    // coins will be selected and use round parameter tuning to profile the wallet.
+                    ShuffleCoinCandidates();
                     await StartCoinSelection.InvokeIfNotNullAsync(this);
                     await FinishedCoinSelection.InvokeIfNotNullAsync(this);
                     Logger.LogInformation($"Finished coin selection. Selected {AllocatedSelectedCoins.Count} coins");
@@ -280,9 +310,12 @@ public class KompaktorRoundClient : IDisposable
                 case KompaktorStatus.Broadcasting:
                     break;
                 case KompaktorStatus.Completed:
+                    if (RegisteredInputs.Length > 0)
+                        _roundHistoryTracker?.RecordSuccess();
                     exit = true;
                     break;
                 case KompaktorStatus.Failed:
+                    _roundHistoryTracker?.RecordFailedRound(RegisteredInputs);
                     exit = true;
                     break;
                 default:
@@ -372,6 +405,9 @@ public class KompaktorRoundClient : IDisposable
 
     private async Task Sign()
     {
+        // Verify other participants' inputs exist in the UTXO set (if we have full node access)
+        await VerifyInputUtxos();
+
         // Verify fee transparency before signing — ensure no hidden coordinator surplus
         var feeBreakdown = Round.GetFeeBreakdown();
         Logger.LogInformation(
@@ -599,6 +635,87 @@ public class KompaktorRoundClient : IDisposable
     //         FailedOutputs.Add(txOut);
     //     }
     // }
+
+    /// <summary>
+    /// Verifies other participants' inputs against the UTXO set before signing.
+    /// Detects fabricated inputs from a malicious coordinator that could be used
+    /// to forge ownership proofs (especially for P2WPKH inputs that don't commit
+    /// to all scriptPubKeys at signing time unlike P2TR).
+    /// Only runs if the wallet supports UTXO verification (full node clients).
+    /// </summary>
+    private async Task VerifyInputUtxos()
+    {
+        var myOutpoints = RegisteredInputs.ToHashSet();
+        var otherInputs = Round.Inputs.Where(c => !myOutpoints.Contains(c.Outpoint)).ToList();
+
+        if (otherInputs.Count == 0)
+            return;
+
+        // Build lookup from OutPoint to registration event for BIP322 signature verification
+        var registrationEvents = Round.GetEventsSince(null)
+            .OfType<KompaktorRoundEventInputRegistered>()
+            .ToDictionary(e => e.Coin.Outpoint, e => e);
+
+        var invalidInputs = new List<OutPoint>();
+        foreach (var coin in otherInputs)
+        {
+            var result = await _walletInterface.VerifyUtxo(coin.Outpoint, coin.TxOut);
+            if (result == false)
+            {
+                invalidInputs.Add(coin.Outpoint);
+                Logger.LogError("UTXO verification failed for input {Outpoint} — claimed {Amount} at {Script}",
+                    coin.Outpoint, coin.Amount, coin.ScriptPubKey);
+                continue;
+            }
+
+            // Verify BIP322 ownership proof
+            if (!registrationEvents.TryGetValue(coin.Outpoint, out var regEvent))
+            {
+                invalidInputs.Add(coin.Outpoint);
+                Logger.LogError("No registration event found for input {Outpoint} — cannot verify ownership proof",
+                    coin.Outpoint);
+                continue;
+            }
+
+            var address = coin.ScriptPubKey.GetDestinationAddress(_network);
+            if (address is null ||
+                !address.VerifyBIP322(Round.RoundEventCreated.RoundId, regEvent.QuoteRequest.Signature, [coin]))
+            {
+                invalidInputs.Add(coin.Outpoint);
+                Logger.LogError("BIP322 ownership proof verification failed for input {Outpoint}",
+                    coin.Outpoint);
+            }
+        }
+
+        if (invalidInputs.Count > 0)
+        {
+            Logger.LogError(
+                "REFUSING TO SIGN: {Count} inputs failed verification. " +
+                "Coordinator may be injecting fabricated inputs.", invalidInputs.Count);
+            throw new Errors.KompaktorProtocolException(
+                Errors.KompaktorProtocolErrorCode.InputNotValid,
+                $"{invalidInputs.Count} inputs failed verification",
+                Round.RoundEventCreated.RoundId);
+        }
+
+        Logger.LogInformation("UTXO and BIP322 ownership verification passed for {Count} other participants' inputs",
+            otherInputs.Count);
+    }
+
+    /// <summary>
+    /// Fisher-Yates shuffle of coin candidates to prevent deterministic selection
+    /// that a malicious coordinator could exploit to profile the wallet.
+    /// </summary>
+    private void ShuffleCoinCandidates()
+    {
+        if (CoinCandidates is null || CoinCandidates.Count <= 1)
+            return;
+        for (var i = CoinCandidates.Count - 1; i > 0; i--)
+        {
+            var j = _random.GetInt(0, i + 1);
+            (CoinCandidates[i], CoinCandidates[j]) = (CoinCandidates[j], CoinCandidates[i]);
+        }
+    }
 
     /// <summary>
     /// Queries the round info endpoint over a separate isolated circuit and compares
