@@ -9,6 +9,7 @@
     <ItemGroup>
         <PackageReference Include="MartinCostello.Logging.XUnit" Version="0.4.0" />
         <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="9.0.0" />
+        <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="9.0.0"/>
         <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0"/>
         <PackageReference Include="coverlet.collector" Version="6.0.2"/>
         <PackageReference Include="xunit" Version="2.9.3" />
@@ -21,6 +22,7 @@
     <ItemGroup>
       <ProjectReference Include="..\Kompaktor\Kompaktor.csproj" />
       <ProjectReference Include="..\Kompaktor.Blockchain\Kompaktor.Blockchain.csproj" />
+      <ProjectReference Include="..\Kompaktor.Wallet\Kompaktor.Wallet.csproj" />
       <ProjectReference Include="..\Kompaktor.Server\Kompaktor.Server.csproj" />
     </ItemGroup>
 

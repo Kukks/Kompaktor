@@ -1,0 +1,69 @@
+using Microsoft.EntityFrameworkCore;
+
+namespace Kompaktor.Wallet.Data;
+
+public class WalletDbContext : DbContext
+{
+    public WalletDbContext(DbContextOptions<WalletDbContext> options) : base(options) { }
+
+    public DbSet<WalletEntity> Wallets => Set<WalletEntity>();
+    public DbSet<AccountEntity> Accounts => Set<AccountEntity>();
+    public DbSet<AddressEntity> Addresses => Set<AddressEntity>();
+    public DbSet<UtxoEntity> Utxos => Set<UtxoEntity>();
+    public DbSet<TransactionEntity> Transactions => Set<TransactionEntity>();
+    public DbSet<CoinJoinRecordEntity> CoinJoinRecords => Set<CoinJoinRecordEntity>();
+    public DbSet<CoinJoinParticipationEntity> CoinJoinParticipations => Set<CoinJoinParticipationEntity>();
+    public DbSet<LabelEntity> Labels => Set<LabelEntity>();
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<WalletEntity>(e =>
+        {
+            e.HasKey(w => w.Id);
+            e.HasMany(w => w.Accounts).WithOne(a => a.Wallet).HasForeignKey(a => a.WalletId);
+        });
+
+        modelBuilder.Entity<AccountEntity>(e =>
+        {
+            e.HasKey(a => a.Id);
+            e.HasMany(a => a.Addresses).WithOne(addr => addr.Account).HasForeignKey(addr => addr.AccountId);
+        });
+
+        modelBuilder.Entity<AddressEntity>(e =>
+        {
+            e.HasKey(a => a.Id);
+            e.HasIndex(a => a.ScriptPubKey);
+            e.HasMany(a => a.Utxos).WithOne(u => u.Address).HasForeignKey(u => u.AddressId);
+        });
+
+        modelBuilder.Entity<UtxoEntity>(e =>
+        {
+            e.HasKey(u => u.Id);
+            e.HasIndex(u => new { u.TxId, u.OutputIndex }).IsUnique();
+        });
+
+        modelBuilder.Entity<TransactionEntity>(e =>
+        {
+            e.HasKey(t => t.Id);
+        });
+
+        modelBuilder.Entity<CoinJoinRecordEntity>(e =>
+        {
+            e.HasKey(c => c.Id);
+            e.HasOne(c => c.Transaction).WithMany().HasForeignKey(c => c.TransactionId);
+            e.HasMany(c => c.Participations).WithOne(p => p.CoinJoinRecord).HasForeignKey(p => p.CoinJoinRecordId);
+        });
+
+        modelBuilder.Entity<CoinJoinParticipationEntity>(e =>
+        {
+            e.HasKey(p => p.Id);
+            e.HasOne(p => p.Utxo).WithMany().HasForeignKey(p => p.UtxoId);
+        });
+
+        modelBuilder.Entity<LabelEntity>(e =>
+        {
+            e.HasKey(l => l.Id);
+            e.HasIndex(l => new { l.EntityType, l.EntityId });
+        });
+    }
+}

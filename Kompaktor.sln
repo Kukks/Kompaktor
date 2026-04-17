@@ -29,6 +29,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Kompaktor.AotTest", "Kompak
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Kompaktor.Blockchain", "Kompaktor.Blockchain\Kompaktor.Blockchain.csproj", "{3B1C6579-BA85-437E-BE53-20EB3BF996D7}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Kompaktor.Wallet", "Kompaktor.Wallet\Kompaktor.Wallet.csproj", "{715270A4-F0A0-4F78-9D00-2056BF84884B}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -147,6 +149,18 @@ Global
 		{3B1C6579-BA85-437E-BE53-20EB3BF996D7}.Release|x64.Build.0 = Release|Any CPU
 		{3B1C6579-BA85-437E-BE53-20EB3BF996D7}.Release|x86.ActiveCfg = Release|Any CPU
 		{3B1C6579-BA85-437E-BE53-20EB3BF996D7}.Release|x86.Build.0 = Release|Any CPU
+		{715270A4-F0A0-4F78-9D00-2056BF84884B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{715270A4-F0A0-4F78-9D00-2056BF84884B}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{715270A4-F0A0-4F78-9D00-2056BF84884B}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{715270A4-F0A0-4F78-9D00-2056BF84884B}.Debug|x64.Build.0 = Debug|Any CPU
+		{715270A4-F0A0-4F78-9D00-2056BF84884B}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{715270A4-F0A0-4F78-9D00-2056BF84884B}.Debug|x86.Build.0 = Debug|Any CPU
+		{715270A4-F0A0-4F78-9D00-2056BF84884B}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{715270A4-F0A0-4F78-9D00-2056BF84884B}.Release|Any CPU.Build.0 = Release|Any CPU
+		{715270A4-F0A0-4F78-9D00-2056BF84884B}.Release|x64.ActiveCfg = Release|Any CPU
+		{715270A4-F0A0-4F78-9D00-2056BF84884B}.Release|x64.Build.0 = Release|Any CPU
+		{715270A4-F0A0-4F78-9D00-2056BF84884B}.Release|x86.ActiveCfg = Release|Any CPU
+		{715270A4-F0A0-4F78-9D00-2056BF84884B}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
