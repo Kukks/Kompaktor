@@ -78,6 +78,10 @@ Kompaktor.sln
 │   ├── MnemonicEncryption.cs          # AES-256-GCM mnemonic encryption
 │   └── Data/                          # EF Core entities and WalletDbContext
 ├── Kompaktor.Wallet.Sample/ # Console app: coordinator + client in one process
+├── Kompaktor.Scoring/      # Anonymity scoring, label clustering, coin selection
+│   ├── AnonymityScorer.cs              # Per-UTXO anonymity score calculator
+│   ├── LabelClusterAnalyzer.cs         # Label propagation and cluster detection
+│   └── CoinSelectionAdvisor.cs         # Privacy-aware coin selection
 ├── Kompaktor.Client/       # HTTP client for remote coordinator communication
 │   ├── HttpKompaktorRoundApi.cs        # IKompaktorRoundApi over HTTP
 │   └── HttpKompaktorRoundApiFactory.cs # Factory with per-identity circuit isolation
@@ -117,6 +121,10 @@ Abstraction over blockchain data access that replaces the hard `RPCClient` depen
 ### `KompaktorHdWallet`
 
 HD wallet implementing `IKompaktorWalletInterface` with BIP-39 mnemonic generation, BIP-84 (P2WPKH) and BIP-86 (P2TR) key derivation, AES-256-GCM mnemonic encryption at rest, and EF Core/SQLite persistence for addresses, UTXOs, transactions, and coinjoin history. Gap limit of 20 addresses per chain with automatic exposed-address tracking for failed rounds.
+
+### `AnonymityScorer`
+
+Per-UTXO anonymity scoring engine. Computes raw anonymity set from coinjoin participant counts with multiplicative composition across rounds. Applies penalties for amount distinguishability (unique/rare output values), label clustering (known external sources like exchanges), and address reuse. Paired with `LabelClusterAnalyzer` (union-find label propagation) and `CoinSelectionAdvisor` (privacy-first, fee-saver, and consolidation strategies with cluster mixing warnings).
 
 ### `DependencyGraph2`
 
@@ -227,7 +235,7 @@ This starts a `bitcoind` regtest node on port 53782 with RPC credentials `ceiwHE
 dotnet test
 ```
 
-The test suite includes 280+ tests covering:
+The test suite includes 300+ tests covering:
 - Round lifecycle (input registration, output registration, signing, broadcasting)
 - Multi-participant coinjoins (up to 100 participants)
 - Interactive payments between participants during rounds
@@ -248,6 +256,9 @@ The test suite includes 280+ tests covering:
 - AES-256-GCM mnemonic encryption round-trip and wrong-passphrase rejection
 - HD wallet key derivation (BIP-84/86), address generation, coin queries
 - Electrum Stratum JSON-RPC framing, request correlation, and notification dispatch
+- Anonymity scoring with multiplicative composition, amount penalties, and label penalties
+- Label cluster analysis with union-find grouping and external source detection
+- Privacy-aware coin selection with cluster mixing warnings
 
 ### 4. Run the Coordinator Server
 
