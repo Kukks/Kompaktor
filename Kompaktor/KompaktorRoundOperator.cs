@@ -644,9 +644,19 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
                 throw new KompaktorProtocolException(KompaktorProtocolErrorCode.WrongPhase,
                     "Cannot go back in status");
 
-            // Sign the transcript before entering the signing phase
+            // Sign the transcript before entering the signing phase.
+            // Non-fatal: signing failure must not block the status transition.
             if (status == KompaktorStatus.Signing)
-                await SignTranscript();
+            {
+                try
+                {
+                    await SignTranscript();
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError("Transcript signing failed — round will proceed without signature: {Error}", ex.Message);
+                }
+            }
             _logger.LogInformation("[{RoundId}] {OldPhase} -> {NewPhase} | Inputs={InputCount} Outputs={OutputCount} Signatures={SignatureCount}",
                 RoundEventCreated?.RoundId ?? "?", Status, status, Inputs.Count, Outputs.Count, SignatureCount);
             await AddEvent(new KompaktorRoundEventStatusUpdate(status));

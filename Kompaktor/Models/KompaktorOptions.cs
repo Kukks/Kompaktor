@@ -96,7 +96,9 @@ public class KompaktorCoordinatorOptions
 
     /// <summary>
     /// Hex-encoded coordinator signing private key for transcript signatures.
-    /// If null, a random ephemeral key is generated on each startup (not suitable for production).
+    /// If null, an ephemeral key is generated at startup by the round manager.
+    /// Ephemeral keys do not survive restarts, so clients cannot verify transcript
+    /// continuity across coordinator restarts. Configure a persistent key for production.
     /// </summary>
     public string? CoordinatorSigningKeyHex { get; set; }
 }
