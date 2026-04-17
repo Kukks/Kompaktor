@@ -251,6 +251,10 @@ public class KompaktorRoundClient : IDisposable
 
                     CoinCandidates = (await _walletInterface.GetCoins())
                         .Where(coin => Round.RoundEventCreated.InputAmount.Contains(coin.Amount)).ToList();
+                    // Shuffle candidates so behavior traits don't deterministically pick the same
+                    // coins across rounds. Without this, a malicious coordinator can predict which
+                    // coins will be selected and use round parameter tuning to profile the wallet.
+                    ShuffleCoinCandidates();
                     await StartCoinSelection.InvokeIfNotNullAsync(this);
                     await FinishedCoinSelection.InvokeIfNotNullAsync(this);
                     Logger.LogInformation($"Finished coin selection. Selected {AllocatedSelectedCoins.Count} coins");
@@ -599,6 +603,21 @@ public class KompaktorRoundClient : IDisposable
     //         FailedOutputs.Add(txOut);
     //     }
     // }
+
+    /// <summary>
+    /// Fisher-Yates shuffle of coin candidates to prevent deterministic selection
+    /// that a malicious coordinator could exploit to profile the wallet.
+    /// </summary>
+    private void ShuffleCoinCandidates()
+    {
+        if (CoinCandidates is null || CoinCandidates.Count <= 1)
+            return;
+        for (var i = CoinCandidates.Count - 1; i > 0; i--)
+        {
+            var j = _random.GetInt(0, i + 1);
+            (CoinCandidates[i], CoinCandidates[j]) = (CoinCandidates[j], CoinCandidates[i]);
+        }
+    }
 
     /// <summary>
     /// Queries the round info endpoint over a separate isolated circuit and compares

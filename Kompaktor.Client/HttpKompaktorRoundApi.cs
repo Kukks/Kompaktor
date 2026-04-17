@@ -42,7 +42,8 @@ public class HttpKompaktorRoundApi : IKompaktorRoundApi, IDisposable
                 _roundId);
         }
 
-        var result = await response.Content.ReadFromJsonAsync<RoundInfoResponse>(_jsonOptions);
+        var responseBytes = await response.Content.ReadAsByteArrayAsync();
+        var result = KompaktorJsonHelper.DeserializeFromBytes<RoundInfoResponse>(responseBytes);
         return result ?? throw new KompaktorProtocolException(
             KompaktorProtocolErrorCode.InternalError,
             "Null response from server",
