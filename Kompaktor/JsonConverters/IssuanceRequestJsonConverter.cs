@@ -1,4 +1,3 @@
-using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using WabiSabi;
@@ -27,9 +26,7 @@ public class IssuanceRequestJsonConverter : JsonConverter<IssuanceRequest>
         {
             if (reader.TokenType == JsonTokenType.EndObject)
             {
-                return (IssuanceRequest)Activator.CreateInstance(typeof(IssuanceRequest),
-                    BindingFlags.NonPublic | BindingFlags.Instance, null,
-                    [ma, bitCommitments], null)!;
+                return IssuanceRequest.FromComponents(ma!, bitCommitments!);
             }
 
             if (reader.TokenType != JsonTokenType.PropertyName)

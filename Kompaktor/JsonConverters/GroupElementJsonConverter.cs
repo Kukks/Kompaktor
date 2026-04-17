@@ -15,4 +15,7 @@ public class GroupElementJsonConverter : GenericStringJsonConverter<GroupElement
             throw new System.Text.Json.JsonException($"Invalid GroupElement hex value: '{str}'", ex);
         }
     }
+
+    public override string ToString(GroupElement value) =>
+        Convert.ToHexString(value.ToBytes()).ToLowerInvariant();
 }

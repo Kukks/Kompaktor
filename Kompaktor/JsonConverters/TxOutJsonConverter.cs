@@ -39,10 +39,10 @@ public class TxOutJsonConverter : JsonConverter<TxOut>
             switch(propertyName)
             {
                 case nameof(TxOut.Value):
-                    value = JsonSerializer.Deserialize<Money>(ref reader, options);
+                    value = reader.Deserialize<Money>(options);
                     break;
                 case nameof(TxOut.ScriptPubKey):
-                    scriptPubKey = JsonSerializer.Deserialize<Script>(ref reader, options);
+                    scriptPubKey = reader.Deserialize<Script>(options);
                     break;
                 default:
                     reader.Skip();

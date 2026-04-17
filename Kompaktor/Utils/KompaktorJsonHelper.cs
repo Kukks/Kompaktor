@@ -1,4 +1,5 @@
 ﻿using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
 using JsonSerializer = System.Text.Json.JsonSerializer;
 
 namespace Kompaktor.JsonConverters;
@@ -17,6 +18,11 @@ public static class KompaktorJsonHelper
 
     public static void ConfigureJsonOptions(JsonSerializerOptions options)
     {
+#pragma warning disable IL2026,IL3050
+        options.TypeInfoResolver = JsonTypeInfoResolver.Combine(
+            Kompaktor.JsonConverters.SourceGenerationContext.Default,
+            new DefaultJsonTypeInfoResolver());
+#pragma warning restore IL2026,IL3050
         foreach (var converter in Kompaktor.JsonConverters.SourceGenerationContext.DefaultConverters)
         {
             if (!options.Converters.Contains(converter))
@@ -26,10 +32,7 @@ public static class KompaktorJsonHelper
 
     public static void Serialize<T>(this Utf8JsonWriter writer, T value, JsonSerializerOptions options)
     {
-        var o = new JsonSerializerOptions(options)
-        {
-            TypeInfoResolver = SourceGenerationContext.Default
-        };
+        var o = new JsonSerializerOptions(options);
         foreach (var converter in SourceGenerationContext.DefaultConverters)
         {
             o.Converters.Add(converter);
@@ -39,12 +42,9 @@ public static class KompaktorJsonHelper
 #pragma warning restore IL2026,IL3050
     }
 
-    public static T? Deserialize<T>(this Utf8JsonReader reader, JsonSerializerOptions options)
+    public static T? Deserialize<T>(this ref Utf8JsonReader reader, JsonSerializerOptions options)
     {
-        var o = new JsonSerializerOptions(options)
-        {
-            TypeInfoResolver = SourceGenerationContext.Default
-        };
+        var o = new JsonSerializerOptions(options);
         foreach (var converter in SourceGenerationContext.DefaultConverters)
         {
             o.Converters.Add(converter);
@@ -53,7 +53,21 @@ public static class KompaktorJsonHelper
         return JsonSerializer.Deserialize<T>(ref reader, o);
 #pragma warning restore IL2026,IL3050
     }
-    
+
+    public static byte[] SerializeToUtf8Bytes<T>(T value)
+    {
+#pragma warning disable IL2026,IL3050
+        return JsonSerializer.SerializeToUtf8Bytes(value, CreateSerializerOptions());
+#pragma warning restore IL2026,IL3050
+    }
+
+    public static T? DeserializeFromBytes<T>(byte[] utf8Json)
+    {
+#pragma warning disable IL2026,IL3050
+        return JsonSerializer.Deserialize<T>(utf8Json, CreateSerializerOptions());
+#pragma warning restore IL2026,IL3050
+    }
+
     public static void WriteProperty<T>(this Utf8JsonWriter writer, string propertyName, T value, JsonSerializerOptions options)
     {
         writer.WritePropertyName(propertyName);
