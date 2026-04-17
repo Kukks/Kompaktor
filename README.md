@@ -81,7 +81,8 @@ Kompaktor.sln
 ├── Kompaktor.Scoring/      # Anonymity scoring, label clustering, coin selection
 │   ├── AnonymityScorer.cs              # Per-UTXO anonymity score calculator
 │   ├── LabelClusterAnalyzer.cs         # Label propagation and cluster detection
-│   └── CoinSelectionAdvisor.cs         # Privacy-aware coin selection
+│   ├── CoinSelectionAdvisor.cs         # Privacy-aware coin selection
+│   └── CredentialFlowTracker.cs       # Credential lifecycle flow analysis
 ├── Kompaktor.Client/       # HTTP client for remote coordinator communication
 │   ├── HttpKompaktorRoundApi.cs        # IKompaktorRoundApi over HTTP
 │   └── HttpKompaktorRoundApiFactory.cs # Factory with per-identity circuit isolation
@@ -125,6 +126,14 @@ HD wallet implementing `IKompaktorWalletInterface` with BIP-39 mnemonic generati
 ### `AnonymityScorer`
 
 Per-UTXO anonymity scoring engine. Computes raw anonymity set from coinjoin participant counts with multiplicative composition across rounds. Applies penalties for amount distinguishability (unique/rare output values), label clustering (known external sources like exchanges), and address reuse. Paired with `LabelClusterAnalyzer` (union-find label propagation) and `CoinSelectionAdvisor` (privacy-first, fee-saver, and consolidation strategies with cluster mixing warnings).
+
+### `MultiServerBackend`
+
+Split-server Electrum routing for wallet address privacy. Distributes address subscriptions across multiple independent Electrum servers so no single server sees all wallet addresses. Script-linked operations (subscribe, UTXO queries) are pinned to their assigned server via routing groups. Non-address operations (tx lookup, fee estimation) are load-balanced. Broadcasts go to all servers for redundancy and to prevent timing analysis.
+
+### `CredentialFlowTracker`
+
+Analyzes WabiSabi credential lifecycle events (Acquired → Reissued → Spent) to produce per-payment flow summaries. Walks the credential event DAG from root to leaf, calculating input/output amounts, change, fees, reissuance steps, and merge tree depth. Paired with `CredentialEventEntity` for EF Core persistence.
 
 ### `DependencyGraph2`
 
@@ -235,7 +244,7 @@ This starts a `bitcoind` regtest node on port 53782 with RPC credentials `ceiwHE
 dotnet test
 ```
 
-The test suite includes 300+ tests covering:
+The test suite includes 310+ tests covering:
 - Round lifecycle (input registration, output registration, signing, broadcasting)
 - Multi-participant coinjoins (up to 100 participants)
 - Interactive payments between participants during rounds
@@ -259,6 +268,8 @@ The test suite includes 300+ tests covering:
 - Anonymity scoring with multiplicative composition, amount penalties, and label penalties
 - Label cluster analysis with union-find grouping and external source detection
 - Privacy-aware coin selection with cluster mixing warnings
+- Multi-server Electrum routing with round-robin assignment and script pinning
+- Credential lifecycle flow analysis with merge tree depth and fee calculation
 
 ### 4. Run the Coordinator Server
 
