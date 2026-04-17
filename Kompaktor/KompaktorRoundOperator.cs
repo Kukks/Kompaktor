@@ -607,19 +607,26 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
             return;
         }
 
-        var eventIds = Events.Select(e => e.Id).ToArray();
-        var concatenated = string.Join("", eventIds);
-        var transcriptHash = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(concatenated));
+        try
+        {
+            var eventIds = Events.Select(e => e.Id).ToArray();
+            var concatenated = string.Join("", eventIds);
+            var transcriptHash = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(concatenated));
 
-        var sig = _coordinatorSigningKey.SignBIP340(transcriptHash);
-        var pubKey = _coordinatorSigningKey.CreateXOnlyPubKey();
-        var pubKeyBytes = new byte[32];
-        pubKey.WriteToSpan(pubKeyBytes);
-        var sigBytes = new byte[64];
-        sig.WriteToSpan(sigBytes);
+            var sig = _coordinatorSigningKey.SignBIP340(transcriptHash);
+            var pubKey = _coordinatorSigningKey.CreateXOnlyPubKey();
+            var pubKeyBytes = new byte[32];
+            pubKey.WriteToSpan(pubKeyBytes);
+            var sigBytes = new byte[64];
+            sig.WriteToSpan(sigBytes);
 
-        await AddEvent(new KompaktorRoundEventTranscriptSigned(transcriptHash, sigBytes, pubKeyBytes));
-        _logger.LogInformation("Transcript signed with coordinator key ({EventCount} events)", eventIds.Length);
+            await AddEvent(new KompaktorRoundEventTranscriptSigned(transcriptHash, sigBytes, pubKeyBytes));
+            _logger.LogInformation("Transcript signed with coordinator key ({EventCount} events)", eventIds.Length);
+        }
+        catch (Exception e)
+        {
+            _logger.LogError("Failed to sign transcript; proceeding without signature: {Error}", e.Message);
+        }
     }
 
     private void WarnIfNoP2trInput()
@@ -644,19 +651,8 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
                 throw new KompaktorProtocolException(KompaktorProtocolErrorCode.WrongPhase,
                     "Cannot go back in status");
 
-            // Sign the transcript before entering the signing phase.
-            // Non-fatal: signing failure must not block the status transition.
             if (status == KompaktorStatus.Signing)
-            {
-                try
-                {
-                    await SignTranscript();
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError("Transcript signing failed — round will proceed without signature: {Error}", ex.Message);
-                }
-            }
+                await SignTranscript();
             _logger.LogInformation("[{RoundId}] {OldPhase} -> {NewPhase} | Inputs={InputCount} Outputs={OutputCount} Signatures={SignatureCount}",
                 RoundEventCreated?.RoundId ?? "?", Status, status, Inputs.Count, Outputs.Count, SignatureCount);
             await AddEvent(new KompaktorRoundEventStatusUpdate(status));

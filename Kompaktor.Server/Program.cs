@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using Kompaktor.Models;
 using Kompaktor.Prison;
 using Kompaktor.Server;
@@ -38,9 +39,11 @@ if (!string.IsNullOrEmpty(coordinatorOptions.CoordinatorSigningKeyHex))
 }
 else
 {
-    var logger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Startup");
-    logger.LogWarning("No CoordinatorSigningKeyHex configured — using ephemeral key. " +
-                       "Transcript signatures will not survive restarts.");
+    coordinatorSigningKey = ECPrivKey.Create(RandomNumberGenerator.GetBytes(32));
+    using var loggerFactory = LoggerFactory.Create(b => b.AddConsole());
+    loggerFactory.CreateLogger("Startup").LogWarning(
+        "No CoordinatorSigningKeyHex configured — generated an ephemeral key. " +
+        "Transcript signatures will not survive restarts; set CoordinatorSigningKeyHex for production.");
 }
 
 // Register services
