@@ -93,6 +93,14 @@ public class KompaktorCoordinatorOptions
 
     /// <summary>Time between automatic round creation.</summary>
     public TimeSpan RoundInterval { get; set; } = TimeSpan.FromMinutes(5);
+
+    /// <summary>
+    /// Hex-encoded coordinator signing private key for transcript signatures.
+    /// If null, an ephemeral key is generated at startup by the round manager.
+    /// Ephemeral keys do not survive restarts, so clients cannot verify transcript
+    /// continuity across coordinator restarts. Configure a persistent key for production.
+    /// </summary>
+    public string? CoordinatorSigningKeyHex { get; set; }
 }
 
 /// <summary>

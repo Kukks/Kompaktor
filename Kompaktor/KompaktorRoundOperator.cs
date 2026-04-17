@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Security.Cryptography;
 using Kompaktor.Contracts;
 using Kompaktor.Credentials;
 using Kompaktor.Errors;
@@ -8,6 +9,7 @@ using Kompaktor.Utils;
 using Microsoft.Extensions.Logging;
 using NBitcoin;
 using NBitcoin.RPC;
+using NBitcoin.Secp256k1;
 using WabiSabi.Crypto;
 using WabiSabi.Crypto.Randomness;
 
@@ -23,6 +25,7 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
     private readonly CancellationTokenSource _cts;
     private readonly SemaphoreSlim _statusSemaphore = new(1, 1);
     private volatile bool _inputSoftTimeoutReached;
+    private ECPrivKey? _coordinatorSigningKey;
 
     public KompaktorRoundOperator(Network network, RPCClient rpcClient, WasabiRandom random, ILogger logger, KompaktorPrison? prison = null)
     {
@@ -34,6 +37,15 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
         _cts = new CancellationTokenSource();
         NewEvent += HandleNewEvents;
     }
+
+    /// <summary>
+    /// Sets the coordinator's Schnorr signing key used for transcript signatures.
+    /// Must be called before the round starts. The corresponding public key is
+    /// published with each transcript signature event, enabling clients to detect
+    /// equivocation (non-repudiable proof if the coordinator signs different
+    /// transcripts for different clients in the same round).
+    /// </summary>
+    public void SetCoordinatorSigningKey(ECPrivKey key) => _coordinatorSigningKey = key;
 
     private async Task HandleNewEvents(object sender, KompaktorRoundEvent roundEvent)
     {
@@ -581,6 +593,42 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
         }
     }
 
+    /// <summary>
+    /// Computes a SHA256 hash of all event IDs in the round transcript and signs it
+    /// with the coordinator's Schnorr key. Emits a KompaktorRoundEventTranscriptSigned
+    /// event before transitioning to the signing phase.
+    /// </summary>
+    private async Task SignTranscript()
+    {
+        if (_coordinatorSigningKey is null)
+        {
+            _logger.LogWarning("No coordinator signing key set — transcript will not be signed. " +
+                               "Clients cannot verify round consistency via non-repudiable proof.");
+            return;
+        }
+
+        try
+        {
+            var eventIds = Events.Select(e => e.Id).ToArray();
+            var concatenated = string.Join("", eventIds);
+            var transcriptHash = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(concatenated));
+
+            var sig = _coordinatorSigningKey.SignBIP340(transcriptHash);
+            var pubKey = _coordinatorSigningKey.CreateXOnlyPubKey();
+            var pubKeyBytes = new byte[32];
+            pubKey.WriteToSpan(pubKeyBytes);
+            var sigBytes = new byte[64];
+            sig.WriteToSpan(sigBytes);
+
+            await AddEvent(new KompaktorRoundEventTranscriptSigned(transcriptHash, sigBytes, pubKeyBytes));
+            _logger.LogInformation("Transcript signed with coordinator key ({EventCount} events)", eventIds.Length);
+        }
+        catch (Exception e)
+        {
+            _logger.LogError("Failed to sign transcript; proceeding without signature: {Error}", e.Message);
+        }
+    }
+
     private void WarnIfNoP2trInput()
     {
         var activeOutpoints = NotReadyToSign.Values.ToHashSet();
@@ -602,6 +650,9 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
             if (status < Status)
                 throw new KompaktorProtocolException(KompaktorProtocolErrorCode.WrongPhase,
                     "Cannot go back in status");
+
+            if (status == KompaktorStatus.Signing)
+                await SignTranscript();
             _logger.LogInformation("[{RoundId}] {OldPhase} -> {NewPhase} | Inputs={InputCount} Outputs={OutputCount} Signatures={SignatureCount}",
                 RoundEventCreated?.RoundId ?? "?", Status, status, Inputs.Count, Outputs.Count, SignatureCount);
             await AddEvent(new KompaktorRoundEventStatusUpdate(status));
