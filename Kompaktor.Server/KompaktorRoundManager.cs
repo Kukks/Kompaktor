@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using Kompaktor.Credentials;
 using Kompaktor.Models;
 using Kompaktor.Prison;
+using Kompaktor.Utils;
 using Microsoft.Extensions.Logging;
 using NBitcoin;
 using NBitcoin.RPC;
@@ -47,8 +48,7 @@ public class KompaktorRoundManager : IDisposable
     /// <summary>Creates a new round with the configured options and starts it.</summary>
     public async Task<string> CreateRound()
     {
-        var roundId = Guid.NewGuid().ToString();
-        var logger = _loggerFactory.CreateLogger($"Round-{roundId[..8]}");
+        var logger = _loggerFactory.CreateLogger("Round-pending");
         var op = new KompaktorRoundOperator(_network, _rpcClient, _random, logger, _prison);
         if (_coordinatorSigningKey is not null)
             op.SetCoordinatorSigningKey(_coordinatorSigningKey);
@@ -62,6 +62,38 @@ public class KompaktorRoundManager : IDisposable
             { CredentialType.Amount, issuer }
         };
 
+        var credentials = new Dictionary<CredentialType, CredentialConfiguration>
+        {
+            {
+                CredentialType.Amount,
+                new CredentialConfiguration(_options.MaxCredentialValue, new IntRange(k, k), new IntRange(k, k),
+                    issuerKey.ComputeCredentialIssuerParameters(), useBp)
+            }
+        };
+
+        string roundId;
+        DateTimeOffset startTime;
+        while (true)
+        {
+            startTime = DateTimeOffset.UtcNow;
+            roundId = RoundHasher.CalculateHash(
+                startTime,
+                _options.FeeRate,
+                _options.InputTimeout,
+                _options.OutputTimeout,
+                _options.SigningTimeout,
+                new IntRange(_options.MinInputCount, _options.MaxInputCount),
+                new MoneyRange(_options.MinInputAmount, _options.MaxInputAmount),
+                new IntRange(_options.MinOutputCount, _options.MaxOutputCount),
+                new MoneyRange(_options.MinOutputAmount, _options.MaxOutputAmount),
+                credentials);
+
+            if (_rounds.TryAdd(roundId, op))
+                break;
+
+            await Task.Delay(1);
+        }
+
         var created = new KompaktorRoundEventCreated(
             roundId,
             _options.FeeRate,
@@ -72,18 +104,9 @@ public class KompaktorRoundManager : IDisposable
             new MoneyRange(_options.MinInputAmount, _options.MaxInputAmount),
             new IntRange(_options.MinOutputCount, _options.MaxOutputCount),
             new MoneyRange(_options.MinOutputAmount, _options.MaxOutputAmount),
-            new Dictionary<CredentialType, CredentialConfiguration>
-            {
-                {
-                    CredentialType.Amount,
-                    new CredentialConfiguration(_options.MaxCredentialValue, new IntRange(k, k), new IntRange(k, k),
-                        issuerKey.ComputeCredentialIssuerParameters(), useBp)
-                }
-            },
+            credentials,
             _options.InputRegistrationSoftTimeout
-        );
-
-        _rounds[roundId] = op;
+        ) { Timestamp = startTime };
 
         // Clean up completed/failed rounds
         op.NewEvent += async (sender, evt) =>
@@ -124,8 +147,7 @@ public class KompaktorRoundManager : IDisposable
     /// <summary>Creates a blame round from a failed parent round with a whitelist of honest participants.</summary>
     public async Task<string> CreateBlameRound(string parentRoundId, HashSet<OutPoint> whitelist)
     {
-        var roundId = Guid.NewGuid().ToString();
-        var logger = _loggerFactory.CreateLogger($"BlameRound-{roundId[..8]}");
+        var logger = _loggerFactory.CreateLogger("BlameRound-pending");
         var op = new KompaktorRoundOperator(_network, _rpcClient, _random, logger, _prison);
         if (_coordinatorSigningKey is not null)
             op.SetCoordinatorSigningKey(_coordinatorSigningKey);
@@ -142,6 +164,38 @@ public class KompaktorRoundManager : IDisposable
         // Blame rounds have shorter input registration (3 min) and same output/signing timeouts
         var blameInputTimeout = TimeSpan.FromMinutes(3);
         var minInputCount = Math.Max(1, (int)(whitelist.Count * 0.4));
+        var credentials = new Dictionary<CredentialType, CredentialConfiguration>
+        {
+            {
+                CredentialType.Amount,
+                new CredentialConfiguration(_options.MaxCredentialValue, new IntRange(k, k), new IntRange(k, k),
+                    issuerKey.ComputeCredentialIssuerParameters(), useBp)
+            }
+        };
+
+        string roundId;
+        DateTimeOffset startTime;
+        while (true)
+        {
+            startTime = DateTimeOffset.UtcNow;
+            roundId = RoundHasher.CalculateHash(
+                startTime,
+                _options.FeeRate,
+                blameInputTimeout,
+                _options.OutputTimeout,
+                _options.SigningTimeout,
+                new IntRange(minInputCount, whitelist.Count),
+                new MoneyRange(_options.MinInputAmount, _options.MaxInputAmount),
+                new IntRange(_options.MinOutputCount, _options.MaxOutputCount),
+                new MoneyRange(_options.MinOutputAmount, _options.MaxOutputAmount),
+                credentials,
+                parentRoundId);
+
+            if (_rounds.TryAdd(roundId, op))
+                break;
+
+            await Task.Delay(1);
+        }
 
         var created = new KompaktorRoundEventCreated(
             roundId,
@@ -153,21 +207,13 @@ public class KompaktorRoundManager : IDisposable
             new MoneyRange(_options.MinInputAmount, _options.MaxInputAmount),
             new IntRange(_options.MinOutputCount, _options.MaxOutputCount),
             new MoneyRange(_options.MinOutputAmount, _options.MaxOutputAmount),
-            new Dictionary<CredentialType, CredentialConfiguration>
-            {
-                {
-                    CredentialType.Amount,
-                    new CredentialConfiguration(_options.MaxCredentialValue, new IntRange(k, k), new IntRange(k, k),
-                        issuerKey.ComputeCredentialIssuerParameters(), useBp)
-                }
-            },
+            credentials,
             _options.InputRegistrationSoftTimeout)
         {
+            Timestamp = startTime,
             BlameOf = parentRoundId,
             BlameWhitelist = whitelist
         };
-
-        _rounds[roundId] = op;
 
         // Clean up completed/failed blame rounds
         op.NewEvent += async (sender, evt) =>

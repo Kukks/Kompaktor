@@ -48,6 +48,11 @@ public record KompaktorRoundEventCreated : KompaktorRoundEventStatusUpdate
     public TimeSpan? InputRegistrationSoftTimeout { get; init; }
 
     /// <summary>
+    /// Script types allowed for input registration. If empty, all supported types are allowed.
+    /// </summary>
+    public HashSet<ScriptType> AllowedInputTypes { get; init; } = [ScriptType.Taproot, ScriptType.P2WPKH];
+
+    /// <summary>
     /// If set, this round is a blame round created from a failed parent round.
     /// Only inputs whose outpoints are in the whitelist may register.
     /// </summary>

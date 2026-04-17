@@ -60,6 +60,8 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
         {
             _logger.LogInformation("Soft timeout reached and minimum inputs met ({InputCount}), transitioning early",
                 Inputs.Count);
+            PruneDisconnectedInputs();
+            WarnIfNoP2trInput();
             await UpdateStatus(KompaktorStatus.OutputRegistration);
         }
         else if (Status == KompaktorStatus.OutputRegistration && NotReadyToSign.IsEmpty)
@@ -86,6 +88,11 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
     public Task<KompaktorRoundEvent> GetEvents(string lastEventId)
     {
         throw new NotImplementedException("GetEvents is not yet implemented");
+    }
+
+    public Task<RoundInfoResponse> GetRoundInfo()
+    {
+        return Task.FromResult(RoundInfoResponse.FromCreatedEvent(RoundEventCreated));
     }
 
     public async Task<KompaktorRoundEventMessage> SendMessage(MessageRequest request)
@@ -133,6 +140,12 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
                 "Coin not valid");
 
         var coin = new Coin(txIn.PrevOut, new TxOut(txOutStatus.TxOut.Value, txOutStatus.TxOut.ScriptPubKey));
+
+        // Enforce allowed input script types (empty set = allow all)
+        var scriptType = coin.ScriptPubKey.TryGetScriptType();
+        if (scriptType is null || (RoundEventCreated.AllowedInputTypes.Count > 0 && !RoundEventCreated.AllowedInputTypes.Contains(scriptType.Value)))
+            throw new KompaktorProtocolException(KompaktorProtocolErrorCode.ScriptTypeNotAllowed,
+                $"Input script type {scriptType?.ToString() ?? "unknown"} is not allowed in this round");
 
         if (!RoundEventCreated.InputAmount.Contains(coin.Amount))
             throw new KompaktorProtocolException(KompaktorProtocolErrorCode.InputAmountOutOfRange,
@@ -427,6 +440,7 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
                                 _logger.LogInformation("Minimum inputs met at soft timeout ({InputCount}), transitioning early",
                                     Inputs.Count);
                                 PruneDisconnectedInputs();
+                                WarnIfNoP2trInput();
                                 await UpdateStatus(KompaktorStatus.OutputRegistration);
                             }
                             // Otherwise, HandleNewEvents will check on each subsequent InputRegistered
@@ -452,6 +466,7 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
                         _logger.LogDebug("Input registration completed with {InputCount} inputs and {QuoteCount} remaining quotes",
                             Inputs.Count, ActiveQuotes.Count);
                         PruneDisconnectedInputs();
+                        WarnIfNoP2trInput();
                         await UpdateStatus(KompaktorStatus.OutputRegistration);
                     }
                     catch (OperationCanceledException) { }
@@ -605,6 +620,18 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
 
         await AddEvent(new KompaktorRoundEventTranscriptSigned(transcriptHash, sigBytes, pubKeyBytes));
         _logger.LogInformation("Transcript signed with coordinator key ({EventCount} events)", eventIds.Length);
+    }
+
+    private void WarnIfNoP2trInput()
+    {
+        var activeOutpoints = NotReadyToSign.Values.ToHashSet();
+        var hasActiveP2trInput = Inputs.Any(c =>
+            activeOutpoints.Contains(c.Outpoint) &&
+            c.ScriptPubKey.IsScriptType(ScriptType.Taproot));
+
+        if (!hasActiveP2trInput)
+            _logger.LogWarning("No P2TR inputs in round — BIP 341 scriptPubKey commitment protection is not active. " +
+                               "Ownership proof equivocation by a malicious coordinator cannot be detected at signing time.");
     }
 
     private async Task UpdateStatus(KompaktorStatus status)

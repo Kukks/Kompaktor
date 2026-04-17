@@ -3,6 +3,7 @@
     <PropertyGroup>
         <Description>Kompaktor - Bitcoin privacy protocol using WabiSabi anonymous credentials</Description>
         <GenerateDocumentationFile>true</GenerateDocumentationFile>
+        <IsAotCompatible>true</IsAotCompatible>
     </PropertyGroup>
 
     <ItemGroup>
