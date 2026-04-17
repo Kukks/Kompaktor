@@ -90,6 +90,23 @@ public class CoinJoinParticipationEntity
     public UtxoEntity Utxo { get; set; } = null!;
 }
 
+public class CredentialEventEntity
+{
+    public int Id { get; set; }
+    public int CoinJoinRecordId { get; set; }
+    public string CredentialSerial { get; set; } = "";
+    public string EventType { get; set; } = ""; // "Acquired", "Reissued", "Spent"
+    public long AmountSat { get; set; }
+    public int? ParentEventId { get; set; }
+    public int? OutputUtxoId { get; set; }
+    public int GraphDepth { get; set; }
+    public DateTimeOffset Timestamp { get; set; } = DateTimeOffset.UtcNow;
+
+    public CoinJoinRecordEntity CoinJoinRecord { get; set; } = null!;
+    public CredentialEventEntity? ParentEvent { get; set; }
+    public UtxoEntity? OutputUtxo { get; set; }
+}
+
 public class LabelEntity
 {
     public int Id { get; set; }

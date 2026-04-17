@@ -13,6 +13,7 @@ public class WalletDbContext : DbContext
     public DbSet<TransactionEntity> Transactions => Set<TransactionEntity>();
     public DbSet<CoinJoinRecordEntity> CoinJoinRecords => Set<CoinJoinRecordEntity>();
     public DbSet<CoinJoinParticipationEntity> CoinJoinParticipations => Set<CoinJoinParticipationEntity>();
+    public DbSet<CredentialEventEntity> CredentialEvents => Set<CredentialEventEntity>();
     public DbSet<LabelEntity> Labels => Set<LabelEntity>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -62,6 +63,16 @@ public class WalletDbContext : DbContext
         {
             e.HasKey(p => p.Id);
             e.HasOne(p => p.Utxo).WithMany().HasForeignKey(p => p.UtxoId);
+        });
+
+        modelBuilder.Entity<CredentialEventEntity>(e =>
+        {
+            e.HasKey(ce => ce.Id);
+            e.HasOne(ce => ce.CoinJoinRecord).WithMany().HasForeignKey(ce => ce.CoinJoinRecordId);
+            e.HasOne(ce => ce.ParentEvent).WithMany().HasForeignKey(ce => ce.ParentEventId);
+            e.HasOne(ce => ce.OutputUtxo).WithMany().HasForeignKey(ce => ce.OutputUtxoId);
+            e.HasIndex(ce => ce.CoinJoinRecordId);
+            e.HasIndex(ce => ce.CredentialSerial);
         });
 
         modelBuilder.Entity<LabelEntity>(e =>
