@@ -32,6 +32,7 @@ public class AddressEntity
     public bool IsChange { get; set; }
     public bool IsUsed { get; set; }
     public bool IsExposed { get; set; }
+    public int? RoutingGroup { get; set; }
 
     public AccountEntity Account { get; set; } = null!;
     public List<UtxoEntity> Utxos { get; set; } = [];
