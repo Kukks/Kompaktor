@@ -303,6 +303,25 @@ The server starts on the default ASP.NET Core port and creates an initial round 
 }
 ```
 
+### 5. Run the Dashboard (Coordinator + Wallet)
+
+```bash
+cd Kompaktor.Web
+dotnet run
+```
+
+This starts a combined coordinator and wallet dashboard. The web UI at the root URL shows wallet balance, anonymity-scored UTXOs, active rounds, and coinjoin history. Supports Electrum as an alternative backend:
+
+```json
+{
+  "Electrum": {
+    "Host": "127.0.0.1",
+    "Port": 50001,
+    "UseSsl": false
+  }
+}
+```
+
 ## Dependencies
 
 | Package | Version | Purpose |
