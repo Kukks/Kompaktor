@@ -70,6 +70,8 @@ public class CoinJoinRecordEntity
     public int TotalInputCount { get; set; }
     public int OurOutputCount { get; set; }
     public int TotalOutputCount { get; set; }
+    public int ParticipantCount { get; set; }
+    public long[] OutputValuesSat { get; set; } = [];
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
 
     public TransactionEntity Transaction { get; set; } = null!;

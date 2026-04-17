@@ -52,6 +52,10 @@ public class WalletDbContext : DbContext
             e.HasKey(c => c.Id);
             e.HasOne(c => c.Transaction).WithMany().HasForeignKey(c => c.TransactionId);
             e.HasMany(c => c.Participations).WithOne(p => p.CoinJoinRecord).HasForeignKey(p => p.CoinJoinRecordId);
+            e.Property(c => c.OutputValuesSat)
+                .HasConversion(
+                    v => string.Join(',', v),
+                    v => string.IsNullOrEmpty(v) ? Array.Empty<long>() : v.Split(',', StringSplitOptions.RemoveEmptyEntries).Select(long.Parse).ToArray());
         });
 
         modelBuilder.Entity<CoinJoinParticipationEntity>(e =>

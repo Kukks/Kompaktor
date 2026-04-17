@@ -24,6 +24,7 @@
       <ProjectReference Include="..\Kompaktor.Blockchain\Kompaktor.Blockchain.csproj" />
       <ProjectReference Include="..\Kompaktor.Wallet\Kompaktor.Wallet.csproj" />
       <ProjectReference Include="..\Kompaktor.Server\Kompaktor.Server.csproj" />
+      <ProjectReference Include="..\Kompaktor.Scoring\Kompaktor.Scoring.csproj" />
     </ItemGroup>
 
 </Project>

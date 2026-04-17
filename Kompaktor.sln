@@ -33,6 +33,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Kompaktor.Wallet", "Kompakt
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Kompaktor.Wallet.Sample", "Kompaktor.Wallet.Sample\Kompaktor.Wallet.Sample.csproj", "{8A988DA4-5290-4D4B-96F3-6B32C73A13F4}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Kompaktor.Scoring", "Kompaktor.Scoring\Kompaktor.Scoring.csproj", "{C41DD724-3161-42BB-92EE-235127F716D1}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -175,6 +177,18 @@ Global
 		{8A988DA4-5290-4D4B-96F3-6B32C73A13F4}.Release|x64.Build.0 = Release|Any CPU
 		{8A988DA4-5290-4D4B-96F3-6B32C73A13F4}.Release|x86.ActiveCfg = Release|Any CPU
 		{8A988DA4-5290-4D4B-96F3-6B32C73A13F4}.Release|x86.Build.0 = Release|Any CPU
+		{C41DD724-3161-42BB-92EE-235127F716D1}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C41DD724-3161-42BB-92EE-235127F716D1}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C41DD724-3161-42BB-92EE-235127F716D1}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{C41DD724-3161-42BB-92EE-235127F716D1}.Debug|x64.Build.0 = Debug|Any CPU
+		{C41DD724-3161-42BB-92EE-235127F716D1}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{C41DD724-3161-42BB-92EE-235127F716D1}.Debug|x86.Build.0 = Debug|Any CPU
+		{C41DD724-3161-42BB-92EE-235127F716D1}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C41DD724-3161-42BB-92EE-235127F716D1}.Release|Any CPU.Build.0 = Release|Any CPU
+		{C41DD724-3161-42BB-92EE-235127F716D1}.Release|x64.ActiveCfg = Release|Any CPU
+		{C41DD724-3161-42BB-92EE-235127F716D1}.Release|x64.Build.0 = Release|Any CPU
+		{C41DD724-3161-42BB-92EE-235127F716D1}.Release|x86.ActiveCfg = Release|Any CPU
+		{C41DD724-3161-42BB-92EE-235127F716D1}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <Description>Anonymity scoring engine for Kompaktor wallet UTXOs</Description>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\Kompaktor.Wallet\Kompaktor.Wallet.csproj" />
+    </ItemGroup>
+
+</Project>
