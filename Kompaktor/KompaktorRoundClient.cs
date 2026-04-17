@@ -280,7 +280,6 @@ public class KompaktorRoundClient : IDisposable
                 case KompaktorStatus.Broadcasting:
                     break;
                 case KompaktorStatus.Completed:
-
                     exit = true;
                     break;
                 case KompaktorStatus.Failed:
@@ -288,6 +287,24 @@ public class KompaktorRoundClient : IDisposable
                     break;
                 default:
                     throw new ArgumentOutOfRangeException();
+            }
+
+            if (exit)
+            {
+                // Mark all output scripts we disclosed as burned so the wallet
+                // won't reuse them in future rounds (prevents cross-round linking).
+                // This applies to ALL terminal statuses — once the coordinator has
+                // seen the mapping between input identity and output script, reusing
+                // that script in a future round enables intersection attacks.
+                var exposedScripts = RegisteredOutputs
+                    .Select(o => o.ScriptPubKey)
+                    .Distinct()
+                    .ToList();
+                if (exposedScripts.Count > 0)
+                {
+                    Logger.LogInformation($"Round ended ({Round.Status}) — marking {exposedScripts.Count} output scripts as exposed");
+                    await _walletInterface.MarkScriptsExposed(exposedScripts);
+                }
             }
         }
     }
