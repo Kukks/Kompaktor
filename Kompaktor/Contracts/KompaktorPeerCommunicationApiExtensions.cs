@@ -2,10 +2,10 @@
 
 public static class KompaktorPeerCommunicationApiExtensions
 {
-    public static async Task<byte[]> SendAndWaitForMessageAsync(this IKompaktorPeerCommunicationApi api, byte[] message, byte[] prefix, CancellationToken cancellationToken, string reasonToWaitFOrLog)
+    public static async Task<byte[]> SendAndWaitForMessageAsync(this IKompaktorPeerCommunicationApi api, byte[] message, byte[] prefix, CancellationToken cancellationToken, string reasonToWaitForLog)
     {
-        var waitMsgTask = api.WaitForMessage(prefix, cancellationToken, reasonToWaitFOrLog);
-        await api.SendMessageAsync(message, reasonToWaitFOrLog);
+        var waitMsgTask = api.WaitForMessage(prefix, cancellationToken, reasonToWaitForLog);
+        await api.SendMessageAsync(message, reasonToWaitForLog);
         return await waitMsgTask;
     }
 

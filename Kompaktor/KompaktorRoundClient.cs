@@ -15,7 +15,6 @@ using WabiSabi.CredentialRequesting;
 using WabiSabi.Crypto;
 using WabiSabi.Crypto.Randomness;
 using WabiSabi.Crypto.ZeroKnowledge;
-using WabiSabi.CredentialRequesting;
 using TaskScheduler = Kompaktor.Utils.TaskScheduler;
 
 namespace Kompaktor;

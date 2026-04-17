@@ -65,6 +65,7 @@ public class EquivocationDetectionTests
         Assert.Equal(created.OutputCount.Max, info.OutputCountMax);
         Assert.Equal(created.OutputAmount.Min.Satoshi, info.OutputAmountMinSat);
         Assert.Equal(created.OutputAmount.Max.Satoshi, info.OutputAmountMaxSat);
+        Assert.Equal(created.AllowedInputTypes, info.AllowedInputTypes);
         Assert.Equal(created.IsBlameRound, info.IsBlameRound);
         Assert.Equal(created.BlameOf, info.BlameOf);
     }
@@ -168,6 +169,18 @@ public class EquivocationDetectionTests
         var info = RoundInfoResponse.FromCreatedEvent(created) with { OutputAmountMaxSat = 1 };
         var mismatches = info.CompareWith(created);
         Assert.Contains("OutputAmount", mismatches);
+    }
+
+    [Fact]
+    public void CompareWith_DifferentAllowedInputTypes_DetectsMismatch()
+    {
+        var created = MakeCreated();
+        var info = RoundInfoResponse.FromCreatedEvent(created) with
+        {
+            AllowedInputTypes = new HashSet<ScriptType> { ScriptType.P2WPKH } // removed Taproot
+        };
+        var mismatches = info.CompareWith(created);
+        Assert.Contains("AllowedInputTypes", mismatches);
     }
 
     [Fact]

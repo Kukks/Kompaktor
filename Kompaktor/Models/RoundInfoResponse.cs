@@ -54,6 +54,9 @@ public record RoundInfoResponse
     [JsonPropertyName("credentials")]
     public Dictionary<string, CredentialConfiguration> Credentials { get; init; } = new();
 
+    [JsonPropertyName("allowedInputTypes")]
+    public HashSet<ScriptType> AllowedInputTypes { get; init; } = [];
+
     [JsonPropertyName("isBlameRound")]
     public bool IsBlameRound { get; init; }
 
@@ -83,6 +86,7 @@ public record RoundInfoResponse
             Credentials = created.Credentials.ToDictionary(
                 kvp => kvp.Key.ToString(),
                 kvp => kvp.Value),
+            AllowedInputTypes = created.AllowedInputTypes,
             IsBlameRound = created.IsBlameRound,
             BlameOf = created.BlameOf
         };
@@ -114,6 +118,8 @@ public record RoundInfoResponse
             mismatches.Add("OutputCount");
         if (OutputAmountMinSat != local.OutputAmount.Min.Satoshi || OutputAmountMaxSat != local.OutputAmount.Max.Satoshi)
             mismatches.Add("OutputAmount");
+        if (!AllowedInputTypes.SetEquals(local.AllowedInputTypes))
+            mismatches.Add("AllowedInputTypes");
         if (IsBlameRound != local.IsBlameRound)
             mismatches.Add("IsBlameRound");
         if (BlameOf != local.BlameOf)

@@ -4,9 +4,9 @@ namespace Kompaktor.Contracts;
 
 public interface  IKompaktorPeerCommunicationApi:IDisposable
 {
-    Task SendMessageAsync(byte[] message, string reasonToWaitFOrLog);
+    Task SendMessageAsync(byte[] message, string reasonToWaitForLog);
     IAsyncEnumerable<byte[]> Messages(bool fromStart, CancellationToken cancellationToken);
 
-    Task<byte[]> WaitForMessage(byte[] prefix, CancellationToken cancellationToken, string reasonToWaitFOrLog);
+    Task<byte[]> WaitForMessage(byte[] prefix, CancellationToken cancellationToken, string reasonToWaitForLog);
 
 }

@@ -12,17 +12,35 @@ Kompaktor uses WabiSabi's keyed-verification anonymous credentials to break the 
 InputRegistration → OutputRegistration → Signing → Broadcasting
 ```
 
-1. **Input Registration** — Participants register their UTXOs with the coordinator, proving ownership via BIP-322 signatures. The coordinator issues anonymous credentials representing the input value.
+1. **Input Registration** — Participants register their UTXOs with the coordinator, proving ownership via BIP-322 signatures. The coordinator issues anonymous credentials representing the input value. A randomized pre-registration delay (0-3s) prevents timing-based client fingerprinting.
 
 2. **Output Registration** — Participants use their anonymous credentials (reissued through a binary merge tree for O(n log n) efficiency) to register outputs. The coordinator cannot link which outputs belong to which inputs because the credentials are unlinkable.
 
-3. **Signing** — Each participant signs the jointly constructed transaction. A "ready to sign" mechanism ensures all participants have completed output registration before signing begins.
+3. **Signing** — Each participant signs the jointly constructed transaction. Before signing, clients verify fee transparency (detecting coordinator surplus extraction) and optionally verify other participants' UTXOs via full-node lookups. A "ready to sign" mechanism ensures all participants have completed output registration before signing begins.
 
 4. **Broadcasting** — Once all signatures are collected, the coordinator broadcasts the final transaction to the Bitcoin network.
 
 ### Interactive Payments
 
 Kompaktor supports **interactive payments** within coinjoin rounds — a sender can pay a receiver during the round itself, with the payment hidden among all other coinjoin outputs. This is coordinated through a 6-message protocol (P1-P6) between sender and receiver behavior traits, where the sender transfers credential value to the receiver who registers the payment output.
+
+### Security & Privacy Hardening
+
+Kompaktor includes multiple layers of defense against malicious coordinators and passive analysis:
+
+| Feature | Protection |
+|---------|-----------|
+| **Deterministic round IDs** | Round parameters are hashed to produce IDs — any parameter change is detectable |
+| **Input script type validation** | Enforces P2TR/P2WPKH inputs; warns when no Taproot inputs are present (BIP-341 scriptPubKey commitment) |
+| **Equivocation detection** | Clients verify round parameters over a separate circuit, detecting coordinator parameter-serving attacks |
+| **Coordinator transcript signatures** | BIP-340 Schnorr signatures over round event transcripts provide non-repudiable equivocation proof |
+| **Fee transparency audit** | Clients verify fee breakdown before signing — detects coordinator fee extraction attacks |
+| **Fresh addresses after failure** | Output scripts disclosed during failed rounds are marked as exposed and never reused |
+| **Input cluster memory** | `RoundHistoryTracker` uses union-find connected components to prevent cross-round intersection attacks |
+| **Coin selection shuffle** | Fisher-Yates shuffle of coin candidates prevents deterministic selection profiling |
+| **UTXO verification** | Clients with full-node access verify other participants' inputs exist in the UTXO set |
+| **Timing randomization** | Pre-registration delays and randomized task scheduling prevent client fingerprinting |
+| **NativeAOT compatibility** | Full ahead-of-time compilation support for deployment without .NET runtime |
 
 ### Credential System
 
@@ -45,7 +63,7 @@ Kompaktor.sln
 │   ├── Mapper/             # BlindedCredential, key types
 │   ├── Models/             # Round events, configuration, request/response types
 │   ├── Prison/             # Abuse prevention — ban system for misbehaving participants
-│   └── Utils/              # DependencyGraph2, RetryHelper, TaskScheduler, TaskUtils
+│   └── Utils/              # DependencyGraph2, RetryHelper, TaskScheduler, RoundHistoryTracker
 ├── Kompaktor.Server/       # ASP.NET Core coordinator server
 │   ├── Program.cs          # Server entry point with DI configuration
 │   ├── KompaktorEndpoints.cs    # Minimal API route mappings
@@ -86,6 +104,10 @@ Pluggable client behaviors that compose to define what a participant does in a r
 
 Binary merge tree for credential reissuance. Given N input credentials and M desired outputs, it builds a DAG of reissuance operations that efficiently combines and splits credential values. Nodes execute concurrently via `Task.Run` with `Interlocked` tracking of in-flight operations.
 
+### `RoundHistoryTracker`
+
+Client-side defense against intersection attacks. Tracks which inputs were co-registered in failed rounds and builds connected components using union-find. When selecting coins for a new round, it ensures at most one coin per previously-observed cluster is registered, limiting the information a malicious coordinator can learn by deliberately failing rounds.
+
 ### `KompaktorPrison`
 
 Abuse prevention system. Bans misbehaving coins (failed to sign, double-spend attempts, failed verification) with configurable durations and exponential penalty escalation for repeat offenders. Thread-safe via `ConcurrentDictionary`.
@@ -112,6 +134,11 @@ Network identity isolation abstraction. In production, each circuit maps to a se
 | `MinInputAmount` / `MaxInputAmount` | 10,000 sats / 100 BTC | Input value bounds |
 | `MinOutputAmount` / `MaxOutputAmount` | 10,000 sats / 100 BTC | Output value bounds |
 | `MaxCredentialValue` | ~43 BTC | Maximum WabiSabi credential value |
+| `CredentialCount` | 2 | Credentials per issuance step (k in WabiSabi paper) |
+| `UseBulletproofs` | false | Use Bulletproofs++ for range proofs (O(log n) vs O(n)) |
+| `AllowP2wpkh` / `AllowP2tr` | true | Allowed input/output script types |
+| `InputRegistrationSoftTimeout` | null | Optional early transition when minimum inputs met |
+| `CoordinatorSigningKeyHex` | null | Persistent BIP-340 signing key for transcript signatures |
 | `MaxConcurrentRounds` | 10 | Concurrent round limit |
 
 ### Client Options (`KompaktorClientOptions`)
@@ -182,13 +209,23 @@ This starts a `bitcoind` regtest node on port 53782 with RPC credentials `ceiwHE
 dotnet test
 ```
 
-The test suite includes 52 tests covering:
+The test suite includes 260+ tests covering:
 - Round lifecycle (input registration, output registration, signing, broadcasting)
 - Multi-participant coinjoins (up to 100 participants)
 - Interactive payments between participants during rounds
 - Interactive payments at scale (200 senders)
 - Credential reissuance via DependencyGraph2
 - Edge cases (double registration, wrong phase, insufficient funds)
+- Equivocation detection across round parameter fields and credential issuers
+- BIP-340 transcript signature creation, verification, and tamper detection
+- Fee transparency audit with surplus detection and dust thresholds
+- Input cluster memory with union-find connected components
+- Coin selection Fisher-Yates shuffle distribution and determinism
+- P2TR/P2WPKH input script type validation
+- Timing randomization delay formulas and bounds
+- UTXO verification interface for fabricated input detection
+- Fresh address tracking after failed rounds
+- Deterministic round ID hashing with all parameter coverage
 
 ### 4. Run the Coordinator Server
 
@@ -227,6 +264,7 @@ The server starts on the default ASP.NET Core port and creates an initial round 
 
 GitHub Actions CI runs on push/PR to `master`:
 - **Build** — `dotnet build --configuration Release`
+- **NativeAOT** — Verifies ahead-of-time compilation (`dotnet publish -r linux-x64`)
 - **Unit tests** — Tests filtered by `Category!=Integration`
 - **Integration tests** — Full suite against a regtest bitcoind service container
 
