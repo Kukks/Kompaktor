@@ -68,6 +68,16 @@ Kompaktor.sln
 │   ├── Program.cs          # Server entry point with DI configuration
 │   ├── KompaktorEndpoints.cs    # Minimal API route mappings
 │   └── KompaktorRoundManager.cs # Multi-round lifecycle management
+├── Kompaktor.Blockchain/   # Blockchain abstraction layer
+│   ├── IBlockchainBackend.cs           # Interface replacing direct RPCClient usage
+│   ├── BitcoinCoreBackend.cs           # RPCClient adapter for Bitcoin Core
+│   ├── ElectrumClient.cs              # Stratum JSON-RPC over TCP/SSL
+│   └── ElectrumBackend.cs             # IBlockchainBackend via Electrum protocol
+├── Kompaktor.Wallet/       # HD wallet library with EF Core persistence
+│   ├── KompaktorHdWallet.cs           # IKompaktorWalletInterface with BIP-39/84/86
+│   ├── MnemonicEncryption.cs          # AES-256-GCM mnemonic encryption
+│   └── Data/                          # EF Core entities and WalletDbContext
+├── Kompaktor.Wallet.Sample/ # Console app: coordinator + client in one process
 ├── Kompaktor.Client/       # HTTP client for remote coordinator communication
 │   ├── HttpKompaktorRoundApi.cs        # IKompaktorRoundApi over HTTP
 │   └── HttpKompaktorRoundApiFactory.cs # Factory with per-identity circuit isolation
@@ -99,6 +109,14 @@ Pluggable client behaviors that compose to define what a participant does in a r
 | `ConsolidationBehaviorTrait` | Consolidates multiple small UTXOs into fewer larger ones. |
 | `InteractivePaymentSenderBehaviorTrait` | Sends payments within the coinjoin round via the P1-P6 interactive protocol. |
 | `InteractivePaymentReceiverBehaviorTrait` | Receives interactive payments — waits until output registration is complete before signaling readiness. |
+
+### `IBlockchainBackend`
+
+Abstraction over blockchain data access that replaces the hard `RPCClient` dependency. Two implementations: `BitcoinCoreBackend` (wraps NBitcoin's `RPCClient`) and `ElectrumBackend` (Stratum JSON-RPC over TCP/SSL). The coordinator, wallet, and all tests use this interface — swapping backends requires no code changes.
+
+### `KompaktorHdWallet`
+
+HD wallet implementing `IKompaktorWalletInterface` with BIP-39 mnemonic generation, BIP-84 (P2WPKH) and BIP-86 (P2TR) key derivation, AES-256-GCM mnemonic encryption at rest, and EF Core/SQLite persistence for addresses, UTXOs, transactions, and coinjoin history. Gap limit of 20 addresses per chain with automatic exposed-address tracking for failed rounds.
 
 ### `DependencyGraph2`
 
@@ -209,7 +227,7 @@ This starts a `bitcoind` regtest node on port 53782 with RPC credentials `ceiwHE
 dotnet test
 ```
 
-The test suite includes 260+ tests covering:
+The test suite includes 280+ tests covering:
 - Round lifecycle (input registration, output registration, signing, broadcasting)
 - Multi-participant coinjoins (up to 100 participants)
 - Interactive payments between participants during rounds
@@ -226,6 +244,10 @@ The test suite includes 260+ tests covering:
 - UTXO verification interface for fabricated input detection
 - Fresh address tracking after failed rounds
 - Deterministic round ID hashing with all parameter coverage
+- EF Core wallet database model with unique UTXO constraints and coinjoin tracking
+- AES-256-GCM mnemonic encryption round-trip and wrong-passphrase rejection
+- HD wallet key derivation (BIP-84/86), address generation, coin queries
+- Electrum Stratum JSON-RPC framing, request correlation, and notification dispatch
 
 ### 4. Run the Coordinator Server
 
