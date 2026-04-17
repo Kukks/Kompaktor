@@ -4,18 +4,35 @@ using WabiSabi.Crypto.Randomness;
 
 namespace Kompaktor.Utils;
 
-public static  class TaskScheduler
+public static class TaskScheduler
 {
-    //given a set of tasks, schedule them to run at a random time before the expiry
-    public static Task Schedule(string taskName,Func<Task>[] tasks, DateTimeOffset expiry, WasabiRandom random, CancellationToken token, ILogger logger)
+    /// <summary>
+    /// Schedules tasks to run at random times before the expiry, with per-task jitter.
+    /// Each task is delayed by a random amount between 0 and the time remaining until expiry,
+    /// preventing timing correlation between operations from the same client.
+    /// </summary>
+    public static async Task Schedule(string taskName, Func<Task>[] tasks, DateTimeOffset expiry,
+        WasabiRandom random, CancellationToken token, ILogger logger)
     {
-        if(tasks.Length == 0)
-            return Task.CompletedTask;
-        var fromNow = 0;// Math.Max(0, (expiry - DateTimeOffset.UtcNow).TotalMilliseconds);
-        var delays = tasks.Select(task => random.GetInt(0, (int) fromNow+1)).ToArray();
-        logger.LogInformation($"Scheduling {tasks.Length} {taskName} tasks to run at random times before {expiry}({fromNow} from now) (in {string.Join(",", delays)} ms)");
-        var orderedTasks = tasks.Zip(delays, (task, delay) => (task, delay)).OrderBy(tuple => tuple.delay).Select(tuple => tuple.task.Invoke().WithCancellation(token)).ToArray();
-        return Task.WhenAll(orderedTasks);
-        
+        if (tasks.Length == 0)
+            return;
+        var fromNow = (int)Math.Max(0, (expiry - DateTimeOffset.UtcNow).TotalMilliseconds);
+        var maxDelay = Math.Min((int)(fromNow * 0.75), 10_000);
+        var delays = tasks.Select(_ => maxDelay > 0 ? random.GetInt(0, maxDelay) : 0).ToArray();
+        logger.LogInformation(
+            $"Scheduling {tasks.Length} {taskName} tasks with random delays before {expiry} ({fromNow}ms from now): [{string.Join(",", delays)}]ms");
+
+        var delayedTasks = tasks.Zip(delays, (task, delay) => (task, delay))
+            .OrderBy(t => t.delay)
+            .Select(async t =>
+            {
+                if (t.delay > 0)
+                    await Task.Delay(t.delay, token);
+                token.ThrowIfCancellationRequested();
+                await t.task().WithCancellation(token);
+            })
+            .ToArray();
+
+        await Task.WhenAll(delayedTasks);
     }
 }

@@ -258,6 +258,17 @@ public class KompaktorRoundClient : IDisposable
                         break;
                     }
 
+                    var remainingMs = (int)Math.Max(0, (Round.InputPhaseEnd - DateTimeOffset.UtcNow).TotalMilliseconds);
+                    var maxPreRegDelay = Math.Min(3000, remainingMs / 4);
+                    var preRegDelay = maxPreRegDelay > 0 ? _random.GetInt(0, maxPreRegDelay) : 0;
+                    if (preRegDelay > 0)
+                    {
+                        Logger.LogInformation($"Pre-registration delay: {preRegDelay}ms");
+                        await Task.Delay(preRegDelay, _cts.Token);
+                        if (Round.Status != KompaktorStatus.InputRegistration)
+                            break;
+                    }
+
                     // Verify round parameters over a separate circuit before committing inputs.
                     // Detects coordinator equivocation (serving different params to different clients).
                     await VerifyRoundConsistency();
