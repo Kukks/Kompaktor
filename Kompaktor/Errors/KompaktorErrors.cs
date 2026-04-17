@@ -44,8 +44,14 @@ public enum KompaktorProtocolErrorCode
 	// Ready to sign errors
 	SecretNotFound,
 
+	// Script type errors
+	ScriptTypeNotAllowed,
+
 	// Blame round errors
 	InputNotWhitelisted,
+
+	// Equivocation detection
+	EquivocationDetected,
 
 	// Abuse prevention
 	InputBanned,

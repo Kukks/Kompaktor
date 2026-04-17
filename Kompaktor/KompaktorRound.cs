@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using Kompaktor.Models;
 using Kompaktor.Utils;
 using NBitcoin;
+using ScriptType = NBitcoin.ScriptType;
 
 namespace Kompaktor;
 
@@ -94,6 +95,14 @@ public class KompaktorRound : IDisposable
 
     public int SignatureCount => _cachedSignatureCount;
 
+    /// <summary>
+    /// Whether at least one P2TR (Taproot) input is registered in this round.
+    /// BIP 341 signing commits to all input scriptPubKeys, which means having
+    /// at least one honest P2TR input forces all ownership proofs to be consistent
+    /// (faked proofs would produce invalid Taproot signatures).
+    /// </summary>
+    public bool HasP2trInput => Inputs.Any(c => c.ScriptPubKey.IsScriptType(ScriptType.Taproot));
+
     public DateTimeOffset InputPhaseEnd =>
         Events.OfType<KompaktorRoundEventStatusUpdate>()
             .FirstOrDefault(e => e.Status > KompaktorStatus.InputRegistration)?.Timestamp ??
@@ -154,6 +163,32 @@ public class KompaktorRound : IDisposable
         return transaction;
     }
 
+    /// <summary>
+    /// Computes a fee breakdown for the round's transaction, allowing clients to verify
+    /// that no surplus goes to the coordinator (all fees are mining fees).
+    /// Returns (totalInputs, totalOutputs, actualFee, expectedMiningFee, surplus).
+    /// Surplus should be zero or very small (rounding) — a large surplus indicates
+    /// the coordinator is extracting value.
+    /// </summary>
+    public FeeBreakdown GetFeeBreakdown()
+    {
+        var feeRate = RoundEventCreated.FeeRate;
+        var totalInputs = Inputs.Sum(c => c.Amount);
+        var totalOutputs = Outputs.Sum(o => o.Value);
+        var actualFee = totalInputs - totalOutputs;
+
+        // Expected fee = sum of per-input fees + sum of per-output fees + tx overhead
+        var inputFees = Inputs.Sum(c => c.ScriptPubKey.EstimateFee(feeRate));
+        var outputFees = Outputs.Sum(o => feeRate.GetFee(o.GetSerializedSize()));
+        // Transaction overhead: version(4) + locktime(4) + segwit marker/flag(0.5) + CompactSize counts
+        var txOverhead = 4 + 4 + 1 + CompactSizeSize(Inputs.Count) + CompactSizeSize(Outputs.Count);
+        var overheadFee = feeRate.GetFee(txOverhead);
+        var expectedMiningFee = inputFees + outputFees + overheadFee;
+        var surplus = actualFee - expectedMiningFee;
+
+        return new FeeBreakdown(totalInputs, totalOutputs, actualFee, expectedMiningFee, surplus);
+    }
+
     private void InvalidateCache(KompaktorRoundEvent @event)
     {
         _cachedEvents = null;
@@ -196,4 +231,12 @@ public class KompaktorRound : IDisposable
             return cached;
         }
     }
+
+    private static int CompactSizeSize(int count) => count switch
+    {
+        < 253 => 1,
+        <= 0xFFFF => 3,
+        <= 0xFFFFFF => 5,
+        _ => 9
+    };
 }

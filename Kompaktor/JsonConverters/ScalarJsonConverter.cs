@@ -15,4 +15,7 @@ public class ScalarJsonConverter : GenericStringJsonConverter<Scalar>
             throw new System.Text.Json.JsonException($"Invalid Scalar hex value: '{str}'", ex);
         }
     }
+
+    public override string ToString(Scalar value) =>
+        Convert.ToHexString(value.ToBytes()).ToLowerInvariant();
 }

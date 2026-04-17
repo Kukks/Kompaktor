@@ -1,4 +1,3 @@
-using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using WabiSabi.Crypto.Groups;
@@ -30,9 +29,7 @@ public class CredentialPresentationJsonConverter : JsonConverter<CredentialPrese
         {
             if (reader.TokenType == JsonTokenType.EndObject)
             {
-                return (CredentialPresentation)Activator.CreateInstance(typeof(CredentialPresentation),
-                    BindingFlags.NonPublic | BindingFlags.Instance, null,
-                    [ca, cx0, cx1, cV, s], null)!;
+                return CredentialPresentation.FromComponents(ca!, cx0!, cx1!, cV!, s!);
             }
 
             if (reader.TokenType != JsonTokenType.PropertyName)
