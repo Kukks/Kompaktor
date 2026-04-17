@@ -228,9 +228,15 @@
             return 'status-' + status.toLowerCase().replace(/\s/g, '');
         }
 
+        function esc(str) {
+            const d = document.createElement('div');
+            d.textContent = str;
+            return d.innerHTML;
+        }
+
         function truncate(str, len = 12) {
-            if (!str || str.length <= len) return str || '';
-            return str.substring(0, len) + '...';
+            if (!str || str.length <= len) return esc(str || '');
+            return esc(str.substring(0, len)) + '...';
         }
 
         function formatDate(iso) {
@@ -264,7 +270,7 @@
                 if (status) {
                     rows.push(`<tr>
                         <td class="truncate" title="${roundId}">${truncate(roundId, 16)}</td>
-                        <td><span class="status-badge ${statusClass(status.status)}">${status.status}</span></td>
+                        <td><span class="status-badge ${statusClass(status.status)}">${esc(status.status)}</span></td>
                         <td>${status.inputCount}</td>
                         <td>${status.outputCount}</td>
                         <td>${status.signatureCount}</td>
@@ -287,7 +293,7 @@
                 <td>${u.rawAnonSet}</td>
                 <td><span class="score-badge ${scoreClass(u.effectiveScore)}">${u.effectiveScore}</span></td>
                 <td>${u.coinJoinCount}</td>
-                <td>${u.labels.map(l => `<span class="label-tag">${l}</span>`).join('')}</td>
+                <td>${u.labels.map(l => `<span class="label-tag">${esc(l)}</span>`).join('')}</td>
             </tr>`).join('');
         }
 
@@ -301,7 +307,7 @@
             body.innerHTML = cjs.map(c => `<tr>
                 <td class="truncate" title="${c.roundId}">${truncate(c.roundId, 12)}</td>
                 <td class="truncate" title="${c.transactionId}">${truncate(c.transactionId, 12)}</td>
-                <td><span class="status-badge ${statusClass(c.status)}">${c.status}</span></td>
+                <td><span class="status-badge ${statusClass(c.status)}">${esc(c.status)}</span></td>
                 <td>${c.ourInputCount}/${c.ourOutputCount}</td>
                 <td>${c.totalInputCount}/${c.totalOutputCount}</td>
                 <td>${c.participantCount}</td>

@@ -158,7 +158,7 @@ public class MultiServerBackend : IBlockchainBackend
 
     private ElectrumBackend GetNextLoadBalanced()
     {
-        var idx = Interlocked.Increment(ref _loadBalanceIndex) % _backends.Length;
-        return _backends[Math.Abs(idx)];
+        var idx = Interlocked.Increment(ref _loadBalanceIndex);
+        return _backends[(idx & 0x7FFFFFFF) % _backends.Length];
     }
 }

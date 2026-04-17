@@ -126,6 +126,7 @@ app.MapGet("/api/dashboard/utxos", async (WalletDbContext db, ScoringOptions sco
 {
     var utxos = await db.Utxos
         .Include(u => u.Address)
+            .ThenInclude(a => a.Utxos)
         .Where(u => u.SpentByTxId == null)
         .OrderByDescending(u => u.AmountSat)
         .Take(100)
