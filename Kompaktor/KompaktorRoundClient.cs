@@ -36,6 +36,7 @@ public class KompaktorRoundClient : IDisposable
     private readonly Network _network;
     public readonly KompaktorRound Round;
     private readonly Channel<KompaktorStatus> _statusChannel;
+    private readonly IRoundHistoryTracker? _roundHistoryTracker;
 
     public KompaktorRoundClient(
         WasabiRandom random,
@@ -44,7 +45,8 @@ public class KompaktorRoundClient : IDisposable
         IKompaktorRoundApiFactory factory,
         List<KompaktorClientBaseBehaviorTrait> behaviorTraits,
         IKompaktorWalletInterface walletInterface,
-        ILogger logger)
+        ILogger logger,
+        IRoundHistoryTracker? roundHistoryTracker = null)
     {
         _random = random;
         _network = network;
@@ -53,6 +55,7 @@ public class KompaktorRoundClient : IDisposable
         _behaviorTraits = behaviorTraits;
         _walletInterface = walletInterface;
         Logger = logger;
+        _roundHistoryTracker = roundHistoryTracker;
 
 
         foreach (var behaviorTrait in behaviorTraits) behaviorTrait.Start(this);
@@ -245,12 +248,35 @@ public class KompaktorRoundClient : IDisposable
             switch (phase)
             {
                 case KompaktorStatus.InputRegistration:
+                    // Check if too many consecutive failures suggest a malicious coordinator
+                    if (_roundHistoryTracker?.ShouldBackOff() == true)
+                    {
+                        Logger.LogError(
+                            $"Too many consecutive round failures ({_roundHistoryTracker.ConsecutiveFailures}). " +
+                            "Possible intersection attack — backing off.");
+                        exit = true;
+                        break;
+                    }
+
                     // Verify round parameters over a separate circuit before committing inputs.
                     // Detects coordinator equivocation (serving different params to different clients).
                     await VerifyRoundConsistency();
 
                     CoinCandidates = (await _walletInterface.GetCoins())
                         .Where(coin => Round.RoundEventCreated.InputAmount.Contains(coin.Amount)).ToList();
+
+                    // Exclude coins that would reveal new wallet cluster pairings
+                    if (_roundHistoryTracker != null && CoinCandidates.Count > 0)
+                    {
+                        var toExclude = _roundHistoryTracker.GetCoinsToExclude(CoinCandidates);
+                        if (toExclude.Count > 0)
+                        {
+                            Logger.LogInformation(
+                                $"Excluding {toExclude.Count} coins to limit cross-round cluster disclosure");
+                            CoinCandidates.RemoveAll(c => toExclude.Contains(c.Outpoint));
+                        }
+                    }
+
                     // Shuffle candidates so behavior traits don't deterministically pick the same
                     // coins across rounds. Without this, a malicious coordinator can predict which
                     // coins will be selected and use round parameter tuning to profile the wallet.
@@ -284,9 +310,12 @@ public class KompaktorRoundClient : IDisposable
                 case KompaktorStatus.Broadcasting:
                     break;
                 case KompaktorStatus.Completed:
+                    if (RegisteredInputs.Length > 0)
+                        _roundHistoryTracker?.RecordSuccess();
                     exit = true;
                     break;
                 case KompaktorStatus.Failed:
+                    _roundHistoryTracker?.RecordFailedRound(RegisteredInputs);
                     exit = true;
                     break;
                 default:
