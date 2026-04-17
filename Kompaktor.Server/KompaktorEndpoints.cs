@@ -126,6 +126,14 @@ public static class KompaktorEndpoints
             return Results.Ok(manager.GetActiveRounds());
         }).WithTags("Round Management");
 
+        app.MapGet("/api/round/{roundId}/info", (string roundId, KompaktorRoundManager manager) =>
+        {
+            var op = manager.GetOperator(roundId);
+            if (op is null) return Results.NotFound(new { error = "Round not found" });
+
+            return Results.Ok(RoundInfoResponse.FromCreatedEvent(op.RoundEventCreated));
+        }).WithTags("Round Management");
+
         app.MapGet("/api/round/{roundId}/status", (string roundId, string? checkpoint, KompaktorRoundManager manager) =>
         {
             var op = manager.GetOperator(roundId);

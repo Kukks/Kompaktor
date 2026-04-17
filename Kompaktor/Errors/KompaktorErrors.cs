@@ -47,6 +47,9 @@ public enum KompaktorProtocolErrorCode
 	// Blame round errors
 	InputNotWhitelisted,
 
+	// Equivocation detection
+	EquivocationDetected,
+
 	// Abuse prevention
 	InputBanned,
 	RateLimitExceeded,

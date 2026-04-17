@@ -7,6 +7,7 @@ using Kompaktor.Contracts;
 using Kompaktor.Credentials;
 using Kompaktor.Mapper;
 using Kompaktor.Models;
+using Kompaktor.Errors;
 using Kompaktor.Utils;
 using Microsoft.Extensions.Logging;
 using NBitcoin;
@@ -244,6 +245,10 @@ public class KompaktorRoundClient : IDisposable
             switch (phase)
             {
                 case KompaktorStatus.InputRegistration:
+                    // Verify round parameters over a separate circuit before committing inputs.
+                    // Detects coordinator equivocation (serving different params to different clients).
+                    await VerifyRoundConsistency();
+
                     CoinCandidates = (await _walletInterface.GetCoins())
                         .Where(coin => Round.RoundEventCreated.InputAmount.Contains(coin.Amount)).ToList();
                     await StartCoinSelection.InvokeIfNotNullAsync(this);
@@ -577,6 +582,53 @@ public class KompaktorRoundClient : IDisposable
     //         FailedOutputs.Add(txOut);
     //     }
     // }
+
+    /// <summary>
+    /// Queries the round info endpoint over a separate isolated circuit and compares
+    /// the returned parameters against the local round state. If any fields differ,
+    /// the coordinator is equivocating (serving different parameters to different clients)
+    /// and the client must abort before registering inputs.
+    /// </summary>
+    private async Task VerifyRoundConsistency()
+    {
+        IKompaktorRoundApi? verificationApi = null;
+        try
+        {
+            verificationApi = _factory.Create();
+            var remoteInfo = await verificationApi.GetRoundInfo();
+            var mismatches = remoteInfo.CompareWith(Round.RoundEventCreated);
+
+            if (mismatches.Count > 0)
+            {
+                var fields = string.Join(", ", mismatches);
+                Logger.LogError(
+                    "EQUIVOCATION DETECTED: Round {RoundId} parameters differ across circuits. Mismatched fields: {Fields}",
+                    Round.RoundEventCreated.RoundId, fields);
+                throw new KompaktorProtocolException(
+                    KompaktorProtocolErrorCode.EquivocationDetected,
+                    $"Coordinator equivocation detected — round parameters differ across circuits: {fields}",
+                    Round.RoundEventCreated.RoundId);
+            }
+
+            Logger.LogInformation("Round consistency verified over separate circuit");
+        }
+        catch (KompaktorProtocolException)
+        {
+            throw; // Re-throw equivocation errors
+        }
+        catch (Exception e)
+        {
+            // Network errors on the verification circuit are suspicious but not conclusive.
+            // Log a warning but allow the round to proceed — a truly malicious coordinator
+            // would serve plausible-looking (but different) data, not refuse to respond.
+            Logger.LogException("Round consistency check failed (network error on verification circuit)", e);
+        }
+        finally
+        {
+            if (verificationApi is IDisposable disposable)
+                disposable.Dispose();
+        }
+    }
 
     /// <summary>
     /// Establishes persistent connections for all identities that registered inputs.
