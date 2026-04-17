@@ -1870,6 +1870,233 @@ public class Test
         }
     }
 
+    [Fact]
+    public async Task CanDoBlameRounds()
+    {
+        var honestCount = 4;
+        var wallets = new List<Wallet>();
+
+        // Create honest participant wallets
+        for (int w = 0; w < honestCount; w++)
+        {
+            var wallet = new Wallet(Network, new Mnemonic(Wordlist.English, WordCount.Twelve),
+                _loggerFactory.CreateLogger<Wallet>());
+            wallets.Add(wallet);
+        }
+
+        // Create disruptor wallet
+        var disruptorWallet = new Wallet(Network, new Mnemonic(Wordlist.English, WordCount.Twelve),
+            _loggerFactory.CreateLogger<Wallet>());
+        wallets.Add(disruptorWallet);
+
+        // Fund all wallets
+        foreach (var wallet in wallets)
+        {
+            await CashCow(RPC, wallet.GetAddress(), Money.Coins(1), wallets);
+        }
+
+        await RPC.GenerateAsync(1);
+
+        var prison = new Prison.KompaktorPrison();
+
+        // ── Round 1: Disruptor refuses to sign ──
+        HashSet<OutPoint>? blameWhitelist = null;
+        string? parentRoundId = null;
+
+        using (var roundOperator = new KompaktorRoundOperator(Network, RPC, SecureRandom.Instance,
+                   _loggerFactory.CreateLogger<KompaktorRoundOperator>(), prison))
+        {
+            ConcurrentBag<KompaktorRoundEvent> roundEvents = new();
+            roundOperator.NewEvent += (sender, args) =>
+            {
+                roundEvents.Add(args);
+                return Task.CompletedTask;
+            };
+
+            // Capture blame round request
+            var blameRequested = new TaskCompletionSource<(string parentId, HashSet<OutPoint> whitelist)>();
+            roundOperator.BlameRoundRequested += (parentId, whitelist) =>
+            {
+                blameRequested.TrySetResult((parentId, whitelist));
+                return Task.CompletedTask;
+            };
+
+            Dictionary<CredentialType, ICredentialIssuer> issuers = new()
+            {
+                { CredentialType.Amount, CredentialType.Amount.CredentialIssuer(SecureRandom.Instance) }
+            };
+
+            await roundOperator.Start(new KompaktorRoundEventCreated(
+                    Guid.NewGuid().ToString(),
+                    new FeeRate(2m),
+                    TimeSpan.FromSeconds(30),
+                    TimeSpan.FromSeconds(30),
+                    TimeSpan.FromSeconds(10), // short signing timeout to trigger blame quickly
+                    new IntRange(1, 10),
+                    new MoneyRange(Money.Satoshis(10000), Money.Coins(100)),
+                    new IntRange(1, 100),
+                    new MoneyRange(Money.Satoshis(10000), Money.Coins(100)),
+                    issuers.ToDictionary(pair => pair.Key, pair => pair.Key.CredentialConfiguration(pair.Value)),
+                    TimeSpan.FromSeconds(5)), // soft timeout so we don't wait the full 30s
+                issuers);
+
+            Eventually(() =>
+                Assert.IsType<KompaktorRoundEventCreated>(Assert.Single(roundEvents)));
+
+            var apiFactory = new LocalKompaktorRoundApiFactory(roundOperator);
+            var round = (KompaktorRound)roundOperator;
+
+            // Create honest clients
+            var honestClients = new List<KompaktorRoundClient>();
+            for (int w = 0; w < honestCount; w++)
+            {
+                var traits = new List<KompaktorClientBaseBehaviorTrait>
+                {
+                    new ConsolidationBehaviorTrait(),
+                    new SelfSendChangeBehaviorTrait(
+                        () => wallets[w].GetAddress().ScriptPubKey,
+                        TimeSpan.FromSeconds(15)),
+                };
+                var client = new KompaktorRoundClient(
+                    SecureRandom.Instance, Network, round, apiFactory, traits,
+                    wallets[w], _loggerFactory.CreateLogger($"Honest_{w}"));
+                honestClients.Add(client);
+            }
+
+            // Create disruptor client — will be disposed when signing starts
+            var disruptorTraits = new List<KompaktorClientBaseBehaviorTrait>
+            {
+                new ConsolidationBehaviorTrait(),
+                new SelfSendChangeBehaviorTrait(
+                    () => disruptorWallet.GetAddress().ScriptPubKey,
+                    TimeSpan.FromSeconds(15)),
+            };
+            var disruptorClient = new KompaktorRoundClient(
+                SecureRandom.Instance, Network, round, apiFactory, disruptorTraits,
+                disruptorWallet, _loggerFactory.CreateLogger("Disruptor"));
+
+            // Kill the disruptor when signing starts so it never submits signatures.
+            // Throwing prevents Sign() from executing (Dispose() alone races with the signing code).
+            disruptorClient.StartSigning += (_) =>
+                throw new OperationCanceledException("Disruptor refusing to sign");
+
+            // Wait for the round to fail and blame to be requested
+            var blameResult = await blameRequested.Task.WaitAsync(TimeSpan.FromMinutes(3));
+            parentRoundId = blameResult.parentId;
+            blameWhitelist = blameResult.whitelist;
+
+            // Round should have failed
+            Eventually(() =>
+            {
+                Assert.NotNull(roundEvents.SingleOrDefault(@event =>
+                    @event is KompaktorRoundEventStatusUpdate { Status: KompaktorStatus.Failed }));
+            });
+
+            // Whitelist should contain only honest inputs (not the disruptor's)
+            var disruptorCoins = await disruptorWallet.GetCoins();
+            foreach (var coin in disruptorCoins)
+                Assert.DoesNotContain(coin.Outpoint, blameWhitelist);
+
+            // Disruptor should be banned
+            foreach (var coin in disruptorCoins)
+                Assert.True(prison.IsBanned(coin.Outpoint), $"Disruptor coin {coin.Outpoint} should be banned");
+
+            foreach (var client in honestClients)
+                client.Dispose();
+            disruptorClient.Dispose();
+        }
+
+        Assert.NotNull(blameWhitelist);
+        Assert.NotNull(parentRoundId);
+        Assert.Equal(honestCount, blameWhitelist.Count);
+
+        // ── Blame Round: Only honest participants complete ──
+        using (var blameOperator = new KompaktorRoundOperator(Network, RPC, SecureRandom.Instance,
+                   _loggerFactory.CreateLogger<KompaktorRoundOperator>(), prison))
+        {
+            ConcurrentBag<KompaktorRoundEvent> blameEvents = new();
+            blameOperator.NewEvent += (sender, args) =>
+            {
+                blameEvents.Add(args);
+                return Task.CompletedTask;
+            };
+
+            Dictionary<CredentialType, ICredentialIssuer> issuers = new()
+            {
+                { CredentialType.Amount, CredentialType.Amount.CredentialIssuer(SecureRandom.Instance) }
+            };
+
+            await blameOperator.Start(new KompaktorRoundEventCreated(
+                    Guid.NewGuid().ToString(),
+                    new FeeRate(2m),
+                    TimeSpan.FromMinutes(1),
+                    TimeSpan.FromSeconds(30),
+                    TimeSpan.FromSeconds(30),
+                    new IntRange(1, honestCount),
+                    new MoneyRange(Money.Satoshis(10000), Money.Coins(100)),
+                    new IntRange(1, 100),
+                    new MoneyRange(Money.Satoshis(10000), Money.Coins(100)),
+                    issuers.ToDictionary(pair => pair.Key, pair => pair.Key.CredentialConfiguration(pair.Value)))
+                {
+                    BlameOf = parentRoundId,
+                    BlameWhitelist = blameWhitelist
+                },
+                issuers);
+
+            Eventually(() =>
+                Assert.IsType<KompaktorRoundEventCreated>(Assert.Single(blameEvents)));
+
+            var apiFactory = new LocalKompaktorRoundApiFactory(blameOperator);
+            var round = (KompaktorRound)blameOperator;
+
+            // Only honest clients join the blame round
+            var blameClients = new List<KompaktorRoundClient>();
+            for (int w = 0; w < honestCount; w++)
+            {
+                var traits = new List<KompaktorClientBaseBehaviorTrait>
+                {
+                    new ConsolidationBehaviorTrait(),
+                    new SelfSendChangeBehaviorTrait(
+                        () => wallets[w].GetAddress().ScriptPubKey,
+                        TimeSpan.FromSeconds(15)),
+                };
+                var client = new KompaktorRoundClient(
+                    SecureRandom.Instance, Network, round, apiFactory, traits,
+                    wallets[w], _loggerFactory.CreateLogger($"Blame_Honest_{w}"));
+                blameClients.Add(client);
+            }
+
+            // Blame round should complete successfully
+            await Eventually(async () =>
+            {
+                foreach (var client in blameClients)
+                {
+                    if (client.PhasesTask.IsFaulted || client.PhasesTask.IsCompleted)
+                        await client.PhasesTask;
+                }
+
+                Assert.Equal(honestCount, blameEvents.Count(@event =>
+                    @event is KompaktorRoundEventInputRegistered));
+
+                Assert.NotNull(blameEvents.SingleOrDefault(@event =>
+                    @event is KompaktorRoundEventStatusUpdate { Status: KompaktorStatus.Signing }));
+
+                Assert.Equal(honestCount, blameEvents.Count(@event =>
+                    @event is KompaktorRoundEventSignaturePosted));
+
+                Assert.NotNull(blameEvents.SingleOrDefault(@event =>
+                    @event is KompaktorRoundEventStatusUpdate { Status: KompaktorStatus.Broadcasting }));
+
+                // Verify the tx was broadcast
+                var txid = blameClients[0].Round.GetTransaction(Network).GetHash();
+                await RPC.GetRawTransactionAsync(txid);
+            }, 120_000);
+
+            foreach (var client in blameClients)
+                client.Dispose();
+        }
+    }
+
     private async Task<Transaction> CashCow(RPCClient rpcClient, BitcoinAddress address, Money amount,
         IEnumerable<Wallet> wallets)
     {

@@ -1,5 +1,4 @@
-﻿using System.Reflection;
-using Kompaktor.Mapper;
+﻿using Kompaktor.Mapper;
 using NBitcoin.Secp256k1;
 using WabiSabi.Crypto;
 using WabiSabi.Crypto.Groups;
@@ -25,8 +24,7 @@ public static class CredentialHelper
         }
         var t = new Scalar(bytes[..32]);
         var k =  GroupElement.FromBytes(bytes[32..]);
-        return (MAC)Activator.CreateInstance(typeof(MAC), BindingFlags.NonPublic | BindingFlags.Instance, null,
-            [t, k], null)!;
+        return MAC.FromComponents(t, k);
     }
     public static BlindedCredential CredFromBytes(byte[] bytes)
     {

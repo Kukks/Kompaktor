@@ -2,6 +2,7 @@
 
     <PropertyGroup>
         <Description>Kompaktor HTTP client for communicating with coordinator server</Description>
+        <IsAotCompatible>true</IsAotCompatible>
     </PropertyGroup>
 
     <ItemGroup>

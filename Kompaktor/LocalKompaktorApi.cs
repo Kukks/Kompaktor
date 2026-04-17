@@ -162,6 +162,11 @@ public class LocalKompaktorApi : IKompaktorRoundApi
         return await _roundOperator.GetEvents(lastEventId);
     }
 
+    public Task<RoundInfoResponse> GetRoundInfo()
+    {
+        return Task.FromResult(RoundInfoResponse.FromCreatedEvent(_roundOperator.RoundEventCreated));
+    }
+
     public async Task<KompaktorRoundEventMessage> SendMessage(MessageRequest request)
     {
         return await _roundOperator.SendMessage(request);

@@ -6,7 +6,6 @@
 
 using System.Text.Json.Serialization;
 using Kompaktor.Credentials;
-using Kompaktor.JsonConverters;
 using WabiSabi.CredentialRequesting;
 
 namespace Kompaktor.Models;
@@ -17,10 +16,7 @@ public record KompaktorRoundCredentialReissuanceResponse
     {
         this.Credentials = Credentials;
     }
-    [JsonPropertyName("credentials")]   
-    [JsonConverter(typeof(ItemConverterDecorator<CredentialsResponseJsonConverter>))]
-
-
+    [JsonPropertyName("credentials")]
     public Dictionary<CredentialType, CredentialsResponse> Credentials { get; init; }
 
     public void Deconstruct(out Dictionary<CredentialType, CredentialsResponse> Credentials)
