@@ -86,6 +86,9 @@ Kompaktor.sln
 ├── Kompaktor.Client/       # HTTP client for remote coordinator communication
 │   ├── HttpKompaktorRoundApi.cs        # IKompaktorRoundApi over HTTP
 │   └── HttpKompaktorRoundApiFactory.cs # Factory with per-identity circuit isolation
+├── Kompaktor.Web/          # Combined coordinator + wallet dashboard
+│   ├── Program.cs                     # ASP.NET Core host with coordinator + dashboard APIs
+│   └── wwwroot/index.html             # Dark-themed single-page dashboard
 └── Kompaktor.Tests/        # Integration tests against regtest bitcoind
 ```
 
@@ -150,6 +153,10 @@ Abuse prevention system. Bans misbehaving coins (failed to sign, double-spend at
 ### `ICircuit` / `ICircuitFactory`
 
 Network identity isolation abstraction. In production, each circuit maps to a separate Tor circuit, preventing the coordinator or network observers from linking a participant's input registration to their output registration. `DefaultCircuitFactory` provides a no-op implementation for development/testing.
+
+### `Kompaktor.Web`
+
+Combined coordinator and wallet dashboard in a single ASP.NET Core process. Runs the full coordinator (round management, scheduling) alongside dashboard API endpoints that expose wallet balance, scored UTXOs with anonymity badges, and coinjoin history. Supports both Bitcoin Core RPC and Electrum backends via configuration. The frontend is a vanilla JS single-page dashboard with dark theme, auto-refresh, and color-coded anonymity score indicators.
 
 ### Error Handling
 

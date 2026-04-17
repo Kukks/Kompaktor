@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kompaktor Dashboard</title>
+    <style>
+        :root {
+            --bg: #0d1117;
+            --surface: #161b22;
+            --border: #30363d;
+            --text: #e6edf3;
+            --text-muted: #8b949e;
+            --accent: #58a6ff;
+            --green: #3fb950;
+            --yellow: #d29922;
+            --red: #f85149;
+            --orange: #db6d28;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.5;
+        }
+        .container { max-width: 1200px; margin: 0 auto; padding: 24px; }
+        header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 16px 0;
+            border-bottom: 1px solid var(--border);
+            margin-bottom: 24px;
+        }
+        header h1 { font-size: 20px; font-weight: 600; }
+        header .status { font-size: 13px; color: var(--text-muted); }
+        .cards {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+        .card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 16px;
+        }
+        .card .label { font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
+        .card .value { font-size: 28px; font-weight: 600; margin-top: 4px; }
+        .card .unit { font-size: 14px; color: var(--text-muted); }
+        section { margin-bottom: 32px; }
+        section h2 {
+            font-size: 16px;
+            font-weight: 600;
+            margin-bottom: 12px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid var(--border);
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            overflow: hidden;
+        }
+        th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--border); }
+        th { font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; }
+        td { font-size: 13px; font-family: 'SFMono-Regular', Consolas, monospace; }
+        tr:last-child td { border-bottom: none; }
+        tr:hover { background: rgba(88, 166, 255, 0.04); }
+        .score-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+        .score-high { background: rgba(63, 185, 80, 0.15); color: var(--green); }
+        .score-medium { background: rgba(210, 153, 34, 0.15); color: var(--yellow); }
+        .score-low { background: rgba(248, 81, 73, 0.15); color: var(--red); }
+        .status-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+        .status-inputregistration { background: rgba(88, 166, 255, 0.15); color: var(--accent); }
+        .status-outputregistration { background: rgba(210, 153, 34, 0.15); color: var(--yellow); }
+        .status-signing { background: rgba(219, 109, 40, 0.15); color: var(--orange); }
+        .status-completed { background: rgba(63, 185, 80, 0.15); color: var(--green); }
+        .status-failed { background: rgba(248, 81, 73, 0.15); color: var(--red); }
+        .label-tag {
+            display: inline-block;
+            padding: 1px 6px;
+            border-radius: 4px;
+            font-size: 11px;
+            background: rgba(88, 166, 255, 0.15);
+            color: var(--accent);
+            margin-right: 4px;
+        }
+        .empty { color: var(--text-muted); font-style: italic; padding: 20px; text-align: center; }
+        .refresh-btn {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            color: var(--text);
+            padding: 6px 12px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+        }
+        .refresh-btn:hover { border-color: var(--accent); }
+        .truncate { max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Kompaktor Dashboard</h1>
+            <div>
+                <span class="status" id="lastUpdate"></span>
+                <button class="refresh-btn" onclick="refreshAll()">Refresh</button>
+            </div>
+        </header>
+
+        <div class="cards" id="summaryCards">
+            <div class="card">
+                <div class="label">Balance</div>
+                <div class="value" id="balance">-</div>
+                <div class="unit">BTC</div>
+            </div>
+            <div class="card">
+                <div class="label">UTXOs</div>
+                <div class="value" id="utxoCount">-</div>
+                <div class="unit">unspent</div>
+            </div>
+            <div class="card">
+                <div class="label">CoinJoins</div>
+                <div class="value" id="coinjoinCount">-</div>
+                <div class="unit">completed</div>
+            </div>
+            <div class="card">
+                <div class="label">Active Rounds</div>
+                <div class="value" id="activeRounds">-</div>
+                <div class="unit">rounds</div>
+            </div>
+        </div>
+
+        <section>
+            <h2>Active Rounds</h2>
+            <table id="roundsTable">
+                <thead>
+                    <tr>
+                        <th>Round ID</th>
+                        <th>Status</th>
+                        <th>Inputs</th>
+                        <th>Outputs</th>
+                        <th>Signatures</th>
+                    </tr>
+                </thead>
+                <tbody id="roundsBody">
+                    <tr><td colspan="5" class="empty">Loading...</td></tr>
+                </tbody>
+            </table>
+        </section>
+
+        <section>
+            <h2>Wallet UTXOs</h2>
+            <table id="utxosTable">
+                <thead>
+                    <tr>
+                        <th>Outpoint</th>
+                        <th>Amount</th>
+                        <th>Anon Set</th>
+                        <th>Score</th>
+                        <th>CoinJoins</th>
+                        <th>Labels</th>
+                    </tr>
+                </thead>
+                <tbody id="utxosBody">
+                    <tr><td colspan="6" class="empty">Loading...</td></tr>
+                </tbody>
+            </table>
+        </section>
+
+        <section>
+            <h2>CoinJoin History</h2>
+            <table id="coinjoinsTable">
+                <thead>
+                    <tr>
+                        <th>Round</th>
+                        <th>Transaction</th>
+                        <th>Status</th>
+                        <th>Our In/Out</th>
+                        <th>Total In/Out</th>
+                        <th>Participants</th>
+                        <th>Date</th>
+                    </tr>
+                </thead>
+                <tbody id="coinjoinsBody">
+                    <tr><td colspan="7" class="empty">Loading...</td></tr>
+                </tbody>
+            </table>
+        </section>
+    </div>
+
+    <script>
+        async function fetchJson(url) {
+            try {
+                const res = await fetch(url);
+                if (!res.ok) return null;
+                return await res.json();
+            } catch {
+                return null;
+            }
+        }
+
+        function scoreClass(effective) {
+            if (effective >= 10) return 'score-high';
+            if (effective >= 3) return 'score-medium';
+            return 'score-low';
+        }
+
+        function statusClass(status) {
+            return 'status-' + status.toLowerCase().replace(/\s/g, '');
+        }
+
+        function truncate(str, len = 12) {
+            if (!str || str.length <= len) return str || '';
+            return str.substring(0, len) + '...';
+        }
+
+        function formatDate(iso) {
+            if (!iso) return '';
+            const d = new Date(iso);
+            return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        }
+
+        async function loadSummary() {
+            const data = await fetchJson('/api/dashboard/summary');
+            if (data) {
+                document.getElementById('balance').textContent = data.totalBalanceBtc.toFixed(8);
+                document.getElementById('utxoCount').textContent = data.unspentUtxoCount;
+                document.getElementById('coinjoinCount').textContent = data.completedCoinjoins;
+            }
+        }
+
+        async function loadRounds() {
+            const rounds = await fetchJson('/api/rounds');
+            const body = document.getElementById('roundsBody');
+            if (!rounds || rounds.length === 0) {
+                body.innerHTML = '<tr><td colspan="5" class="empty">No active rounds</td></tr>';
+                document.getElementById('activeRounds').textContent = '0';
+                return;
+            }
+            document.getElementById('activeRounds').textContent = rounds.length;
+
+            const rows = [];
+            for (const roundId of rounds) {
+                const status = await fetchJson(`/api/round/${roundId}/status`);
+                if (status) {
+                    rows.push(`<tr>
+                        <td class="truncate" title="${roundId}">${truncate(roundId, 16)}</td>
+                        <td><span class="status-badge ${statusClass(status.status)}">${status.status}</span></td>
+                        <td>${status.inputCount}</td>
+                        <td>${status.outputCount}</td>
+                        <td>${status.signatureCount}</td>
+                    </tr>`);
+                }
+            }
+            body.innerHTML = rows.join('') || '<tr><td colspan="5" class="empty">No active rounds</td></tr>';
+        }
+
+        async function loadUtxos() {
+            const utxos = await fetchJson('/api/dashboard/utxos');
+            const body = document.getElementById('utxosBody');
+            if (!utxos || utxos.length === 0) {
+                body.innerHTML = '<tr><td colspan="6" class="empty">No UTXOs in wallet</td></tr>';
+                return;
+            }
+            body.innerHTML = utxos.map(u => `<tr>
+                <td class="truncate" title="${u.txId}:${u.outputIndex}">${truncate(u.txId)}:${u.outputIndex}</td>
+                <td>${u.amountBtc.toFixed(8)}</td>
+                <td>${u.rawAnonSet}</td>
+                <td><span class="score-badge ${scoreClass(u.effectiveScore)}">${u.effectiveScore}</span></td>
+                <td>${u.coinJoinCount}</td>
+                <td>${u.labels.map(l => `<span class="label-tag">${l}</span>`).join('')}</td>
+            </tr>`).join('');
+        }
+
+        async function loadCoinjoins() {
+            const cjs = await fetchJson('/api/dashboard/coinjoins');
+            const body = document.getElementById('coinjoinsBody');
+            if (!cjs || cjs.length === 0) {
+                body.innerHTML = '<tr><td colspan="7" class="empty">No coinjoin history</td></tr>';
+                return;
+            }
+            body.innerHTML = cjs.map(c => `<tr>
+                <td class="truncate" title="${c.roundId}">${truncate(c.roundId, 12)}</td>
+                <td class="truncate" title="${c.transactionId}">${truncate(c.transactionId, 12)}</td>
+                <td><span class="status-badge ${statusClass(c.status)}">${c.status}</span></td>
+                <td>${c.ourInputCount}/${c.ourOutputCount}</td>
+                <td>${c.totalInputCount}/${c.totalOutputCount}</td>
+                <td>${c.participantCount}</td>
+                <td>${formatDate(c.createdAt)}</td>
+            </tr>`).join('');
+        }
+
+        async function refreshAll() {
+            document.getElementById('lastUpdate').textContent = 'Refreshing...';
+            await Promise.all([loadSummary(), loadRounds(), loadUtxos(), loadCoinjoins()]);
+            document.getElementById('lastUpdate').textContent = 'Updated ' + new Date().toLocaleTimeString();
+        }
+
+        // Auto-refresh every 10 seconds
+        refreshAll();
+        setInterval(refreshAll, 10000);
+    </script>
+</body>
+</html>

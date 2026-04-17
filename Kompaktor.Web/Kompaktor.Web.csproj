@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+    <PropertyGroup>
+        <OutputType>Exe</OutputType>
+        <Description>Kompaktor web dashboard with coordinator API</Description>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <PackageReference Include="NBitcoin" Version="7.0.46"/>
+        <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="9.0.0"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\Kompaktor\Kompaktor.csproj" />
+        <ProjectReference Include="..\Kompaktor.Blockchain\Kompaktor.Blockchain.csproj" />
+        <ProjectReference Include="..\Kompaktor.Wallet\Kompaktor.Wallet.csproj" />
+        <ProjectReference Include="..\Kompaktor.Scoring\Kompaktor.Scoring.csproj" />
+        <ProjectReference Include="..\Kompaktor.Server\Kompaktor.Server.csproj" />
+    </ItemGroup>
+
+</Project>
