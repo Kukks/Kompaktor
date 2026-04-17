@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <OutputType>Exe</OutputType>
+        <Description>Sample app running Kompaktor coordinator + HD wallet client in one process</Description>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <PackageReference Include="NBitcoin" Version="7.0.46"/>
+        <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="9.0.0"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\Kompaktor\Kompaktor.csproj" />
+        <ProjectReference Include="..\Kompaktor.Blockchain\Kompaktor.Blockchain.csproj" />
+        <ProjectReference Include="..\Kompaktor.Wallet\Kompaktor.Wallet.csproj" />
+        <ProjectReference Include="..\Kompaktor.Server\Kompaktor.Server.csproj" />
+    </ItemGroup>
+
+</Project>
