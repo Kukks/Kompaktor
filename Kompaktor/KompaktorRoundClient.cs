@@ -405,6 +405,9 @@ public class KompaktorRoundClient : IDisposable
 
     private async Task Sign()
     {
+        // Verify other participants' inputs exist in the UTXO set (if we have full node access)
+        await VerifyInputUtxos();
+
         // Verify fee transparency before signing — ensure no hidden coordinator surplus
         var feeBreakdown = Round.GetFeeBreakdown();
         Logger.LogInformation(
@@ -632,6 +635,72 @@ public class KompaktorRoundClient : IDisposable
     //         FailedOutputs.Add(txOut);
     //     }
     // }
+
+    /// <summary>
+    /// Verifies other participants' inputs against the UTXO set before signing.
+    /// Detects fabricated inputs from a malicious coordinator that could be used
+    /// to forge ownership proofs (especially for P2WPKH inputs that don't commit
+    /// to all scriptPubKeys at signing time unlike P2TR).
+    /// Only runs if the wallet supports UTXO verification (full node clients).
+    /// </summary>
+    private async Task VerifyInputUtxos()
+    {
+        var myOutpoints = RegisteredInputs.ToHashSet();
+        var otherInputs = Round.Inputs.Where(c => !myOutpoints.Contains(c.Outpoint)).ToList();
+
+        if (otherInputs.Count == 0)
+            return;
+
+        // Build lookup from OutPoint to registration event for BIP322 signature verification
+        var registrationEvents = Round.GetEventsSince(null)
+            .OfType<KompaktorRoundEventInputRegistered>()
+            .ToDictionary(e => e.Coin.Outpoint, e => e);
+
+        var invalidInputs = new List<OutPoint>();
+        foreach (var coin in otherInputs)
+        {
+            var result = await _walletInterface.VerifyUtxo(coin.Outpoint, coin.TxOut);
+            if (result == false)
+            {
+                invalidInputs.Add(coin.Outpoint);
+                Logger.LogError("UTXO verification failed for input {Outpoint} — claimed {Amount} at {Script}",
+                    coin.Outpoint, coin.Amount, coin.ScriptPubKey);
+                continue;
+            }
+
+            // Verify BIP322 ownership proof
+            if (!registrationEvents.TryGetValue(coin.Outpoint, out var regEvent))
+            {
+                invalidInputs.Add(coin.Outpoint);
+                Logger.LogError("No registration event found for input {Outpoint} — cannot verify ownership proof",
+                    coin.Outpoint);
+                continue;
+            }
+
+            var address = coin.ScriptPubKey.GetDestinationAddress(_network);
+            if (address is null ||
+                !address.VerifyBIP322(Round.RoundEventCreated.RoundId, regEvent.QuoteRequest.Signature, [coin]))
+            {
+                invalidInputs.Add(coin.Outpoint);
+                Logger.LogError("BIP322 ownership proof verification failed for input {Outpoint}",
+                    coin.Outpoint);
+            }
+        }
+
+        if (invalidInputs.Count > 0)
+        {
+            Logger.LogError(
+                "REFUSING TO SIGN: {Count} inputs failed verification. " +
+                "Coordinator may be injecting fabricated inputs.", invalidInputs.Count);
+            throw new Errors.KompaktorProtocolException(
+                Errors.KompaktorProtocolErrorCode.InputNotValid,
+                $"{invalidInputs.Count} inputs failed verification",
+                Round.RoundEventCreated.RoundId);
+        }
+
+        Logger.LogInformation("UTXO and BIP322 ownership verification passed for {Count} other participants' inputs",
+            otherInputs.Count);
+    }
 
     /// <summary>
     /// Fisher-Yates shuffle of coin candidates to prevent deterministic selection
