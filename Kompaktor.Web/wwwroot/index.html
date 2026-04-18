@@ -930,6 +930,14 @@
             </section>
 
             <section>
+                <h2>Export Wallet Data</h2>
+                <div style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:16px">
+                    <p style="color:var(--text-muted);font-size:13px;margin-bottom:12px">Export labels, address book, and coinjoin history as JSON. This does not include private keys — use the backup section above for recovery phrases.</p>
+                    <button class="send-btn" onclick="exportWalletData()">Export JSON</button>
+                </div>
+            </section>
+
+            <section>
                 <h2>Blockchain</h2>
                 <div class="detail-grid" id="blockchainGrid" style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:16px;font-size:13px">
                     <span class="label">Connection</span><span id="settChainConn">-</span>
@@ -1966,6 +1974,25 @@
                 document.getElementById('backupPass').value = '';
             } catch (err) {
                 status.innerHTML = `<span style="color:var(--red)">Failed: ${esc(err.message)}</span>`;
+            }
+        }
+
+        // Settings: export wallet data
+        async function exportWalletData() {
+            try {
+                const res = await fetch('/api/wallet/export');
+                if (!res.ok) { showToast('Export failed', 'warning'); return; }
+                const data = await res.json();
+                const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `kompaktor-export-${new Date().toISOString().split('T')[0]}.json`;
+                a.click();
+                URL.revokeObjectURL(url);
+                showToast('Wallet data exported', 'success');
+            } catch (err) {
+                showToast('Export failed: ' + err.message, 'warning');
             }
         }
 

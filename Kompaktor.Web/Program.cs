@@ -1073,6 +1073,33 @@ app.MapGet("/api/blockchain/info", async (IBlockchainBackend chain) =>
     });
 }).WithTags("Blockchain");
 
+// Wallet data export (labels, address book, coinjoin history)
+app.MapGet("/api/wallet/export", async (WalletDbContext db) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.BadRequest("No wallet found");
+
+    var labels = await db.Labels.ToListAsync();
+    var addressBook = await db.AddressBook.Where(a => a.WalletId == wallet.Id).ToListAsync();
+    var coinjoins = await db.CoinJoinRecords.Include(c => c.Participations).ToListAsync();
+
+    var export = new
+    {
+        version = 1,
+        exportedAt = DateTimeOffset.UtcNow,
+        wallet = new { wallet.Name, wallet.Network, wallet.CreatedAt },
+        labels = labels.Select(l => new { l.EntityType, l.EntityId, l.Text }),
+        addressBook = addressBook.Select(a => new { a.Label, a.Address }),
+        coinjoinHistory = coinjoins.Select(c => new
+        {
+            c.RoundId, c.Status, c.OurInputCount, c.TotalInputCount,
+            c.OurOutputCount, c.TotalOutputCount, c.ParticipantCount, c.CreatedAt
+        })
+    };
+
+    return Results.Json(export, contentType: "application/json");
+}).WithTags("Wallet");
+
 // Wallet sync status
 app.MapGet("/api/wallet/sync-status", (WalletSyncBackgroundService sync) =>
 {
