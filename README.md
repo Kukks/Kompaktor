@@ -98,10 +98,11 @@ Kompaktor.sln
 │   ├── RemoteKompaktorRound.cs        # Event-polling round state with exponential backoff
 │   └── KompaktorService.cs           # High-level orchestrator for continuous coinjoin participation
 ├── Kompaktor.Web/          # Combined coordinator + wallet dashboard
-│   ├── Program.cs                     # ASP.NET Core host with coordinator, dashboard, coin control, and mixing APIs
+│   ├── Program.cs                     # ASP.NET Core host with coordinator, dashboard, coin control, mixing, and address book APIs
 │   ├── DashboardEventBus.cs           # SSE broadcast bus for real-time dashboard updates
 │   ├── MixingManager.cs               # Auto-mixing lifecycle management (start/stop KompaktorService)
-│   └── wwwroot/index.html             # Dark-themed dashboard with SSE, coin control, and auto-mixing UI
+│   ├── WalletSyncBackgroundService.cs # Background UTXO sync + real-time blockchain monitoring
+│   └── wwwroot/index.html             # Dark-themed dashboard with SSE, coin control, auto-mixing, and privacy meter UI
 └── Kompaktor.Tests/        # Integration tests against regtest bitcoind
 ```
 
@@ -374,7 +375,7 @@ This starts a `bitcoind` regtest node on port 53782 with RPC credentials `ceiwHE
 dotnet test
 ```
 
-The test suite includes 310+ tests covering:
+The test suite includes 360+ tests covering:
 - Round lifecycle (input registration, output registration, signing, broadcasting)
 - Multi-participant coinjoins (up to 100 participants)
 - Interactive payments between participants during rounds
