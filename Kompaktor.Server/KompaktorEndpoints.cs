@@ -161,6 +161,14 @@ public static class KompaktorEndpoints
             }
         });
 
+        group.MapGet("/events", (string roundId, string? since, KompaktorRoundManager manager) =>
+        {
+            var op = manager.GetOperator(roundId);
+            if (op is null) return Results.NotFound(new { error = "Round not found" });
+            var events = op.GetEventsSince(since);
+            return Results.Ok(events);
+        });
+
         // Round management / discovery endpoints — lower rate limit
         app.MapGet("/api/rounds", (KompaktorRoundManager manager) =>
         {

@@ -2,6 +2,7 @@ using System.Net;
 using Kompaktor.Contracts;
 using Kompaktor.Credentials;
 using Kompaktor.Errors;
+using Kompaktor.JsonConverters;
 using Kompaktor.Models;
 using Kompaktor.Prison;
 using Kompaktor.Utils;
@@ -1548,6 +1549,54 @@ public class BatchRequestModelTests
         Assert.Equal(0, response.FailureCount);
     }
 
+}
+
+#endregion
+
+#region Event Serialization Tests
+
+public class EventSerializationTests
+{
+    [Fact]
+    public void StatusUpdateEvent_RoundTrips()
+    {
+        var evt = new KompaktorRoundEventStatusUpdate(KompaktorStatus.OutputRegistration);
+        var bytes = KompaktorJsonHelper.SerializeToUtf8Bytes(evt as KompaktorRoundEvent);
+        var deserialized = KompaktorJsonHelper.DeserializeFromBytes<KompaktorRoundEvent>(bytes);
+
+        Assert.NotNull(deserialized);
+        var statusEvent = Assert.IsType<KompaktorRoundEventStatusUpdate>(deserialized);
+        Assert.Equal(KompaktorStatus.OutputRegistration, statusEvent.Status);
+    }
+
+    [Fact]
+    public void EventArray_PreservesPolymorphicTypes()
+    {
+        var events = new KompaktorRoundEvent[]
+        {
+            new KompaktorRoundEventStatusUpdate(KompaktorStatus.InputRegistration),
+            new KompaktorRoundEventStatusUpdate(KompaktorStatus.OutputRegistration),
+        };
+
+        var bytes = KompaktorJsonHelper.SerializeToUtf8Bytes(events);
+        var deserialized = KompaktorJsonHelper.DeserializeFromBytes<KompaktorRoundEvent[]>(bytes);
+
+        Assert.NotNull(deserialized);
+        Assert.Equal(2, deserialized!.Length);
+        Assert.IsType<KompaktorRoundEventStatusUpdate>(deserialized[0]);
+        Assert.IsType<KompaktorRoundEventStatusUpdate>(deserialized[1]);
+    }
+
+    [Fact]
+    public void MessageEvent_RoundTrips()
+    {
+        var evt = new KompaktorRoundEventMessage(new MessageRequest(new byte[] { 1, 2, 3 }));
+        var bytes = KompaktorJsonHelper.SerializeToUtf8Bytes(evt as KompaktorRoundEvent);
+        var deserialized = KompaktorJsonHelper.DeserializeFromBytes<KompaktorRoundEvent>(bytes);
+
+        Assert.NotNull(deserialized);
+        Assert.IsType<KompaktorRoundEventMessage>(deserialized);
+    }
 }
 
 #endregion

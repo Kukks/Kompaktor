@@ -6,6 +6,14 @@ using Kompaktor.Utils;
 
 namespace Kompaktor.Models;
 
+[JsonPolymorphic(TypeDiscriminatorPropertyName = "$type")]
+[JsonDerivedType(typeof(KompaktorRoundEventCreated), "created")]
+[JsonDerivedType(typeof(KompaktorRoundEventStatusUpdate), "status")]
+[JsonDerivedType(typeof(KompaktorRoundEventInputRegistered), "inputRegistered")]
+[JsonDerivedType(typeof(KompaktorRoundEventOutputRegistered), "outputRegistered")]
+[JsonDerivedType(typeof(KompaktorRoundEventSignaturePosted), "signaturePosted")]
+[JsonDerivedType(typeof(KompaktorRoundEventMessage), "message")]
+[JsonDerivedType(typeof(KompaktorRoundEventTranscriptSigned), "transcriptSigned")]
 public abstract record KompaktorRoundEvent
 {
     [JsonIgnore]

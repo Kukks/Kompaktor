@@ -24,9 +24,35 @@ public class HttpKompaktorRoundApi : IKompaktorRoundApi, IDisposable
         _roundId = roundId;
     }
 
-    public Task<KompaktorRoundEvent> GetEvents(string lastEventId)
+    public async Task<KompaktorRoundEvent> GetEvents(string lastEventId)
     {
-        throw new NotImplementedException("GetEvents over HTTP is not yet implemented");
+        // This method is not typically called directly — RemoteKompaktorRound uses GetEventsSince instead.
+        var events = await GetEventsSinceAsync(lastEventId);
+        return events.FirstOrDefault() ?? throw new InvalidOperationException("No events available");
+    }
+
+    /// <summary>
+    /// Fetches all round events since a given checkpoint.
+    /// Used by RemoteKompaktorRound to poll for state updates.
+    /// </summary>
+    public async Task<KompaktorRoundEvent[]> GetEventsSinceAsync(string? since = null)
+    {
+        var url = $"/api/round/{_roundId}/events";
+        if (since is not null) url += $"?since={Uri.EscapeDataString(since)}";
+
+        using var response = await _httpClient.GetAsync(url);
+
+        if (!response.IsSuccessStatusCode)
+        {
+            var errorBody = await response.Content.ReadAsStringAsync();
+            throw new KompaktorProtocolException(
+                KompaktorProtocolErrorCode.InternalError,
+                $"HTTP {response.StatusCode}: {errorBody}",
+                _roundId);
+        }
+
+        var responseBytes = await response.Content.ReadAsByteArrayAsync();
+        return KompaktorJsonHelper.DeserializeFromBytes<KompaktorRoundEvent[]>(responseBytes) ?? [];
     }
 
     public async Task<RoundInfoResponse> GetRoundInfo()
