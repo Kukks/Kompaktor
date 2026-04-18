@@ -19,17 +19,20 @@ public class ScoringWalletAdapter : IKompaktorWalletInterface
     private readonly WalletCoinSelector _selector;
     private readonly string _walletId;
     private readonly double? _minEffectiveScore;
+    private readonly bool _includeUnconfirmedCoinjoinOutputs;
 
     public ScoringWalletAdapter(
         IKompaktorWalletInterface inner,
         WalletCoinSelector selector,
         string walletId,
-        double? minEffectiveScore = null)
+        double? minEffectiveScore = null,
+        bool includeUnconfirmedCoinjoinOutputs = false)
     {
         _inner = inner;
         _selector = selector;
         _walletId = walletId;
         _minEffectiveScore = minEffectiveScore;
+        _includeUnconfirmedCoinjoinOutputs = includeUnconfirmedCoinjoinOutputs;
     }
 
     /// <summary>
@@ -41,7 +44,7 @@ public class ScoringWalletAdapter : IKompaktorWalletInterface
         try
         {
             var candidates = await _selector.GetCoinjoinCandidatesAsync(
-                _walletId, _minEffectiveScore, ct);
+                _walletId, _minEffectiveScore, _includeUnconfirmedCoinjoinOutputs, ct);
 
             if (candidates.Count == 0)
                 return [];

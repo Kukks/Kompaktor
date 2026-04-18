@@ -1239,6 +1239,7 @@ app.MapGet("/api/mixing/status", (MixingManager mixer) =>
         activeRoundPhase = mixer.ActiveRoundPhase,
         activeRoundInputs = mixer.ActiveRoundInputCount,
         torEnabled = mixer.TorEnabled,
+        allowUnconfirmedCoinjoinReuse = mixer.AllowUnconfirmedCoinjoinReuse,
         mixingOutpoints = mixer.ActiveMixingOutpoints,
         lastRoundStatus = mixer.LastRoundStatus,
         lastRoundFailureReason = mixer.LastRoundFailureReason
@@ -1268,8 +1269,8 @@ app.MapPost("/api/mixing/start", async (MixingManager mixer, HttpContext ctx) =>
             };
         }
 
-        var result = await mixer.StartAsync(body.Passphrase, coordinatorUri, torOptions);
-        return Results.Ok(new { status = result, coordinator = coordinatorUri.ToString(), torEnabled = torOptions is not null });
+        var result = await mixer.StartAsync(body.Passphrase, coordinatorUri, torOptions, body.AllowUnconfirmedCoinjoinReuse);
+        return Results.Ok(new { status = result, coordinator = coordinatorUri.ToString(), torEnabled = torOptions is not null, allowUnconfirmedCoinjoinReuse = body.AllowUnconfirmedCoinjoinReuse });
     }
     catch (Exception ex)
     {
@@ -1366,7 +1367,7 @@ record LabelRequest(string Text);
 record PassphraseRequest(string Passphrase);
 record RestoreRequest(string Mnemonic, string Passphrase, string? Name = null);
 record CreateWalletRequest(string Passphrase, string? Name = null, int? WordCount = null);
-record MixingStartRequest(string Passphrase, string? CoordinatorUrl = null, string? TorSocksHost = null, int? TorSocksPort = null);
+record MixingStartRequest(string Passphrase, string? CoordinatorUrl = null, string? TorSocksHost = null, int? TorSocksPort = null, bool AllowUnconfirmedCoinjoinReuse = false);
 record AddressBookRequest(string Label, string Address);
 record SendRequest(string Destination, long AmountSat, long FeeRateSatPerVb = 2, string Strategy = "PrivacyFirst", string Passphrase = "");
 record BroadcastPsbtRequest(string SignedPsbt);

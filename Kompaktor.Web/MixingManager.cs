@@ -31,6 +31,7 @@ public class MixingManager : IAsyncDisposable
     public bool TorEnabled { get; private set; }
     public string? LastRoundStatus { get; private set; }
     public string? LastRoundFailureReason { get; private set; }
+    public bool AllowUnconfirmedCoinjoinReuse { get; private set; }
 
     public string? ActiveRoundPhase
     {
@@ -72,7 +73,7 @@ public class MixingManager : IAsyncDisposable
         _eventBus = eventBus;
     }
 
-    public async Task<string> StartAsync(string passphrase, Uri coordinatorUri, TorOptions? torOptions = null)
+    public async Task<string> StartAsync(string passphrase, Uri coordinatorUri, TorOptions? torOptions = null, bool allowUnconfirmedCoinjoinReuse = false)
     {
         lock (_lock)
         {
@@ -88,8 +89,10 @@ public class MixingManager : IAsyncDisposable
             throw new InvalidOperationException("No wallet found");
 
         var wallet = await KompaktorHdWallet.OpenAsync(db, walletEntity.Id, _network, passphrase);
+        wallet.AllowUnconfirmedCoinjoinReuse = allowUnconfirmedCoinjoinReuse;
         var coinSelector = new WalletCoinSelector(db);
-        var scoringWallet = new ScoringWalletAdapter(wallet, coinSelector, wallet.WalletId);
+        var scoringWallet = new ScoringWalletAdapter(wallet, coinSelector, wallet.WalletId,
+            includeUnconfirmedCoinjoinOutputs: allowUnconfirmedCoinjoinReuse);
         var recorder = new CoinJoinRecorder(db, wallet.WalletId);
 
         // Load persistent intersection attack tracking
@@ -158,6 +161,7 @@ public class MixingManager : IAsyncDisposable
 
         CoordinatorUri = coordinatorUri;
         TorEnabled = torOptions is not null;
+        AllowUnconfirmedCoinjoinReuse = allowUnconfirmedCoinjoinReuse;
         _eventBus.Publish("mixing");
         _logger.LogInformation("Auto-mixing started for wallet {WalletId}", wallet.WalletId);
         return "Started";

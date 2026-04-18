@@ -22,10 +22,10 @@ public class WalletCoinSelector
     }
 
     /// <summary>
-    /// Loads and scores all unspent confirmed UTXOs for a wallet.
+    /// Loads and scores all unspent UTXOs for a wallet (confirmed, and optionally unconfirmed coinjoin outputs).
     /// </summary>
     public async Task<IReadOnlyList<ScoredUtxo>> GetScoredUtxosAsync(
-        string walletId, bool includeFrozen = false, CancellationToken ct = default)
+        string walletId, bool includeFrozen = false, bool includeUnconfirmedCoinjoinOutputs = false, CancellationToken ct = default)
     {
         var query = _db.Utxos
             .Include(u => u.Address)
@@ -33,8 +33,14 @@ public class WalletCoinSelector
             .ThenInclude(acc => acc.Wallet)
             .Include(u => u.Address)
             .ThenInclude(a => a.Utxos)
-            .Where(u => u.SpentByTxId == null && u.ConfirmedHeight != null)
+            .Where(u => u.SpentByTxId == null)
             .Where(u => u.Address.Account.Wallet.Id == walletId);
+
+        // Include confirmed UTXOs, and optionally unconfirmed coinjoin outputs for fast re-mixing
+        if (includeUnconfirmedCoinjoinOutputs)
+            query = query.Where(u => u.ConfirmedHeight != null || u.IsCoinJoinOutput);
+        else
+            query = query.Where(u => u.ConfirmedHeight != null);
 
         if (!includeFrozen)
             query = query.Where(u => !u.IsFrozen);
@@ -95,9 +101,10 @@ public class WalletCoinSelector
     public async Task<IReadOnlyList<ScoredUtxo>> GetCoinjoinCandidatesAsync(
         string walletId,
         double? minEffectiveScore = null,
+        bool includeUnconfirmedCoinjoinOutputs = false,
         CancellationToken ct = default)
     {
-        var scored = await GetScoredUtxosAsync(walletId, ct: ct);
+        var scored = await GetScoredUtxosAsync(walletId, includeUnconfirmedCoinjoinOutputs: includeUnconfirmedCoinjoinOutputs, ct: ct);
         return _advisor.GetCoinjoinCandidates(scored, minEffectiveScore);
     }
 

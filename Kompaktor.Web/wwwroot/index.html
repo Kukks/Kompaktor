@@ -667,6 +667,7 @@
                 <span id="mixingLabel" style="font-size:13px;color:var(--text-muted)">Off</span>
                 <input type="text" class="mixing-pass-input" id="mixingCoordUrl" placeholder="Coordinator URL (leave blank for local)" style="display:none;width:250px">
                 <input type="text" class="mixing-pass-input" id="mixingTorHost" placeholder="Tor SOCKS host (e.g. 127.0.0.1:9050)" style="display:none;width:200px" title="Enable Tor stream isolation for mixing privacy">
+                <label id="mixingFastRemixLabel" style="display:none;font-size:12px;color:var(--text-muted);cursor:pointer" title="Re-use unconfirmed coinjoin outputs for faster back-to-back mixing"><input type="checkbox" id="mixingFastRemix"> Fast re-mix</label>
                 <input type="password" class="mixing-pass-input" id="mixingPass" placeholder="Passphrase" onkeydown="if(event.key==='Enter')confirmStartMixing()" style="display:none">
             </div>
             <div class="mixing-stats">
@@ -1959,9 +1960,11 @@
             if (data.running && data.activeRoundPhase) {
                 const inputs = data.activeRoundInputs ? ` (${data.activeRoundInputs} inputs)` : '';
                 const tor = data.torEnabled ? ' [Tor]' : '';
-                phaseEl.textContent = `${data.activeRoundPhase}${inputs}${tor}`;
-            } else if (data.running && data.torEnabled) {
-                phaseEl.textContent = '[Tor]';
+                const fast = data.allowUnconfirmedCoinjoinReuse ? ' [Fast]' : '';
+                phaseEl.textContent = `${data.activeRoundPhase}${inputs}${tor}${fast}`;
+            } else if (data.running && (data.torEnabled || data.allowUnconfirmedCoinjoinReuse)) {
+                const tags = [data.torEnabled && 'Tor', data.allowUnconfirmedCoinjoinReuse && 'Fast'].filter(Boolean).join(', ');
+                phaseEl.textContent = `[${tags}]`;
             } else {
                 phaseEl.textContent = '';
             }
@@ -1975,10 +1978,12 @@
                 // Show coordinator URL, Tor, and passphrase inputs
                 const urlInput = document.getElementById('mixingCoordUrl');
                 const torInput = document.getElementById('mixingTorHost');
+                const fastRemixLabel = document.getElementById('mixingFastRemixLabel');
                 const passInput = document.getElementById('mixingPass');
                 const showing = passInput.style.display !== 'none';
                 urlInput.style.display = showing ? 'none' : '';
                 torInput.style.display = showing ? 'none' : '';
+                fastRemixLabel.style.display = showing ? 'none' : '';
                 passInput.style.display = showing ? 'none' : '';
                 if (!showing) passInput.focus();
             }
@@ -1990,9 +1995,10 @@
 
             const coordUrl = document.getElementById('mixingCoordUrl').value.trim();
             const torHostRaw = document.getElementById('mixingTorHost').value.trim();
+            const fastRemix = document.getElementById('mixingFastRemix').checked;
 
             try {
-                const body = { passphrase: pass };
+                const body = { passphrase: pass, allowUnconfirmedCoinjoinReuse: fastRemix };
                 if (coordUrl) body.coordinatorUrl = coordUrl;
                 if (torHostRaw) {
                     // Parse "host:port" or just "host"
@@ -2019,6 +2025,7 @@
             document.getElementById('mixingPass').value = '';
             document.getElementById('mixingCoordUrl').style.display = 'none';
             document.getElementById('mixingTorHost').style.display = 'none';
+            document.getElementById('mixingFastRemixLabel').style.display = 'none';
             // Request notification permission so we can alert on round completion
             if ('Notification' in window && Notification.permission === 'default') {
                 Notification.requestPermission();
