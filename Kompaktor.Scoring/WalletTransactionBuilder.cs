@@ -1,3 +1,4 @@
+using Kompaktor.Wallet;
 using Kompaktor.Wallet.Data;
 using Microsoft.EntityFrameworkCore;
 using NBitcoin;
@@ -117,7 +118,40 @@ public class WalletTransactionBuilder
             .FirstOrDefaultAsync(ct);
 
         if (address is null)
-            throw new InvalidOperationException("No fresh change addresses available");
+        {
+            // Auto-extend change addresses from stored xpub
+            var accounts = await _db.Accounts
+                .Include(a => a.Addresses)
+                .Where(a => a.WalletId == walletId && a.AccountXPub != null)
+                .ToListAsync(ct);
+
+            foreach (var acct in accounts)
+            {
+                var changeAddrs = acct.Addresses.Where(a => a.IsChange).ToList();
+                var maxIdx = changeAddrs.Count > 0
+                    ? changeAddrs.Max(a => int.Parse(a.KeyPath.Split('/')[1]))
+                    : -1;
+                var newAddrs = KompaktorHdWallet.DeriveAddressesFromXPub(
+                    acct.AccountXPub!, _network, acct.Purpose, 1, maxIdx + 1, 20);
+                foreach (var a in newAddrs)
+                {
+                    a.AccountId = acct.Id;
+                    _db.Addresses.Add(a);
+                }
+            }
+            await _db.SaveChangesAsync(ct);
+
+            address = await _db.Addresses
+                .Include(a => a.Account)
+                .Where(a => a.Account.WalletId == walletId)
+                .Where(a => !a.IsUsed && !a.IsExposed && a.IsChange)
+                .OrderByDescending(a => a.Account.Purpose)
+                .ThenBy(a => a.Id)
+                .FirstOrDefaultAsync(ct);
+
+            if (address is null)
+                throw new InvalidOperationException("No fresh change addresses available");
+        }
 
         return new Script(address.ScriptPubKey);
     }
