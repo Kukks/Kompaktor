@@ -425,6 +425,30 @@
             font-size: 13px;
         }
         .ab-add-form input:focus { border-color: var(--accent); outline: none; }
+        .toast-container {
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            display: flex;
+            flex-direction: column-reverse;
+            gap: 8px;
+            z-index: 1000;
+        }
+        .toast {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 10px 16px;
+            font-size: 13px;
+            max-width: 320px;
+            animation: slideIn 0.3s ease, fadeOut 0.3s ease 4.7s forwards;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+        }
+        .toast.success { border-left: 3px solid var(--green); }
+        .toast.info { border-left: 3px solid var(--accent); }
+        .toast.warning { border-left: 3px solid var(--yellow); }
+        @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+        @keyframes fadeOut { from { opacity: 1; } to { opacity: 0; } }
     </style>
 </head>
 <body>
@@ -716,6 +740,8 @@
         </div><!-- end mainDashboard -->
     </div>
 
+    <div class="toast-container" id="toastContainer"></div>
+
     <script>
         async function fetchJson(url) {
             try {
@@ -741,6 +767,15 @@
             const d = document.createElement('div');
             d.textContent = str;
             return d.innerHTML;
+        }
+
+        function showToast(message, type = 'info') {
+            const container = document.getElementById('toastContainer');
+            const toast = document.createElement('div');
+            toast.className = `toast ${type}`;
+            toast.textContent = message;
+            container.appendChild(toast);
+            setTimeout(() => toast.remove(), 5000);
         }
 
         function truncate(str, len = 12) {
@@ -1306,15 +1341,18 @@
                 loadSummary();
                 loadPrivacySummary();
                 loadPrivacyDistribution();
+                showToast('UTXO state updated', 'info');
             });
 
             source.addEventListener('wallet', () => {
                 checkWallet();
+                showToast('Wallet state changed', 'info');
             });
 
             source.addEventListener('mixing', () => {
                 loadMixingStatus();
                 loadCoinjoins();
+                showToast('Mixing round completed', 'success');
             });
 
             source.onerror = () => {
