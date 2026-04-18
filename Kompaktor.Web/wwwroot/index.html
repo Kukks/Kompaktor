@@ -833,6 +833,7 @@
                 <h2>Wallet UTXOs</h2>
                 <div class="batch-bar" id="batchBar">
                     <span id="batchCount">0 selected</span>
+                    <span id="batchAmount" style="color:var(--accent)"></span>
                     <button onclick="batchFreeze(true)">Freeze Selected</button>
                     <button onclick="batchFreeze(false)">Unfreeze Selected</button>
                     <button onclick="clearSelection()">Clear</button>
@@ -1186,11 +1187,24 @@
             selectedUtxos = new Set([...checks].map(c => parseInt(c.value)));
             const bar = document.getElementById('batchBar');
             const count = document.getElementById('batchCount');
+            const amountEl = document.getElementById('batchAmount');
             if (selectedUtxos.size > 0) {
                 bar.style.display = 'flex';
                 count.textContent = selectedUtxos.size + ' selected';
+                // Calculate total amount from the table rows
+                let totalSat = 0;
+                checks.forEach(c => {
+                    const row = c.closest('tr');
+                    if (row) {
+                        const amountCell = row.children[2]; // Amount column
+                        const btc = parseFloat(amountCell?.textContent);
+                        if (!isNaN(btc)) totalSat += Math.round(btc * 100000000);
+                    }
+                });
+                amountEl.textContent = totalSat > 0 ? `(${(totalSat / 100000000).toFixed(8)} BTC)` : '';
             } else {
                 bar.style.display = 'none';
+                amountEl.textContent = '';
             }
         }
 
