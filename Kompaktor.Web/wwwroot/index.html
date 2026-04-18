@@ -307,6 +307,52 @@
         }
         .copy-btn:hover { border-color: var(--accent); }
         .addr-meta { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+        .mixing-control {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 16px;
+            margin-bottom: 24px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .mixing-control .left { display: flex; align-items: center; gap: 12px; }
+        .mixing-control h2 { font-size: 16px; margin: 0; }
+        .mixing-toggle {
+            position: relative;
+            width: 48px;
+            height: 26px;
+            background: var(--border);
+            border-radius: 13px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .mixing-toggle.active { background: var(--green); }
+        .mixing-toggle::after {
+            content: '';
+            position: absolute;
+            top: 3px;
+            left: 3px;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: white;
+            transition: transform 0.2s;
+        }
+        .mixing-toggle.active::after { transform: translateX(22px); }
+        .mixing-stats { display: flex; gap: 16px; font-size: 13px; color: var(--text-muted); }
+        .mixing-stats span { display: flex; align-items: center; gap: 4px; }
+        .mixing-pass-input {
+            background: var(--bg);
+            border: 1px solid var(--border);
+            color: var(--text);
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 13px;
+            display: none;
+        }
+        .mixing-pass-input:focus { border-color: var(--accent); outline: none; }
     </style>
 </head>
 <body>
@@ -367,6 +413,20 @@
                 <button class="copy-btn" onclick="copyAddress()">Copy</button>
             </div>
             <div class="addr-meta" id="receiveAddrMeta"></div>
+        </div>
+
+        <!-- Auto-Mixing Control -->
+        <div class="mixing-control" id="mixingControl">
+            <div class="left">
+                <h2>Auto-Mix</h2>
+                <div class="mixing-toggle" id="mixingToggle" onclick="toggleMixing()"></div>
+                <span id="mixingLabel" style="font-size:13px;color:var(--text-muted)">Off</span>
+                <input type="password" class="mixing-pass-input" id="mixingPass" placeholder="Passphrase" onkeydown="if(event.key==='Enter')confirmStartMixing()">
+            </div>
+            <div class="mixing-stats">
+                <span><span style="color:var(--green)">&#10003;</span> <span id="mixCompleted">0</span> completed</span>
+                <span><span style="color:var(--red)">&#10007;</span> <span id="mixFailed">0</span> failed</span>
+            </div>
         </div>
 
         <div class="cards" id="summaryCards">
@@ -971,18 +1031,132 @@
             }
         }
 
-        async function refreshAll() {
-            document.getElementById('lastUpdate').textContent = 'Refreshing...';
-            await Promise.all([loadSummary(), loadPrivacySummary(), loadRounds(), loadUtxos(), loadCoinjoins(), loadTransactions()]);
-            document.getElementById('lastUpdate').textContent = 'Updated ' + new Date().toLocaleTimeString();
+        // Auto-mixing control
+        let mixingRunning = false;
+
+        async function loadMixingStatus() {
+            const data = await fetchJson('/api/mixing/status');
+            if (!data) return;
+            mixingRunning = data.running;
+            const toggle = document.getElementById('mixingToggle');
+            const label = document.getElementById('mixingLabel');
+            toggle.classList.toggle('active', mixingRunning);
+            label.textContent = mixingRunning ? 'Running' : 'Off';
+            label.style.color = mixingRunning ? 'var(--green)' : 'var(--text-muted)';
+            document.getElementById('mixCompleted').textContent = data.completedRounds;
+            document.getElementById('mixFailed').textContent = data.failedRounds;
         }
 
-        // Initialize: check wallet, then start auto-refresh
+        function toggleMixing() {
+            if (mixingRunning) {
+                stopMixing();
+            } else {
+                // Show passphrase input
+                const input = document.getElementById('mixingPass');
+                input.style.display = input.style.display === 'none' ? '' : 'none';
+                if (input.style.display !== 'none') input.focus();
+            }
+        }
+
+        async function confirmStartMixing() {
+            const pass = document.getElementById('mixingPass').value;
+            if (!pass) return;
+
+            try {
+                const res = await fetch('/api/mixing/start', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ passphrase: pass })
+                });
+                const data = await res.json();
+                if (!res.ok) {
+                    alert(typeof data === 'string' ? data : data.detail || JSON.stringify(data));
+                    return;
+                }
+            } catch (err) {
+                alert('Failed to start mixing: ' + err.message);
+                return;
+            }
+
+            document.getElementById('mixingPass').style.display = 'none';
+            document.getElementById('mixingPass').value = '';
+            await loadMixingStatus();
+        }
+
+        async function stopMixing() {
+            await fetch('/api/mixing/stop', { method: 'POST' });
+            await loadMixingStatus();
+        }
+
+        async function refreshAll() {
+            document.getElementById('lastUpdate').textContent = 'Refreshing...';
+            await Promise.all([loadSummary(), loadPrivacySummary(), loadRounds(), loadUtxos(), loadCoinjoins(), loadTransactions(), loadMixingStatus()]);
+            updateConnectionStatus(sseConnected ? 'live' : 'polling');
+        }
+
+        // SSE: real-time updates with polling fallback
+        let sseConnected = false;
+        let pollTimer = null;
+
+        function connectSSE() {
+            const source = new EventSource('/api/dashboard/events');
+
+            source.addEventListener('connected', () => {
+                sseConnected = true;
+                updateConnectionStatus('live');
+                // Stop polling — SSE is now the source of truth
+                if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+            });
+
+            source.addEventListener('rounds', () => {
+                loadRounds();
+                loadSummary();
+            });
+
+            source.addEventListener('utxos', () => {
+                loadUtxos();
+                loadSummary();
+                loadPrivacySummary();
+            });
+
+            source.addEventListener('wallet', () => {
+                checkWallet();
+            });
+
+            source.addEventListener('mixing', () => {
+                loadMixingStatus();
+                loadCoinjoins();
+            });
+
+            source.onerror = () => {
+                sseConnected = false;
+                updateConnectionStatus('polling');
+                source.close();
+                // Fall back to polling
+                if (!pollTimer) {
+                    pollTimer = setInterval(refreshAll, 10000);
+                }
+                // Try to reconnect SSE after 5 seconds
+                setTimeout(connectSSE, 5000);
+            };
+        }
+
+        function updateConnectionStatus(mode) {
+            const statusEl = document.getElementById('lastUpdate');
+            const prefix = mode === 'live'
+                ? '<span style="color:var(--green)">&#9679;</span> Live'
+                : '<span style="color:var(--yellow)">&#9679;</span> Polling';
+            statusEl.innerHTML = prefix + ' &middot; ' + new Date().toLocaleTimeString();
+        }
+
+        // Initialize: check wallet, then start updates
         (async () => {
             const hasWallet = await checkWallet();
             if (hasWallet) {
-                refreshAll();
-                setInterval(refreshAll, 10000);
+                await refreshAll();
+                connectSSE();
+                // Start polling as immediate fallback; SSE will stop it when connected
+                pollTimer = setInterval(refreshAll, 10000);
             }
         })();
     </script>

@@ -1,5 +1,7 @@
 using System.Security.Cryptography;
 using System.Threading.RateLimiting;
+using Kompaktor.Behaviors;
+using Kompaktor.Client;
 using Kompaktor.Utils;
 using Kompaktor.Blockchain;
 using Kompaktor.JsonConverters;
@@ -10,6 +12,7 @@ using Kompaktor.Server;
 using Kompaktor.Server.Orchestration;
 using Kompaktor.Wallet;
 using Kompaktor.Wallet.Data;
+using Kompaktor.Web;
 using Microsoft.EntityFrameworkCore;
 using NBitcoin;
 using NBitcoin.RPC;
@@ -134,6 +137,9 @@ builder.Services.AddSingleton<IRoundSchedulingPolicy>(new DemandAdaptiveScheduli
 builder.Services.AddSingleton<KompaktorRoundOrchestrator>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<KompaktorRoundOrchestrator>());
 
+builder.Services.AddSingleton<DashboardEventBus>();
+builder.Services.AddSingleton(network);
+builder.Services.AddSingleton<MixingManager>();
 builder.Services.AddOpenApi();
 
 var app = builder.Build();
@@ -357,28 +363,30 @@ app.MapGet("/api/dashboard/transactions", async (WalletDbContext db) =>
 }).WithTags("Dashboard");
 
 // Coin control: freeze/unfreeze UTXOs
-app.MapPost("/api/coin-control/freeze/{utxoId}", async (int utxoId, WalletDbContext db) =>
+app.MapPost("/api/coin-control/freeze/{utxoId}", async (int utxoId, WalletDbContext db, DashboardEventBus bus) =>
 {
     var utxo = await db.Utxos.FindAsync(utxoId);
     if (utxo is null) return Results.NotFound();
 
     utxo.IsFrozen = true;
     await db.SaveChangesAsync();
+    bus.Publish("utxos");
     return Results.Ok(new { utxoId, frozen = true });
 }).WithTags("CoinControl");
 
-app.MapPost("/api/coin-control/unfreeze/{utxoId}", async (int utxoId, WalletDbContext db) =>
+app.MapPost("/api/coin-control/unfreeze/{utxoId}", async (int utxoId, WalletDbContext db, DashboardEventBus bus) =>
 {
     var utxo = await db.Utxos.FindAsync(utxoId);
     if (utxo is null) return Results.NotFound();
 
     utxo.IsFrozen = false;
     await db.SaveChangesAsync();
+    bus.Publish("utxos");
     return Results.Ok(new { utxoId, frozen = false });
 }).WithTags("CoinControl");
 
 // Coin control: batch freeze/unfreeze
-app.MapPost("/api/coin-control/batch-freeze", async (WalletDbContext db, HttpContext ctx) =>
+app.MapPost("/api/coin-control/batch-freeze", async (WalletDbContext db, HttpContext ctx, DashboardEventBus bus) =>
 {
     var body = await ctx.Request.ReadFromJsonAsync<BatchFreezeRequest>();
     if (body is null) return Results.BadRequest("Invalid request");
@@ -391,11 +399,12 @@ app.MapPost("/api/coin-control/batch-freeze", async (WalletDbContext db, HttpCon
         utxo.IsFrozen = body.Freeze;
 
     await db.SaveChangesAsync();
+    bus.Publish("utxos");
     return Results.Ok(new { updated = utxos.Count, frozen = body.Freeze });
 }).WithTags("CoinControl");
 
 // Labels: add label to a UTXO
-app.MapPost("/api/coin-control/label/{utxoId}", async (int utxoId, WalletDbContext db, HttpContext ctx) =>
+app.MapPost("/api/coin-control/label/{utxoId}", async (int utxoId, WalletDbContext db, HttpContext ctx, DashboardEventBus bus) =>
 {
     var body = await ctx.Request.ReadFromJsonAsync<LabelRequest>();
     if (body is null || string.IsNullOrWhiteSpace(body.Text))
@@ -416,11 +425,12 @@ app.MapPost("/api/coin-control/label/{utxoId}", async (int utxoId, WalletDbConte
         Text = body.Text
     });
     await db.SaveChangesAsync();
+    bus.Publish("utxos");
     return Results.Ok(new { utxoId, label = body.Text, status = "added" });
 }).WithTags("CoinControl");
 
 // Labels: remove label from a UTXO
-app.MapDelete("/api/coin-control/label/{utxoId}/{labelId}", async (int utxoId, int labelId, WalletDbContext db) =>
+app.MapDelete("/api/coin-control/label/{utxoId}/{labelId}", async (int utxoId, int labelId, WalletDbContext db, DashboardEventBus bus) =>
 {
     var label = await db.Labels.FindAsync(labelId);
     if (label is null || label.EntityType != "Utxo" || label.EntityId != utxoId.ToString())
@@ -428,6 +438,7 @@ app.MapDelete("/api/coin-control/label/{utxoId}/{labelId}", async (int utxoId, i
 
     db.Labels.Remove(label);
     await db.SaveChangesAsync();
+    bus.Publish("utxos");
     return Results.Ok(new { utxoId, labelId, status = "removed" });
 }).WithTags("CoinControl");
 
@@ -475,7 +486,7 @@ app.MapGet("/api/coin-control/utxo/{utxoId}", async (int utxoId, WalletDbContext
 }).WithTags("CoinControl");
 
 // Wallet creation
-app.MapPost("/api/wallet/create", async (WalletDbContext db, HttpContext ctx) =>
+app.MapPost("/api/wallet/create", async (WalletDbContext db, HttpContext ctx, DashboardEventBus bus) =>
 {
     var body = await ctx.Request.ReadFromJsonAsync<CreateWalletRequest>();
     if (body is null || string.IsNullOrWhiteSpace(body.Passphrase))
@@ -490,6 +501,7 @@ app.MapPost("/api/wallet/create", async (WalletDbContext db, HttpContext ctx) =>
     // Return the mnemonic ONCE for user to write down
     var mnemonic = await hdWallet.ExportMnemonicAsync(body.Passphrase);
 
+    bus.Publish("wallet");
     return Results.Ok(new
     {
         walletId = hdWallet.WalletId,
@@ -574,7 +586,7 @@ app.MapPost("/api/wallet/export-mnemonic", async (WalletDbContext db, HttpContex
 }).WithTags("Wallet");
 
 // Wallet restore from mnemonic
-app.MapPost("/api/wallet/restore", async (WalletDbContext db, HttpContext ctx) =>
+app.MapPost("/api/wallet/restore", async (WalletDbContext db, HttpContext ctx, DashboardEventBus bus) =>
 {
     var body = await ctx.Request.ReadFromJsonAsync<RestoreRequest>();
     if (body is null || string.IsNullOrWhiteSpace(body.Mnemonic) || string.IsNullOrWhiteSpace(body.Passphrase))
@@ -588,6 +600,7 @@ app.MapPost("/api/wallet/restore", async (WalletDbContext db, HttpContext ctx) =
     {
         var hdWallet = await KompaktorHdWallet.RestoreAsync(
             db, network, body.Name ?? "Restored", body.Mnemonic.Trim(), body.Passphrase);
+        bus.Publish("wallet");
         return Results.Ok(new
         {
             walletId = hdWallet.WalletId,
@@ -634,6 +647,99 @@ app.MapGet("/api/coordinator/stats", (KompaktorRoundManager manager, KompaktorRo
     });
 }).WithTags("Coordinator");
 
+// Auto-mixing: start/stop/status
+app.MapGet("/api/mixing/status", (MixingManager mixer) =>
+{
+    return Results.Ok(new
+    {
+        running = mixer.IsRunning,
+        completedRounds = mixer.CompletedRounds,
+        failedRounds = mixer.FailedRounds
+    });
+}).WithTags("Mixing");
+
+app.MapPost("/api/mixing/start", async (MixingManager mixer, HttpContext ctx) =>
+{
+    var body = await ctx.Request.ReadFromJsonAsync<MixingStartRequest>();
+    if (body is null || string.IsNullOrWhiteSpace(body.Passphrase))
+        return Results.BadRequest("Passphrase required");
+
+    try
+    {
+        // Connect to ourselves as the coordinator
+        var coordinatorUri = new Uri($"{ctx.Request.Scheme}://localhost:{ctx.Connection.LocalPort}");
+        var result = await mixer.StartAsync(body.Passphrase, coordinatorUri);
+        return Results.Ok(new { status = result });
+    }
+    catch (Exception ex)
+    {
+        return Results.BadRequest(ex.Message);
+    }
+}).WithTags("Mixing");
+
+app.MapPost("/api/mixing/stop", async (MixingManager mixer) =>
+{
+    var result = await mixer.StopAsync();
+    return Results.Ok(new { status = result });
+}).WithTags("Mixing");
+
+// SSE: real-time dashboard event stream
+app.MapGet("/api/dashboard/events", async (HttpContext ctx, DashboardEventBus bus, CancellationToken ct) =>
+{
+    ctx.Response.ContentType = "text/event-stream";
+    ctx.Response.Headers.CacheControl = "no-cache";
+    ctx.Response.Headers.Connection = "keep-alive";
+
+    var reader = bus.Subscribe();
+    try
+    {
+        // Send initial heartbeat so the client knows the connection is live
+        await ctx.Response.WriteAsync("event: connected\ndata: {}\n\n", ct);
+        await ctx.Response.Body.FlushAsync(ct);
+
+        await foreach (var eventType in reader.ReadAllAsync(ct))
+        {
+            await ctx.Response.WriteAsync($"event: {eventType}\ndata: {{}}\n\n", ct);
+            await ctx.Response.Body.FlushAsync(ct);
+        }
+    }
+    catch (OperationCanceledException) { /* client disconnected */ }
+    finally
+    {
+        bus.Unsubscribe(reader);
+    }
+}).ExcludeFromDescription();
+
+// Background task: publish round state changes every 2s (aligned with orchestrator tick)
+_ = Task.Run(async () =>
+{
+    var bus = app.Services.GetRequiredService<DashboardEventBus>();
+    var manager = app.Services.GetRequiredService<KompaktorRoundManager>();
+    var lastRoundState = "";
+
+    while (!app.Lifetime.ApplicationStopping.IsCancellationRequested)
+    {
+        try
+        {
+            await Task.Delay(2000, app.Lifetime.ApplicationStopping);
+        }
+        catch (OperationCanceledException) { break; }
+
+        if (bus.SubscriberCount == 0) continue;
+
+        // Build a lightweight fingerprint of current round state
+        var rounds = manager.GetActiveRoundOperators();
+        var snapshot = string.Join("|", rounds.Select(r =>
+            $"{r.RoundEventCreated.RoundId}:{r.Status}:{r.Inputs.Count}:{r.Outputs.Count}:{r.SignatureCount}"));
+
+        if (snapshot != lastRoundState)
+        {
+            lastRoundState = snapshot;
+            bus.Publish("rounds");
+        }
+    }
+});
+
 // Health check
 app.MapGet("/health", (KompaktorRoundManager manager) =>
 {
@@ -660,3 +766,4 @@ record LabelRequest(string Text);
 record PassphraseRequest(string Passphrase);
 record RestoreRequest(string Mnemonic, string Passphrase, string? Name = null);
 record CreateWalletRequest(string Passphrase, string? Name = null, int? WordCount = null);
+record MixingStartRequest(string Passphrase);
