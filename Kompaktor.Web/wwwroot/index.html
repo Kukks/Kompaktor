@@ -766,6 +766,20 @@
             <!-- Privacy Recommendations -->
             <div id="privacyRecommendations" style="margin-bottom:24px"></div>
 
+            <!-- Privacy Trend Chart -->
+            <div id="privacyTrendSection" style="margin-bottom:24px;display:none">
+                <h2 style="margin-bottom:12px">Privacy Trend</h2>
+                <div style="display:flex;gap:8px;margin-bottom:12px">
+                    <button class="btn" onclick="loadPrivacyHistory(7)" style="font-size:11px;padding:4px 10px">7d</button>
+                    <button class="btn" onclick="loadPrivacyHistory(30)" style="font-size:11px;padding:4px 10px">30d</button>
+                    <button class="btn" onclick="loadPrivacyHistory(90)" style="font-size:11px;padding:4px 10px">90d</button>
+                </div>
+                <div id="privacyTrendChart" style="background:var(--card-bg);border-radius:12px;padding:16px;border:1px solid var(--border);position:relative;height:200px;overflow:hidden">
+                    <canvas id="privacyCanvas" style="width:100%;height:100%"></canvas>
+                </div>
+                <div id="privacyTrendLegend" style="display:flex;gap:16px;margin-top:8px;font-size:11px;color:var(--text-muted)"></div>
+            </div>
+
             <section>
                 <h2>Coordinator</h2>
                 <div class="cards" id="coordCards">
@@ -2007,6 +2021,131 @@
             ).join('');
         }
 
+        // Privacy trend chart
+        let privacyHistoryDays = 30;
+        async function loadPrivacyHistory(days) {
+            if (days) privacyHistoryDays = days;
+            const data = await fetchJson(`/api/dashboard/privacy-history?days=${privacyHistoryDays}`);
+            const section = document.getElementById('privacyTrendSection');
+            if (!data || data.length === 0) {
+                section.style.display = 'none';
+                return;
+            }
+            section.style.display = '';
+
+            const canvas = document.getElementById('privacyCanvas');
+            const ctx = canvas.getContext('2d');
+            const dpr = window.devicePixelRatio || 1;
+            const rect = canvas.parentElement.getBoundingClientRect();
+            canvas.width = rect.width * dpr;
+            canvas.height = rect.height * dpr;
+            canvas.style.width = rect.width + 'px';
+            canvas.style.height = rect.height + 'px';
+            ctx.scale(dpr, dpr);
+
+            const w = rect.width;
+            const h = rect.height;
+            const pad = { top: 24, right: 12, bottom: 28, left: 48 };
+            const cw = w - pad.left - pad.right;
+            const ch = h - pad.top - pad.bottom;
+
+            ctx.clearRect(0, 0, w, h);
+
+            // Extract data series
+            const avgScores = data.map(d => d.averageAnonScore);
+            const minScores = data.map(d => d.minAnonScore);
+            const maxScores = data.map(d => d.maxAnonScore);
+            const mixedPcts = data.map(d => d.totalUtxos > 0 ? d.mixedUtxoCount / d.totalUtxos * 100 : 0);
+
+            const allValues = [...avgScores, ...maxScores];
+            const yMax = Math.max(Math.ceil(Math.max(...allValues) * 1.15), 5);
+            const yMin = 0;
+
+            function toX(i) { return pad.left + (i / (data.length - 1 || 1)) * cw; }
+            function toY(v) { return pad.top + ch - ((v - yMin) / (yMax - yMin)) * ch; }
+
+            // Grid lines
+            ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+            ctx.lineWidth = 1;
+            const gridSteps = 4;
+            for (let i = 0; i <= gridSteps; i++) {
+                const yVal = yMin + (yMax - yMin) * i / gridSteps;
+                const y = toY(yVal);
+                ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(w - pad.right, y); ctx.stroke();
+                ctx.fillStyle = 'rgba(255,255,255,0.3)';
+                ctx.font = '10px monospace';
+                ctx.textAlign = 'right';
+                ctx.fillText(yVal.toFixed(1), pad.left - 6, y + 3);
+            }
+
+            // X-axis labels (timestamps)
+            ctx.fillStyle = 'rgba(255,255,255,0.3)';
+            ctx.font = '10px monospace';
+            ctx.textAlign = 'center';
+            const labelStep = Math.max(1, Math.floor(data.length / 5));
+            for (let i = 0; i < data.length; i += labelStep) {
+                const d = new Date(data[i].timestamp);
+                const label = `${d.getMonth()+1}/${d.getDate()}`;
+                ctx.fillText(label, toX(i), h - 4);
+            }
+
+            // Draw min-max band
+            if (data.length > 1) {
+                ctx.beginPath();
+                for (let i = 0; i < data.length; i++) ctx.lineTo(toX(i), toY(maxScores[i]));
+                for (let i = data.length - 1; i >= 0; i--) ctx.lineTo(toX(i), toY(minScores[i]));
+                ctx.closePath();
+                ctx.fillStyle = 'rgba(46, 204, 113, 0.08)';
+                ctx.fill();
+            }
+
+            // Draw average score line
+            function drawLine(values, color, width) {
+                if (data.length < 2) return;
+                ctx.beginPath();
+                ctx.strokeStyle = color;
+                ctx.lineWidth = width;
+                ctx.lineJoin = 'round';
+                for (let i = 0; i < values.length; i++) {
+                    if (i === 0) ctx.moveTo(toX(i), toY(values[i]));
+                    else ctx.lineTo(toX(i), toY(values[i]));
+                }
+                ctx.stroke();
+            }
+
+            drawLine(maxScores, 'rgba(46, 204, 113, 0.3)', 1);
+            drawLine(minScores, 'rgba(231, 76, 60, 0.3)', 1);
+            drawLine(avgScores, '#2ecc71', 2);
+
+            // Draw dots on average line
+            ctx.fillStyle = '#2ecc71';
+            for (let i = 0; i < data.length; i++) {
+                ctx.beginPath();
+                ctx.arc(toX(i), toY(avgScores[i]), 3, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // Title
+            ctx.fillStyle = 'rgba(255,255,255,0.5)';
+            ctx.font = '11px sans-serif';
+            ctx.textAlign = 'left';
+            ctx.fillText('Avg Anonymity Score', pad.left, 14);
+
+            // Legend
+            const legendEl = document.getElementById('privacyTrendLegend');
+            const latest = data[data.length - 1];
+            const first = data[0];
+            const delta = latest.averageAnonScore - first.averageAnonScore;
+            const arrow = delta >= 0 ? '\u25B2' : '\u25BC';
+            const deltaColor = delta >= 0 ? 'var(--green)' : 'var(--red)';
+            legendEl.innerHTML = `
+                <span><span style="color:#2ecc71">\u25CF</span> Avg Score: ${latest.averageAnonScore}</span>
+                <span><span style="color:${deltaColor}">${arrow} ${Math.abs(delta).toFixed(2)}</span> over period</span>
+                <span>Mixed: ${latest.mixedUtxoCount}/${latest.totalUtxos} UTXOs</span>
+                <span>Rounds: ${latest.coinJoinRoundNumber}</span>
+            `;
+        }
+
         // Sync status
         async function loadSyncStatus() {
             const data = await fetchJson('/api/wallet/sync-status');
@@ -2079,8 +2218,16 @@
             }
             if (data.failedRounds > lastMixFailed) {
                 const diff = data.failedRounds - lastMixFailed;
-                const reason = data.lastRoundFailureReason ? ` (${data.lastRoundFailureReason})` : '';
-                addMixEvent('\u2717', `${diff} round${diff > 1 ? 's' : ''} failed${reason}`);
+                const reason = data.lastRoundFailureReason || '';
+                const advice = ({
+                    'NetworkError': 'Check your internet connection or coordinator URL',
+                    'ProtocolError': 'Coordinator may be running a different protocol version',
+                    'Timeout': 'Round took too long \u2014 will retry automatically',
+                    'IntersectionBackoff': 'Not enough participants \u2014 will retry when more join',
+                    'Cancelled': 'Round was cancelled by the coordinator',
+                })[reason] || '';
+                const msg = `${diff} round${diff > 1 ? 's' : ''} failed${reason ? ` (${reason})` : ''}`;
+                addMixEvent('\u2717', advice ? `${msg} \u2014 ${advice}` : msg);
             }
             if (data.running && data.activeRoundPhase && data.activeRoundPhase !== lastMixPhase) {
                 const inputs = data.activeRoundInputs ? ` (${data.activeRoundInputs} inputs)` : '';
@@ -2111,6 +2258,10 @@
                 dot.style.background = 'var(--green)';
                 lbl.textContent = data.torEnabled ? 'Tor Connected' : 'Connected';
                 ind.title = `Coordinator: ${data.coordinatorUrl || 'local'}\nPhase: ${data.activeRoundPhase}`;
+            } else if (data.running && data.lastRoundStatus === 'Failed') {
+                dot.style.background = 'var(--red)';
+                lbl.textContent = 'Round failed';
+                ind.title = `Coordinator: ${data.coordinatorUrl || 'local'}\nLast round failed: ${data.lastRoundFailureReason || 'unknown'}\nWill retry automatically...`;
             } else if (data.running) {
                 dot.style.background = 'var(--yellow)';
                 lbl.textContent = 'Waiting for round';
@@ -2462,7 +2613,7 @@
 
         async function refreshAll() {
             document.getElementById('lastUpdate').textContent = 'Refreshing...';
-            await Promise.all([loadSummary(), loadPrivacySummary(), loadPrivacyDistribution(), loadPrivacyRecommendations(), loadRounds(), loadUtxos(), loadCoinjoins(), loadTransactions(), loadMixingStatus(), loadMixingStats(), loadSyncStatus(), loadAddressBook(), loadFeeEstimates(), loadSettingsInfo(), loadPayments(), loadPaymentStats()]);
+            await Promise.all([loadSummary(), loadPrivacySummary(), loadPrivacyDistribution(), loadPrivacyRecommendations(), loadPrivacyHistory(), loadRounds(), loadUtxos(), loadCoinjoins(), loadTransactions(), loadMixingStatus(), loadMixingStats(), loadSyncStatus(), loadAddressBook(), loadFeeEstimates(), loadSettingsInfo(), loadPayments(), loadPaymentStats()]);
             updateConnectionStatus(sseConnected ? 'live' : 'polling');
         }
 
@@ -2547,6 +2698,14 @@
                 loadPaymentStats();
                 logEvent('payments');
                 notifyTab('payments');
+            });
+
+            source.addEventListener('privacy', () => {
+                loadPrivacySummary();
+                loadPrivacyDistribution();
+                loadPrivacyHistory();
+                logEvent('privacy');
+                notifyTab('overview');
             });
 
             source.addEventListener('mixing', () => {
