@@ -761,8 +761,9 @@
                     <input type="text" id="sendDest" class="wide" placeholder="bc1q...">
                 </div>
                 <div class="field">
-                    <label>Amount (sats)</label>
-                    <input type="number" id="sendAmount" class="narrow" placeholder="100000">
+                    <label>Amount (sats) <button onclick="sendMax()" style="background:none;border:none;color:var(--accent);cursor:pointer;font-size:10px;text-transform:uppercase;padding:0">Max</button></label>
+                    <input type="number" id="sendAmount" class="narrow" placeholder="100000" oninput="updateBtcEquiv()">
+                    <span id="btcEquiv" style="font-size:11px;color:var(--text-muted)"></span>
                 </div>
                 <div class="field">
                     <label>Fee Rate (sat/vB)</label>
@@ -1226,6 +1227,24 @@
             document.getElementById('sendDest').focus();
         }
 
+        function updateBtcEquiv() {
+            const sats = parseInt(document.getElementById('sendAmount').value);
+            const el = document.getElementById('btcEquiv');
+            if (sats > 0) {
+                el.textContent = (sats / 100000000).toFixed(8) + ' BTC';
+            } else {
+                el.textContent = '';
+            }
+        }
+
+        async function sendMax() {
+            const data = await fetchJson('/api/dashboard/summary');
+            if (data && data.totalBalanceSats > 0) {
+                document.getElementById('sendAmount').value = data.totalBalanceSats;
+                updateBtcEquiv();
+            }
+        }
+
         // Fee estimation
         async function loadFeeEstimates() {
             const data = await fetchJson('/api/dashboard/fee-estimates');
@@ -1628,6 +1647,13 @@
                 : '<span style="color:var(--yellow)">&#9679;</span> Polling';
             statusEl.innerHTML = prefix + ' &middot; ' + new Date().toLocaleTimeString();
         }
+
+        // Keyboard shortcuts
+        document.addEventListener('keydown', (e) => {
+            // Ignore when typing in inputs
+            if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
+            if (e.key === 'r' || e.key === 'R') { e.preventDefault(); refreshAll(); }
+        });
 
         // Initialize: check wallet, then start updates
         (async () => {
