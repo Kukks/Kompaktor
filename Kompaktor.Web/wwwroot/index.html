@@ -2972,12 +2972,30 @@
             }
         });
 
+        // Handle BIP21 deep links: ?pay=bitcoin:... or ?bip21=bitcoin:...
+        function handleDeepLink() {
+            const params = new URLSearchParams(window.location.search);
+            const uri = params.get('pay') || params.get('bip21');
+            if (!uri || !uri.toLowerCase().startsWith('bitcoin:')) return;
+            // Switch to Payments tab and populate send form
+            switchTab('payments');
+            const dest = document.getElementById('payDest');
+            if (dest) {
+                dest.value = uri;
+                parsePaymentBip21(uri);
+                showToast('Payment URI loaded from link', 'info');
+            }
+            // Clean URL without reloading
+            window.history.replaceState({}, '', window.location.pathname);
+        }
+
         // Initialize: check wallet, then start updates
         (async () => {
             const hasWallet = await checkWallet();
             if (hasWallet) {
                 restoreTab();
                 await refreshAll();
+                handleDeepLink();
                 connectSSE();
                 // Start polling as immediate fallback; SSE will stop it when connected
                 pollTimer = setInterval(refreshAll, 10000);
