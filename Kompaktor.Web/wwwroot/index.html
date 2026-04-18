@@ -613,8 +613,9 @@
             <div class="status">
                 <span class="sync-indicator" id="syncStatus"></span>
                 <span id="lastUpdate"></span>
-                <button class="refresh-btn" onclick="toggleTheme()" id="themeBtn" title="Toggle dark/light theme">Light</button>
-                <button class="refresh-btn" onclick="refreshAll()">Refresh</button>
+                <button class="refresh-btn" onclick="toggleTheme()" id="themeBtn" title="Toggle dark/light theme (T)">Light</button>
+                <button class="refresh-btn" onclick="refreshAll()" title="Refresh all data (R)">Refresh</button>
+                <span style="font-size:10px;color:var(--text-muted);cursor:help" title="Keyboard: 1-5 tabs, arrows prev/next, R refresh, T theme, Esc close panels">?</span>
             </div>
         </header>
 
@@ -2250,13 +2251,30 @@
 
         // Keyboard shortcuts
         document.addEventListener('keydown', (e) => {
+            // Escape closes detail panels
+            if (e.key === 'Escape') {
+                const detail = document.getElementById('utxoDetail');
+                if (detail && detail.style.display !== 'none') { detail.style.display = 'none'; return; }
+                const plan = document.getElementById('planResult');
+                if (plan && plan.style.display !== 'none') { plan.style.display = 'none'; plan.innerHTML = ''; return; }
+            }
             // Ignore when typing in inputs
             if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
             if (e.key === 'r' || e.key === 'R') { e.preventDefault(); refreshAll(); }
             if (e.key === 't' || e.key === 'T') { e.preventDefault(); toggleTheme(); }
             // Number keys 1-5 switch tabs
+            const tabs = ['overview', 'send-receive', 'utxos', 'coinjoins', 'settings'];
             const tabKeys = { '1': 'overview', '2': 'send-receive', '3': 'utxos', '4': 'coinjoins', '5': 'settings' };
             if (tabKeys[e.key]) { e.preventDefault(); switchTab(tabKeys[e.key]); }
+            // Arrow keys navigate between tabs
+            if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+                const idx = tabs.indexOf(activeTab);
+                if (idx >= 0) {
+                    const next = e.key === 'ArrowRight' ? (idx + 1) % tabs.length : (idx - 1 + tabs.length) % tabs.length;
+                    e.preventDefault();
+                    switchTab(tabs[next]);
+                }
+            }
         });
 
         // Initialize: check wallet, then start updates
