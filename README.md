@@ -106,7 +106,7 @@ Kompaktor.sln
 │   ├── DashboardEventBus.cs           # SSE broadcast bus for real-time dashboard updates
 │   ├── MixingManager.cs               # Auto-mixing lifecycle with Tor stream isolation, configurable coordinator URL, and active outpoint tracking
 │   ├── WalletSyncBackgroundService.cs # Background UTXO sync + real-time blockchain monitoring
-│   └── wwwroot/index.html             # Tab-based responsive dashboard (Overview, Send/Receive, Payments, UTXOs, CoinJoins, Settings) with dark/light theme, SSE with exponential backoff, tab badges, score breakdown tooltips, mixing activity feed, coin control, auto-mixing with Tor, QR receive, fee estimation, full send, PSBT, event log, blockchain info, wallet export, privacy meter, payment queue with retry tracking, and keyboard navigation
+│   └── wwwroot/index.html             # Tab-based responsive dashboard (Overview, Send/Receive, Payments, UTXOs, CoinJoins, Settings) with dark/light theme, SSE with exponential backoff, tab badges, score breakdown tooltips, mixing activity feed with actionable failure guidance, coin control, auto-mixing with Tor, QR receive, fee estimation, full send, PSBT, event log, blockchain info, wallet export, privacy meter, payment queue with sortable columns/search/retry tracking, coordinator connection health indicator, address pool health monitoring, and keyboard navigation
 └── Kompaktor.Tests/        # Integration tests against regtest bitcoind
 ```
 
@@ -143,7 +143,7 @@ Abstraction over blockchain data access that replaces the hard `RPCClient` depen
 
 ### `KompaktorHdWallet`
 
-HD wallet implementing `IKompaktorWalletInterface` with BIP-39 mnemonic generation, BIP-84 (P2WPKH) and BIP-86 (P2TR) key derivation, AES-256-GCM mnemonic encryption at rest, and EF Core/SQLite persistence for addresses, UTXOs, transactions, and coinjoin history. Gap limit of 20 addresses per chain with automatic exposed-address tracking for failed rounds.
+HD wallet implementing `IKompaktorWalletInterface` with BIP-39 mnemonic generation, BIP-84 (P2WPKH) and BIP-86 (P2TR) key derivation, AES-256-GCM mnemonic encryption at rest, and EF Core/SQLite persistence for addresses, UTXOs, transactions, and coinjoin history. Gap limit of 20 addresses per chain with automatic exposed-address tracking for failed rounds. Stores account extended public keys (xpub) to enable **watch-only gap limit auto-extension** — when fresh addresses are exhausted, new addresses are derived from the xpub without requiring the master private key. This ensures the wallet never runs out of addresses during heavy usage (mixing, payments, or transactions).
 
 ### `CoinJoinRecorder`
 
@@ -392,7 +392,7 @@ This starts a `bitcoind` regtest node on port 53782 with RPC credentials `ceiwHE
 dotnet test
 ```
 
-The test suite includes 390+ tests covering:
+The test suite includes 410+ tests covering:
 - Round lifecycle (input registration, output registration, signing, broadcasting)
 - Multi-participant coinjoins (up to 100 participants)
 - Interactive payments between participants during rounds
@@ -429,7 +429,8 @@ The test suite includes 390+ tests covering:
 - Mnemonic export with passphrase validation
 - Multi-server Electrum routing with round-robin assignment and script pinning
 - Credential lifecycle flow analysis with merge tree depth and fee calculation
-- WalletPaymentManager: outbound/inbound creation, interactive key generation, commitment lifecycle, cancellation, wallet isolation, protocol type mapping, expiry, auto-cancellation, retry count tracking
+- WalletPaymentManager: outbound/inbound creation, interactive key generation, commitment lifecycle, cancellation, wallet isolation, protocol type mapping, expiry, auto-cancellation, retry count tracking, xpub-based address auto-extension
+- KompaktorHdWallet: xpub storage and derivation, watch-only gap extension, address pool health monitoring
 
 ### 4. Run the Coordinator Server
 
