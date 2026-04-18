@@ -333,7 +333,10 @@ public class KompaktorRoundClient : IDisposable
                         Logger, "ReadyToSign", _cts.Token);
                     break;
                 case KompaktorStatus.Signing:
-                    await StartSigning.InvokeSafeAsync(this, Logger, nameof(StartSigning));
+                    // StartSigning uses InvokeIfNotNullAsync (throwing) because traits may
+                    // need to abort signing (e.g., disruptors in blame round testing, or
+                    // traits that detect problems). This is a critical gate, not a notification.
+                    await StartSigning.InvokeIfNotNullAsync(this);
                     await Sign();
                     break;
                 case KompaktorStatus.Broadcasting:
