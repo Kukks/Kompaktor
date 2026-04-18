@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Threading.RateLimiting;
+using QRCoder;
 using Kompaktor.Behaviors;
 using Kompaktor.Client;
 using Kompaktor.Utils;
@@ -564,6 +565,34 @@ app.MapGet("/api/wallet/receive-address", async (WalletDbContext db) =>
         purpose = address.Account.Purpose,
         type = address.Account.Purpose == 86 ? "P2TR" : "P2WPKH"
     });
+}).WithTags("Wallet");
+
+// QR code for receive address (BIP-21 URI)
+app.MapGet("/api/wallet/receive-qr", async (WalletDbContext db) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.BadRequest("No wallet found");
+
+    var address = await db.Addresses
+        .Include(a => a.Account)
+        .Where(a => a.Account.WalletId == wallet.Id)
+        .Where(a => !a.IsUsed && !a.IsExposed && !a.IsChange)
+        .OrderByDescending(a => a.Account.Purpose)
+        .ThenBy(a => a.Id)
+        .FirstOrDefaultAsync();
+
+    if (address is null) return Results.BadRequest("No fresh addresses available");
+
+    var script = new Script(address.ScriptPubKey);
+    var btcAddress = script.GetDestinationAddress(network);
+    var bip21 = $"bitcoin:{btcAddress}";
+
+    using var qrGenerator = new QRCodeGenerator();
+    var qrData = qrGenerator.CreateQrCode(bip21, QRCodeGenerator.ECCLevel.M);
+    var svgQr = new SvgQRCode(qrData);
+    var svg = svgQr.GetGraphic(4, "#e6edf3", "#0d1117", false);
+
+    return Results.Content(svg, "image/svg+xml");
 }).WithTags("Wallet");
 
 // Wallet backup: export mnemonic (requires passphrase)

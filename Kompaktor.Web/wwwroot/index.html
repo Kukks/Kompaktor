@@ -548,11 +548,18 @@
         <!-- Receive Address -->
         <div class="receive-section" id="receiveSection">
             <h2>Receive Address</h2>
-            <div class="address-display">
-                <span class="addr" id="receiveAddr">Loading...</span>
-                <button class="copy-btn" onclick="copyAddress()">Copy</button>
+            <div style="display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap">
+                <div id="receiveQr" style="width:160px;height:160px;background:var(--bg);border:1px solid var(--border);border-radius:6px;display:flex;align-items:center;justify-content:center;overflow:hidden">
+                    <span style="color:var(--text-muted);font-size:11px">Loading QR...</span>
+                </div>
+                <div style="flex:1;min-width:200px">
+                    <div class="address-display">
+                        <span class="addr" id="receiveAddr">Loading...</span>
+                        <button class="copy-btn" onclick="copyAddress()">Copy</button>
+                    </div>
+                    <div class="addr-meta" id="receiveAddrMeta"></div>
+                </div>
             </div>
-            <div class="addr-meta" id="receiveAddrMeta"></div>
         </div>
 
         <!-- Auto-Mixing Control -->
@@ -1117,12 +1124,23 @@
             const data = await fetchJson('/api/wallet/receive-address');
             const addrEl = document.getElementById('receiveAddr');
             const metaEl = document.getElementById('receiveAddrMeta');
+            const qrEl = document.getElementById('receiveQr');
             if (data && data.address) {
                 addrEl.textContent = data.address;
                 metaEl.textContent = `${data.type} \u00B7 ${data.keyPath}`;
+                // Load QR code
+                try {
+                    const res = await fetch('/api/wallet/receive-qr');
+                    if (res.ok) {
+                        qrEl.innerHTML = await res.text();
+                        qrEl.querySelector('svg').style.width = '100%';
+                        qrEl.querySelector('svg').style.height = '100%';
+                    }
+                } catch { /* QR optional */ }
             } else {
                 addrEl.textContent = 'No addresses available';
                 metaEl.textContent = '';
+                qrEl.innerHTML = '<span style="color:var(--text-muted);font-size:11px">No address</span>';
             }
         }
 
