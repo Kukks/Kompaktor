@@ -474,6 +474,84 @@ app.MapGet("/api/coin-control/utxo/{utxoId}", async (int utxoId, WalletDbContext
     });
 }).WithTags("CoinControl");
 
+// Wallet creation
+app.MapPost("/api/wallet/create", async (WalletDbContext db, HttpContext ctx) =>
+{
+    var body = await ctx.Request.ReadFromJsonAsync<CreateWalletRequest>();
+    if (body is null || string.IsNullOrWhiteSpace(body.Passphrase))
+        return Results.BadRequest("Passphrase required");
+
+    if (await db.Wallets.AnyAsync())
+        return Results.BadRequest("A wallet already exists");
+
+    var hdWallet = await KompaktorHdWallet.CreateAsync(
+        db, network, body.Name ?? "Default", body.Passphrase, body.WordCount ?? 12);
+
+    // Return the mnemonic ONCE for user to write down
+    var mnemonic = await hdWallet.ExportMnemonicAsync(body.Passphrase);
+
+    return Results.Ok(new
+    {
+        walletId = hdWallet.WalletId,
+        mnemonic,
+        wordCount = mnemonic.Split(' ').Length,
+        message = "IMPORTANT: Write down your mnemonic words and store them safely. They will not be shown again."
+    });
+}).WithTags("Wallet");
+
+// Wallet info
+app.MapGet("/api/wallet/info", async (WalletDbContext db) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.Ok(new { exists = false });
+
+    var accountCount = await db.Accounts.CountAsync(a => a.WalletId == wallet.Id);
+    var addressCount = await db.Addresses
+        .Include(a => a.Account)
+        .CountAsync(a => a.Account.WalletId == wallet.Id);
+
+    return Results.Ok(new
+    {
+        exists = true,
+        id = wallet.Id,
+        name = wallet.Name,
+        network = wallet.Network,
+        createdAt = wallet.CreatedAt,
+        accountCount,
+        addressCount
+    });
+}).WithTags("Wallet");
+
+// Get receive address
+app.MapGet("/api/wallet/receive-address", async (WalletDbContext db) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.BadRequest("No wallet found");
+
+    // Find fresh P2TR address (purpose 86 preferred)
+    var address = await db.Addresses
+        .Include(a => a.Account)
+        .Where(a => a.Account.WalletId == wallet.Id)
+        .Where(a => !a.IsUsed && !a.IsExposed && !a.IsChange)
+        .OrderByDescending(a => a.Account.Purpose) // Prefer P2TR (86)
+        .ThenBy(a => a.Id)
+        .FirstOrDefaultAsync();
+
+    if (address is null) return Results.BadRequest("No fresh addresses available");
+
+    var script = new Script(address.ScriptPubKey);
+    var btcAddress = script.GetDestinationAddress(network);
+
+    return Results.Ok(new
+    {
+        address = btcAddress?.ToString(),
+        scriptHex = script.ToHex(),
+        keyPath = address.KeyPath,
+        purpose = address.Account.Purpose,
+        type = address.Account.Purpose == 86 ? "P2TR" : "P2WPKH"
+    });
+}).WithTags("Wallet");
+
 // Wallet backup: export mnemonic (requires passphrase)
 app.MapPost("/api/wallet/export-mnemonic", async (WalletDbContext db, HttpContext ctx) =>
 {
@@ -581,3 +659,4 @@ record BatchFreezeRequest(int[] UtxoIds, bool Freeze);
 record LabelRequest(string Text);
 record PassphraseRequest(string Passphrase);
 record RestoreRequest(string Mnemonic, string Passphrase, string? Name = null);
+record CreateWalletRequest(string Passphrase, string? Name = null, int? WordCount = null);

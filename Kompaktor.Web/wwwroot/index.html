@@ -221,6 +221,92 @@
         .plan-result .plan-label { color: var(--text-muted); }
         .plan-warning { color: var(--yellow); padding: 4px 0; font-size: 12px; }
         .plan-utxo-list { margin-top: 8px; }
+        .setup-panel {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 24px;
+            max-width: 500px;
+            margin: 40px auto;
+        }
+        .setup-panel h2 { margin-bottom: 16px; }
+        .setup-panel .field { margin-bottom: 12px; }
+        .setup-panel .field label { display: block; font-size: 12px; color: var(--text-muted); margin-bottom: 4px; text-transform: uppercase; }
+        .setup-panel input {
+            width: 100%;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            color: var(--text);
+            padding: 8px 12px;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+        .setup-panel input:focus { border-color: var(--accent); outline: none; }
+        .setup-panel .actions { display: flex; gap: 8px; margin-top: 16px; }
+        .setup-panel .primary-btn {
+            background: var(--accent);
+            border: none;
+            color: #000;
+            padding: 8px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+        }
+        .setup-panel .secondary-btn {
+            background: none;
+            border: 1px solid var(--border);
+            color: var(--text);
+            padding: 8px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        .mnemonic-display {
+            background: var(--bg);
+            border: 1px solid var(--yellow);
+            border-radius: 4px;
+            padding: 12px;
+            font-family: 'SFMono-Regular', Consolas, monospace;
+            font-size: 14px;
+            line-height: 1.8;
+            word-spacing: 4px;
+            margin: 12px 0;
+            user-select: all;
+        }
+        .receive-section {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 16px;
+            margin-bottom: 24px;
+        }
+        .receive-section h2 { font-size: 16px; margin-bottom: 8px; }
+        .address-display {
+            font-family: 'SFMono-Regular', Consolas, monospace;
+            font-size: 14px;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            padding: 10px 12px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+        }
+        .address-display .addr { word-break: break-all; }
+        .copy-btn {
+            background: none;
+            border: 1px solid var(--border);
+            color: var(--accent);
+            padding: 4px 10px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            white-space: nowrap;
+        }
+        .copy-btn:hover { border-color: var(--accent); }
+        .addr-meta { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
     </style>
 </head>
 <body>
@@ -232,6 +318,56 @@
                 <button class="refresh-btn" onclick="refreshAll()">Refresh</button>
             </div>
         </header>
+
+        <!-- Wallet Setup (shown when no wallet exists) -->
+        <div id="walletSetup" style="display:none">
+            <div class="setup-panel">
+                <h2>Welcome to Kompaktor</h2>
+                <p style="color:var(--text-muted);margin-bottom:16px">Create a new wallet or restore from a backup to get started.</p>
+                <div id="setupForm">
+                    <div class="field">
+                        <label>Wallet Name</label>
+                        <input type="text" id="setupName" value="My Wallet">
+                    </div>
+                    <div class="field">
+                        <label>Passphrase</label>
+                        <input type="password" id="setupPass" placeholder="Enter a strong passphrase">
+                    </div>
+                    <div id="restoreField" style="display:none">
+                        <div class="field">
+                            <label>Mnemonic Words</label>
+                            <input type="text" id="setupMnemonic" placeholder="word1 word2 word3 ...">
+                        </div>
+                    </div>
+                    <div class="actions">
+                        <button class="primary-btn" onclick="createWallet()">Create New Wallet</button>
+                        <button class="secondary-btn" id="restoreToggle" onclick="toggleRestore()">Restore from Backup</button>
+                    </div>
+                    <div id="setupError" style="color:var(--red);margin-top:8px;font-size:13px"></div>
+                </div>
+                <div id="mnemonicResult" style="display:none">
+                    <p style="color:var(--yellow);font-weight:600;margin-bottom:8px">Write down these words and store them safely!</p>
+                    <div class="mnemonic-display" id="mnemonicWords"></div>
+                    <p style="color:var(--text-muted);font-size:12px">This is the only time your recovery phrase will be shown.</p>
+                    <div class="actions" style="margin-top:12px">
+                        <button class="primary-btn" onclick="location.reload()">I've Saved My Words</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Main Dashboard (shown when wallet exists) -->
+        <div id="mainDashboard" style="display:none">
+
+        <!-- Receive Address -->
+        <div class="receive-section" id="receiveSection">
+            <h2>Receive Address</h2>
+            <div class="address-display">
+                <span class="addr" id="receiveAddr">Loading...</span>
+                <button class="copy-btn" onclick="copyAddress()">Copy</button>
+            </div>
+            <div class="addr-meta" id="receiveAddrMeta"></div>
+        </div>
 
         <div class="cards" id="summaryCards">
             <div class="card">
@@ -424,6 +560,8 @@
                 </tbody>
             </table>
         </section>
+
+        </div><!-- end mainDashboard -->
     </div>
 
     <script>
@@ -687,6 +825,86 @@
             </tr>`).join('');
         }
 
+        let isRestoreMode = false;
+
+        async function checkWallet() {
+            const info = await fetchJson('/api/wallet/info');
+            if (info && info.exists) {
+                document.getElementById('walletSetup').style.display = 'none';
+                document.getElementById('mainDashboard').style.display = '';
+                loadReceiveAddress();
+                return true;
+            } else {
+                document.getElementById('walletSetup').style.display = '';
+                document.getElementById('mainDashboard').style.display = 'none';
+                return false;
+            }
+        }
+
+        function toggleRestore() {
+            isRestoreMode = !isRestoreMode;
+            document.getElementById('restoreField').style.display = isRestoreMode ? '' : 'none';
+            document.getElementById('restoreToggle').textContent = isRestoreMode ? 'Create New Instead' : 'Restore from Backup';
+        }
+
+        async function createWallet() {
+            const name = document.getElementById('setupName').value.trim();
+            const pass = document.getElementById('setupPass').value;
+            const errEl = document.getElementById('setupError');
+            errEl.textContent = '';
+
+            if (!pass) { errEl.textContent = 'Passphrase is required'; return; }
+
+            if (isRestoreMode) {
+                const mnemonic = document.getElementById('setupMnemonic').value.trim();
+                if (!mnemonic) { errEl.textContent = 'Mnemonic words are required'; return; }
+
+                const res = await fetch('/api/wallet/restore', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ mnemonic, passphrase: pass, name })
+                });
+                const data = await res.json();
+                if (!res.ok) { errEl.textContent = typeof data === 'string' ? data : data.detail || JSON.stringify(data); return; }
+                location.reload();
+            } else {
+                const res = await fetch('/api/wallet/create', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ passphrase: pass, name })
+                });
+                const data = await res.json();
+                if (!res.ok) { errEl.textContent = typeof data === 'string' ? data : data.detail || JSON.stringify(data); return; }
+
+                document.getElementById('setupForm').style.display = 'none';
+                document.getElementById('mnemonicResult').style.display = '';
+                document.getElementById('mnemonicWords').textContent = data.mnemonic;
+            }
+        }
+
+        async function loadReceiveAddress() {
+            const data = await fetchJson('/api/wallet/receive-address');
+            const addrEl = document.getElementById('receiveAddr');
+            const metaEl = document.getElementById('receiveAddrMeta');
+            if (data && data.address) {
+                addrEl.textContent = data.address;
+                metaEl.textContent = `${data.type} \u00B7 ${data.keyPath}`;
+            } else {
+                addrEl.textContent = 'No addresses available';
+                metaEl.textContent = '';
+            }
+        }
+
+        function copyAddress() {
+            const addr = document.getElementById('receiveAddr').textContent;
+            if (addr && addr !== 'Loading...' && addr !== 'No addresses available') {
+                navigator.clipboard.writeText(addr);
+                const btn = document.querySelector('.copy-btn');
+                btn.textContent = 'Copied!';
+                setTimeout(() => btn.textContent = 'Copy', 2000);
+            }
+        }
+
         async function planSend() {
             const dest = document.getElementById('sendDest').value.trim();
             const amount = parseInt(document.getElementById('sendAmount').value);
@@ -759,9 +977,14 @@
             document.getElementById('lastUpdate').textContent = 'Updated ' + new Date().toLocaleTimeString();
         }
 
-        // Auto-refresh every 10 seconds
-        refreshAll();
-        setInterval(refreshAll, 10000);
+        // Initialize: check wallet, then start auto-refresh
+        (async () => {
+            const hasWallet = await checkWallet();
+            if (hasWallet) {
+                refreshAll();
+                setInterval(refreshAll, 10000);
+            }
+        })();
     </script>
 </body>
 </html>
