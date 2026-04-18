@@ -91,6 +91,70 @@ public class KompaktorHdWallet : IKompaktorWalletInterface
         return new KompaktorHdWallet(db, network, walletId) { _masterKey = masterKey };
     }
 
+    /// <summary>
+    /// Restores a wallet from a BIP-39 mnemonic. Creates the wallet entity with
+    /// encrypted mnemonic storage and pre-derives addresses up to the gap limit.
+    /// After restore, call WalletSyncService.FullSyncAsync to discover UTXOs.
+    /// </summary>
+    public static async Task<KompaktorHdWallet> RestoreAsync(
+        WalletDbContext db, Network network, string name, string mnemonicWords, string passphrase)
+    {
+        var mnemonic = new Mnemonic(mnemonicWords);
+        var (encrypted, salt) = MnemonicEncryption.Encrypt(mnemonicWords, passphrase);
+
+        var walletEntity = new WalletEntity
+        {
+            Name = name,
+            EncryptedMnemonic = encrypted,
+            MnemonicSalt = salt,
+            Network = network.Name
+        };
+
+        var masterKey = mnemonic.DeriveExtKey();
+        var coinType = network == Network.Main ? 0 : 1;
+
+        foreach (var purpose in new[] { 84, 86 })
+        {
+            var account = new AccountEntity { Purpose = purpose, AccountIndex = 0 };
+            var accountKey = masterKey.Derive(new KeyPath($"m/{purpose}'/{coinType}'/0'"));
+
+            foreach (var chain in new[] { 0, 1 })
+            {
+                for (var i = 0; i < GapLimit; i++)
+                {
+                    var childKey = accountKey.Derive(new KeyPath($"{chain}/{i}"));
+                    var script = purpose == 84
+                        ? childKey.PrivateKey.GetScriptPubKey(ScriptPubKeyType.Segwit)
+                        : childKey.PrivateKey.GetScriptPubKey(ScriptPubKeyType.TaprootBIP86);
+
+                    account.Addresses.Add(new AddressEntity
+                    {
+                        KeyPath = $"{chain}/{i}",
+                        ScriptPubKey = script.ToBytes(),
+                        IsChange = chain == 1
+                    });
+                }
+            }
+
+            walletEntity.Accounts.Add(account);
+        }
+
+        db.Wallets.Add(walletEntity);
+        await db.SaveChangesAsync();
+
+        return new KompaktorHdWallet(db, network, walletEntity.Id) { _masterKey = masterKey };
+    }
+
+    /// <summary>
+    /// Exports the decrypted mnemonic words for backup purposes.
+    /// The wallet must be unlocked (opened with passphrase) first.
+    /// </summary>
+    public async Task<string> ExportMnemonicAsync(string passphrase)
+    {
+        var entity = await _db.Wallets.SingleAsync(w => w.Id == WalletId);
+        return MnemonicEncryption.Decrypt(entity.EncryptedMnemonic, entity.MnemonicSalt, passphrase);
+    }
+
     public void Close()
     {
         _masterKey = null;

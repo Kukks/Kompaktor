@@ -187,4 +187,78 @@ public class KompaktorHdWalletTests : IDisposable
         var address = script.GetDestinationAddress(_network);
         Assert.NotNull(address);
     }
+
+    [Fact]
+    public async Task Restore_RecreatesWalletFromMnemonic()
+    {
+        // Create a wallet and export its mnemonic
+        var original = await KompaktorHdWallet.CreateAsync(_db, _network, "Original", Passphrase);
+        var mnemonic = await original.ExportMnemonicAsync(Passphrase);
+        var originalAddresses = _db.Addresses
+            .Include(a => a.Account)
+            .Where(a => a.Account.WalletId == original.WalletId)
+            .Select(a => a.ScriptPubKey)
+            .ToList();
+
+        // Delete the original wallet (simulate fresh database)
+        var opts = new DbContextOptionsBuilder<WalletDbContext>()
+            .UseSqlite("DataSource=restore-test;Mode=Memory;Cache=Shared")
+            .Options;
+        using var freshDb = new WalletDbContext(opts);
+        freshDb.Database.OpenConnection();
+        freshDb.Database.EnsureCreated();
+
+        // Restore from mnemonic
+        var restored = await KompaktorHdWallet.RestoreAsync(freshDb, _network, "Restored", mnemonic, Passphrase);
+
+        var restoredAddresses = freshDb.Addresses
+            .Include(a => a.Account)
+            .Where(a => a.Account.WalletId == restored.WalletId)
+            .Select(a => a.ScriptPubKey)
+            .ToList();
+
+        // Same number of addresses
+        Assert.Equal(originalAddresses.Count, restoredAddresses.Count);
+
+        // All addresses match (deterministic derivation)
+        foreach (var orig in originalAddresses)
+        {
+            Assert.Contains(restoredAddresses, r => r.SequenceEqual(orig));
+        }
+
+        freshDb.Database.CloseConnection();
+    }
+
+    [Fact]
+    public async Task ExportMnemonic_WrongPassphrase_Throws()
+    {
+        await KompaktorHdWallet.CreateAsync(_db, _network, "Test", Passphrase);
+        var wallet = await KompaktorHdWallet.OpenAsync(
+            _db, _db.Wallets.Single().Id, _network, Passphrase);
+
+        await Assert.ThrowsAnyAsync<Exception>(
+            () => wallet.ExportMnemonicAsync("wrong-passphrase"));
+    }
+
+    [Fact]
+    public async Task ExportMnemonic_ReturnsValidBip39Words()
+    {
+        var wallet = await KompaktorHdWallet.CreateAsync(_db, _network, "Test", Passphrase);
+
+        var mnemonic = await wallet.ExportMnemonicAsync(Passphrase);
+
+        Assert.NotNull(mnemonic);
+        var words = mnemonic.Split(' ');
+        Assert.Equal(12, words.Length);
+        // Verify it's a valid BIP-39 mnemonic by parsing it
+        var parsed = new Mnemonic(mnemonic);
+        Assert.NotNull(parsed);
+    }
+
+    [Fact]
+    public async Task Restore_InvalidMnemonic_Throws()
+    {
+        await Assert.ThrowsAnyAsync<Exception>(
+            () => KompaktorHdWallet.RestoreAsync(_db, _network, "Bad", "not a valid mnemonic", Passphrase));
+    }
 }

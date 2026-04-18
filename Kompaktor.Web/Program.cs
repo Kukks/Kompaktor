@@ -474,6 +474,54 @@ app.MapGet("/api/coin-control/utxo/{utxoId}", async (int utxoId, WalletDbContext
     });
 }).WithTags("CoinControl");
 
+// Wallet backup: export mnemonic (requires passphrase)
+app.MapPost("/api/wallet/export-mnemonic", async (WalletDbContext db, HttpContext ctx) =>
+{
+    var body = await ctx.Request.ReadFromJsonAsync<PassphraseRequest>();
+    if (body is null || string.IsNullOrWhiteSpace(body.Passphrase))
+        return Results.BadRequest("Passphrase required");
+
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.BadRequest("No wallet found");
+
+    try
+    {
+        var mnemonic = MnemonicEncryption.Decrypt(wallet.EncryptedMnemonic, wallet.MnemonicSalt, body.Passphrase);
+        return Results.Ok(new { mnemonic, wordCount = mnemonic.Split(' ').Length });
+    }
+    catch (System.Security.Cryptography.CryptographicException)
+    {
+        return Results.BadRequest("Wrong passphrase");
+    }
+}).WithTags("Wallet");
+
+// Wallet restore from mnemonic
+app.MapPost("/api/wallet/restore", async (WalletDbContext db, HttpContext ctx) =>
+{
+    var body = await ctx.Request.ReadFromJsonAsync<RestoreRequest>();
+    if (body is null || string.IsNullOrWhiteSpace(body.Mnemonic) || string.IsNullOrWhiteSpace(body.Passphrase))
+        return Results.BadRequest("Mnemonic and passphrase required");
+
+    // Check if wallet already exists
+    if (await db.Wallets.AnyAsync())
+        return Results.BadRequest("A wallet already exists. Delete the existing wallet first.");
+
+    try
+    {
+        var hdWallet = await KompaktorHdWallet.RestoreAsync(
+            db, network, body.Name ?? "Restored", body.Mnemonic.Trim(), body.Passphrase);
+        return Results.Ok(new
+        {
+            walletId = hdWallet.WalletId,
+            message = "Wallet restored. Run a full sync to discover existing UTXOs."
+        });
+    }
+    catch (Exception ex)
+    {
+        return Results.BadRequest($"Invalid mnemonic: {ex.Message}");
+    }
+}).WithTags("Wallet");
+
 // Coordinator stats for dashboard
 app.MapGet("/api/coordinator/stats", (KompaktorRoundManager manager, KompaktorRoundOrchestrator orchestrator) =>
 {
@@ -531,3 +579,5 @@ app.Run();
 record SendPlanRequest(string Destination, long AmountSat, long FeeRateSatPerVb = 2, string Strategy = "PrivacyFirst");
 record BatchFreezeRequest(int[] UtxoIds, bool Freeze);
 record LabelRequest(string Text);
+record PassphraseRequest(string Passphrase);
+record RestoreRequest(string Mnemonic, string Passphrase, string? Name = null);
