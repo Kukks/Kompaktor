@@ -358,12 +358,31 @@ public class KompaktorService : IAsyncDisposable
             var success = round.Status == KompaktorStatus.Completed;
             _logger.LogInformation("Round {RoundId} ended: {Status}", roundId, round.Status);
 
+            // Capture transaction data before the client is disposed
+            Transaction? tx = null;
+            OutPoint[]? ourInputs = null;
+            Script[]? ourOutputScripts = null;
+            var totalInputs = 0;
+
+            if (success)
+            {
+                tx = client.GetTransaction();
+                ourInputs = client.RegisteredInputs;
+                ourOutputScripts = client.RegisteredOutputs
+                    .Select(o => o.ScriptPubKey).ToArray();
+                totalInputs = round.Inputs.Count;
+            }
+
             return new KompaktorRoundResult(
                 roundId,
                 success,
                 round.Status.ToString(),
                 client.RegisteredInputs.Length,
-                client.RegisteredOutputs.Length);
+                client.RegisteredOutputs.Length,
+                tx,
+                ourInputs,
+                ourOutputScripts,
+                totalInputs);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -393,10 +412,15 @@ public class KompaktorService : IAsyncDisposable
 
 /// <summary>
 /// Result of a single round participation attempt.
+/// Contains enough data for CoinJoinRecorder to persist the round.
 /// </summary>
 public record KompaktorRoundResult(
     string RoundId,
     bool Success,
     string StatusMessage,
     int InputsRegistered = 0,
-    int OutputsRegistered = 0);
+    int OutputsRegistered = 0,
+    Transaction? Transaction = null,
+    OutPoint[]? OurInputOutpoints = null,
+    Script[]? OurOutputScripts = null,
+    int TotalParticipantInputs = 0);

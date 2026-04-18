@@ -64,7 +64,7 @@ public class TransactionEntity
 public class CoinJoinRecordEntity
 {
     public int Id { get; set; }
-    public string TransactionId { get; set; } = "";
+    public string? TransactionId { get; set; }
     public string RoundId { get; set; } = "";
     public string Status { get; set; } = ""; // "Completed" or "Failed"
     public int OurInputCount { get; set; }
@@ -75,7 +75,7 @@ public class CoinJoinRecordEntity
     public long[] OutputValuesSat { get; set; } = [];
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
 
-    public TransactionEntity Transaction { get; set; } = null!;
+    public TransactionEntity? Transaction { get; set; }
     public List<CoinJoinParticipationEntity> Participations { get; set; } = [];
 }
 

@@ -139,7 +139,7 @@ public class CoinJoinRecorder
         var record = new CoinJoinRecordEntity
         {
             RoundId = roundId,
-            TransactionId = "", // No tx for failed rounds
+            TransactionId = null, // No tx for failed rounds
             Status = "Failed",
             OurInputCount = ourInputOutpoints.Length,
         };

@@ -200,6 +200,28 @@ public class WalletDbTests : IDisposable
     }
 
     [Fact]
+    public async Task CoinJoinRecorder_RecordFailedRound_TracksForIntersectionAnalysis()
+    {
+        var wallet = new WalletEntity { Name = "FailedRoundTest" };
+        _db.Wallets.Add(wallet);
+        _db.SaveChanges();
+
+        var recorder = new Kompaktor.Wallet.CoinJoinRecorder(_db, wallet.Id);
+        var inputOutpoints = new[]
+        {
+            new NBitcoin.OutPoint(NBitcoin.uint256.Parse("aabb000000000000000000000000000000000000000000000000000000000000"), 0),
+            new NBitcoin.OutPoint(NBitcoin.uint256.Parse("ccdd000000000000000000000000000000000000000000000000000000000000"), 1)
+        };
+
+        await recorder.RecordFailedRoundAsync("failed-round-1", inputOutpoints);
+
+        var record = _db.CoinJoinRecords.Single();
+        Assert.Equal("Failed", record.Status);
+        Assert.Equal("failed-round-1", record.RoundId);
+        Assert.Equal(2, record.OurInputCount);
+    }
+
+    [Fact]
     public async Task WalletSyncService_GetBalance_SeparatesConfirmedAndUnconfirmed()
     {
         var wallet = new WalletEntity { Name = "SyncTest" };

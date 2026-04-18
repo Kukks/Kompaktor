@@ -117,6 +117,9 @@ logger.LogInformation("Balance: {Confirmed} sat confirmed, {Unconfirmed} sat unc
 // Start real-time monitoring for new transactions
 await syncService.StartMonitoringAsync(wallet.WalletId);
 
+// --- Setup CoinJoin recorder ---
+var recorder = new CoinJoinRecorder(db, wallet.WalletId);
+
 // --- Start coordinator ---
 var coordinatorOptions = new KompaktorCoordinatorOptions();
 var prison = new KompaktorPrison();
@@ -146,6 +149,23 @@ if (coins.Length == 0)
 else
 {
     logger.LogInformation("Ready for coinjoin with {Count} coins", coins.Length);
+
+    // Example: when integrating with KompaktorService, wire the recorder to RoundCompleted:
+    // service.RoundCompleted += async result =>
+    // {
+    //     if (result.Success && result.Transaction is not null)
+    //     {
+    //         await recorder.RecordRoundAsync(
+    //             result.RoundId, result.Transaction,
+    //             result.OurInputOutpoints!, result.OurOutputScripts!,
+    //             result.TotalParticipantInputs);
+    //         logger.LogInformation("Recorded coinjoin round {RoundId}", result.RoundId);
+    //     }
+    //     else if (!result.Success && result.OurInputOutpoints is not null)
+    //     {
+    //         await recorder.RecordFailedRoundAsync(result.RoundId, result.OurInputOutpoints);
+    //     }
+    // };
 }
 
 // --- Cleanup ---
