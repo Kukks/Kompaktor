@@ -2500,7 +2500,7 @@
                     <td>${dirIcon} ${esc(p.direction)}</td>
                     <td>${p.amountBtc.toFixed(8)} <span style="color:var(--text-muted)">${p.amountSat.toLocaleString()} sat</span></td>
                     <td class="truncate" title="${esc(p.destination)}">${truncate(p.destination, 16)}</td>
-                    <td><span style="color:${statusColor};font-weight:600;font-size:12px">${esc(p.status)}</span>${p.retryCount > 0 ? ` <span style="font-size:10px;color:var(--yellow)" title="${p.retryCount} round retry attempt(s)">retry x${p.retryCount}</span>` : ''}${expiryHtml} ${proofHtml}</td>
+                    <td><span style="color:${statusColor};font-weight:600;font-size:12px">${esc(p.status)}</span>${p.retryCount > 0 ? ` <span style="font-size:10px;color:${p.maxRetries > 0 && p.retryCount >= p.maxRetries - 1 ? 'var(--red)' : 'var(--yellow)'}" title="${p.retryCount}${p.maxRetries > 0 ? '/' + p.maxRetries : ''} round retry attempt(s)">retry ${p.retryCount}${p.maxRetries > 0 ? '/' + p.maxRetries : ''}</span>` : ''}${expiryHtml} ${proofHtml}</td>
                     <td style="font-size:12px">${typeLabel}</td>
                     <td>${p.label ? esc(p.label) : '<span style="color:var(--text-muted)">-</span>'}</td>
                     <td>${p.completedTxId ? txLink(p.completedTxId, truncate(p.completedTxId, 10)) : '-'}</td>
