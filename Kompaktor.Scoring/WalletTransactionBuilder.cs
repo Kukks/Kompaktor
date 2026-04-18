@@ -58,12 +58,13 @@ public class WalletTransactionBuilder
         // Get fresh change address (prefer Taproot)
         var changeAddress = await GetFreshChangeAddressAsync(walletId, ct);
 
-        // Build the transaction
+        // Build the transaction with RBF opt-in (BIP 125)
         var builder = _network.CreateTransactionBuilder();
         builder.AddCoins(coins);
         builder.Send(destination, amount);
         builder.SetChange(changeAddress);
         builder.SendEstimatedFees(feeRate);
+        builder.OptInRBF = true;
 
         var tx = builder.BuildTransaction(sign: false);
         var fee = builder.EstimateFees(tx, feeRate);

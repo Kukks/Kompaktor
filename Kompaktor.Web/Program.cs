@@ -1550,6 +1550,103 @@ app.MapGet("/api/dashboard/fee-estimates", async (IBlockchainBackend chain) =>
     return Results.Ok(estimates);
 }).WithTags("Dashboard");
 
+// RBF fee bump: create a replacement transaction with higher fee
+app.MapPost("/api/dashboard/fee-bump", async (WalletDbContext db, HttpContext ctx) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.BadRequest("No wallet found");
+
+    var body = await ctx.Request.ReadFromJsonAsync<FeeBumpRequest>();
+    if (body is null || string.IsNullOrWhiteSpace(body.TxId) || body.NewFeeRateSatPerVb <= 0)
+        return Results.BadRequest("Transaction ID and new fee rate required");
+
+    var txEntity = await db.Transactions.FindAsync(body.TxId);
+    if (txEntity is null)
+        return Results.BadRequest("Transaction not found in wallet history");
+    if (txEntity.BlockHeight.HasValue)
+        return Results.BadRequest("Transaction already confirmed — cannot RBF");
+
+    try
+    {
+        var originalTx = Transaction.Parse(txEntity.RawHex, network);
+
+        // Verify at least one input signals RBF (nSequence < 0xFFFFFFFE)
+        if (!originalTx.Inputs.Any(i => i.Sequence < 0xFFFFFFFE))
+            return Results.BadRequest("Original transaction does not signal RBF (BIP 125) — cannot replace");
+
+        // Find wallet-owned inputs by matching UTXOs
+        var walletAddresses = await db.Addresses
+            .Include(a => a.Account)
+            .Where(a => a.Account.WalletId == wallet.Id)
+            .Select(a => a.ScriptPubKey)
+            .ToListAsync();
+        var walletScripts = walletAddresses.Select(s => new Script(s)).ToHashSet();
+
+        // Reconstruct coins from original inputs by looking up UTXOs
+        var coins = new List<Coin>();
+        foreach (var input in originalTx.Inputs)
+        {
+            var utxo = await db.Utxos.FirstOrDefaultAsync(u =>
+                u.TxId == input.PrevOut.Hash.ToString() &&
+                u.OutputIndex == (int)input.PrevOut.N);
+            if (utxo is not null)
+            {
+                coins.Add(new Coin(input.PrevOut,
+                    new TxOut(Money.Satoshis(utxo.AmountSat), new Script(utxo.ScriptPubKey))));
+            }
+        }
+
+        if (coins.Count == 0)
+            return Results.BadRequest("Could not find wallet UTXOs for any inputs");
+
+        // Find the original destination (non-change output)
+        var changeScript = originalTx.Outputs
+            .Where(o => walletScripts.Contains(o.ScriptPubKey))
+            .Select(o => o.ScriptPubKey)
+            .FirstOrDefault();
+        var destOutput = originalTx.Outputs
+            .FirstOrDefault(o => changeScript is null || o.ScriptPubKey != changeScript)
+            ?? originalTx.Outputs.First();
+
+        // Build replacement with higher fee
+        var newFeeRate = new FeeRate(Money.Satoshis(body.NewFeeRateSatPerVb), 1);
+        var builder = network.CreateTransactionBuilder();
+        builder.AddCoins(coins);
+        builder.Send(destOutput.ScriptPubKey, destOutput.Value);
+        if (changeScript is not null)
+            builder.SetChange(changeScript);
+        builder.SendEstimatedFees(newFeeRate);
+        builder.OptInRBF = true;
+
+        var bumpedTx = builder.BuildTransaction(sign: false);
+        var estimatedFee = builder.EstimateFees(bumpedTx, newFeeRate);
+
+        // Create PSBT for hardware wallet signing
+        var psbt = PSBT.FromTransaction(bumpedTx, network);
+        for (int i = 0; i < bumpedTx.Inputs.Count; i++)
+        {
+            var coin = coins.FirstOrDefault(c => c.Outpoint == bumpedTx.Inputs[i].PrevOut);
+            if (coin is not null)
+                psbt.Inputs[i].WitnessUtxo = coin.TxOut;
+        }
+
+        return Results.Ok(new
+        {
+            originalTxId = body.TxId,
+            bumpedPsbt = psbt.ToBase64(),
+            estimatedFeeSat = estimatedFee.Satoshi,
+            newFeeRateSatPerVb = body.NewFeeRateSatPerVb,
+            inputCount = bumpedTx.Inputs.Count,
+            outputCount = bumpedTx.Outputs.Count,
+            message = "Sign this PSBT and broadcast via /api/dashboard/broadcast-psbt to replace the original transaction"
+        });
+    }
+    catch (Exception ex)
+    {
+        return Results.BadRequest($"Fee bump failed: {ex.Message}");
+    }
+}).WithTags("Dashboard");
+
 // Blockchain info
 app.MapGet("/api/blockchain/info", async (IBlockchainBackend chain) =>
 {
@@ -1845,3 +1942,4 @@ record CreateReceiveRequest(long AmountSat, string? Label = null, int? ExpiryMin
 record WebhookCreateRequest(string Url, string? EventFilter = null);
 record VerifyBackupRequest(string Passphrase, VerifyBackupAnswer[] Answers);
 record VerifyBackupAnswer(int Position, string Word);
+record FeeBumpRequest(string TxId, long NewFeeRateSatPerVb);
