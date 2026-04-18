@@ -1262,12 +1262,62 @@
                     </div>
                     ${warningsHtml}
                     ${utxoHtml}
+                    <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                        <input type="password" id="sendPassphrase" placeholder="Passphrase to sign" style="padding:6px 10px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:13px;width:200px" onkeydown="if(event.key==='Enter')confirmSend()">
+                        <button class="send-btn" onclick="confirmSend()">Sign &amp; Broadcast</button>
+                        <span id="sendStatus" style="font-size:12px;color:var(--text-muted)"></span>
+                    </div>
                 `;
             } catch (err) {
                 panel.innerHTML = `<span style="color:var(--red)">Request failed: ${esc(err.message)}</span>`;
             } finally {
                 btn.disabled = false;
                 btn.textContent = 'Preview Transaction';
+            }
+        }
+
+        async function confirmSend() {
+            const dest = document.getElementById('sendDest').value.trim();
+            const amount = parseInt(document.getElementById('sendAmount').value);
+            const feeRate = parseInt(document.getElementById('sendFeeRate').value) || 2;
+            const strategy = document.getElementById('sendStrategy').value;
+            const passphrase = document.getElementById('sendPassphrase').value;
+            const status = document.getElementById('sendStatus');
+
+            if (!passphrase) {
+                status.innerHTML = '<span style="color:var(--red)">Enter passphrase to sign</span>';
+                return;
+            }
+
+            status.innerHTML = '<span style="color:var(--yellow)">Signing &amp; broadcasting...</span>';
+
+            try {
+                const res = await fetch('/api/dashboard/send', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ destination: dest, amountSat: amount, feeRateSatPerVb: feeRate, strategy, passphrase })
+                });
+                const data = await res.json();
+
+                if (!res.ok) {
+                    status.innerHTML = `<span style="color:var(--red)">${esc(typeof data === 'string' ? data : data.detail || data.title || JSON.stringify(data))}</span>`;
+                    return;
+                }
+
+                document.getElementById('planResult').innerHTML = `
+                    <div style="padding:12px;text-align:center">
+                        <div style="color:var(--green);font-size:16px;font-weight:600;margin-bottom:8px">&#10003; Transaction Broadcast</div>
+                        <div style="font-size:12px;color:var(--text-muted)">TxID: <span class="truncate" title="${esc(data.txId)}" style="color:var(--text)">${esc(data.txId)}</span></div>
+                        <div style="font-size:12px;color:var(--text-muted);margin-top:4px">Fee: ${data.feeSat} sat &middot; ${data.inputCount} inputs &middot; ${data.outputCount} outputs</div>
+                    </div>`;
+
+                // Clear form
+                document.getElementById('sendDest').value = '';
+                document.getElementById('sendAmount').value = '';
+                document.getElementById('sendPassphrase').value = '';
+                showToast('Transaction broadcast: ' + data.txId.substring(0, 16) + '...', 'success');
+            } catch (err) {
+                status.innerHTML = `<span style="color:var(--red)">Failed: ${esc(err.message)}</span>`;
             }
         }
 

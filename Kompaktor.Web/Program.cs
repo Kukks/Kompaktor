@@ -745,6 +745,75 @@ app.MapDelete("/api/address-book/{entryId}", async (int entryId, WalletDbContext
     return Results.Ok(new { deleted = entryId });
 }).WithTags("AddressBook");
 
+// Send (sign + broadcast) a planned transaction
+app.MapPost("/api/dashboard/send", async (WalletDbContext db, IBlockchainBackend chain, HttpContext ctx, DashboardEventBus bus) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.BadRequest("No wallet found");
+
+    var body = await ctx.Request.ReadFromJsonAsync<SendRequest>();
+    if (body is null) return Results.BadRequest("Invalid request");
+    if (string.IsNullOrWhiteSpace(body.Passphrase))
+        return Results.BadRequest("Passphrase required to sign the transaction");
+
+    try
+    {
+        var destination = BitcoinAddress.Create(body.Destination, network);
+        var amount = Money.Satoshis(body.AmountSat);
+        var feeRate = new FeeRate(Money.Satoshis(body.FeeRateSatPerVb), 1);
+        var strategy = Enum.TryParse<CoinSelectionStrategy>(body.Strategy, true, out var s)
+            ? s : CoinSelectionStrategy.PrivacyFirst;
+
+        // Plan the transaction
+        var txBuilder = new WalletTransactionBuilder(db, network);
+        var plan = await txBuilder.PlanTransactionAsync(
+            wallet.Id, destination.ScriptPubKey, amount, feeRate, strategy);
+
+        // Open wallet and sign
+        var hdWallet = await KompaktorHdWallet.OpenAsync(db, wallet.Id, network, body.Passphrase);
+
+        var tx = plan.Transaction;
+        for (var i = 0; i < tx.Inputs.Count; i++)
+        {
+            var input = tx.Inputs[i];
+            var coin = plan.InputCoins.First(c => c.Outpoint == input.PrevOut);
+            var witness = await hdWallet.GenerateWitness(coin, tx, plan.InputCoins);
+            input.WitScript = witness;
+        }
+
+        // Broadcast
+        var txId = await chain.BroadcastAsync(tx);
+
+        // Mark UTXOs as spent and record the transaction
+        foreach (var coin in plan.InputCoins)
+        {
+            var utxo = await db.Utxos.FirstOrDefaultAsync(u =>
+                u.TxId == coin.Outpoint.Hash.ToString() && u.OutputIndex == (int)coin.Outpoint.N);
+            if (utxo is not null) utxo.SpentByTxId = txId.ToString();
+        }
+        await db.SaveChangesAsync();
+
+        bus.Publish("utxos");
+        bus.Publish("wallet");
+
+        return Results.Ok(new
+        {
+            txId = txId.ToString(),
+            feeSat = plan.EstimatedFee.Satoshi,
+            inputCount = plan.InputCoins.Length,
+            outputCount = tx.Outputs.Count
+        });
+    }
+    catch (System.Security.Cryptography.CryptographicException)
+    {
+        return Results.BadRequest("Wrong passphrase");
+    }
+    catch (Exception ex)
+    {
+        return Results.BadRequest(ex.Message);
+    }
+}).WithTags("Dashboard");
+
 // Fee estimation for send form
 app.MapGet("/api/dashboard/fee-estimates", async (IBlockchainBackend chain) =>
 {
@@ -909,3 +978,4 @@ record RestoreRequest(string Mnemonic, string Passphrase, string? Name = null);
 record CreateWalletRequest(string Passphrase, string? Name = null, int? WordCount = null);
 record MixingStartRequest(string Passphrase);
 record AddressBookRequest(string Label, string Address);
+record SendRequest(string Destination, long AmountSat, long FeeRateSatPerVb = 2, string Strategy = "PrivacyFirst", string Passphrase = "");
