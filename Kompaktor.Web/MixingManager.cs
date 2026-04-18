@@ -28,6 +28,7 @@ public class MixingManager : IAsyncDisposable
     public int CompletedRounds => _service?.CompletedRounds ?? 0;
     public int FailedRounds => _service?.FailedRounds ?? 0;
     public Uri? CoordinatorUri { get; private set; }
+    public bool TorEnabled { get; private set; }
 
     public string? ActiveRoundPhase
     {
@@ -59,7 +60,7 @@ public class MixingManager : IAsyncDisposable
         _eventBus = eventBus;
     }
 
-    public async Task<string> StartAsync(string passphrase, Uri coordinatorUri)
+    public async Task<string> StartAsync(string passphrase, Uri coordinatorUri, TorOptions? torOptions = null)
     {
         lock (_lock)
         {
@@ -83,11 +84,16 @@ public class MixingManager : IAsyncDisposable
             ? new InsecureRandom()
             : (WasabiRandom)SecureRandom.Instance;
 
+        var circuitFactory = torOptions is not null
+            ? new TorCircuitFactory(torOptions)
+            : null;
+
         var options = new KompaktorServiceOptions
         {
             CoordinatorUri = coordinatorUri,
             Network = _network,
-            Random = random
+            Random = random,
+            CircuitFactory = circuitFactory
         };
 
         var service = new KompaktorService(options, scoringWallet, _logger);
@@ -130,6 +136,7 @@ public class MixingManager : IAsyncDisposable
         }
 
         CoordinatorUri = coordinatorUri;
+        TorEnabled = torOptions is not null;
         _eventBus.Publish("mixing");
         _logger.LogInformation("Auto-mixing started for wallet {WalletId}", wallet.WalletId);
         return "Started";

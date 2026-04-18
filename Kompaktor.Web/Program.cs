@@ -1095,7 +1095,8 @@ app.MapGet("/api/mixing/status", (MixingManager mixer) =>
         failedRounds = mixer.FailedRounds,
         coordinatorUrl = mixer.CoordinatorUri?.ToString(),
         activeRoundPhase = mixer.ActiveRoundPhase,
-        activeRoundInputs = mixer.ActiveRoundInputCount
+        activeRoundInputs = mixer.ActiveRoundInputCount,
+        torEnabled = mixer.TorEnabled
     });
 }).WithTags("Mixing");
 
@@ -1111,8 +1112,19 @@ app.MapPost("/api/mixing/start", async (MixingManager mixer, HttpContext ctx) =>
         var coordinatorUri = !string.IsNullOrWhiteSpace(body.CoordinatorUrl)
             ? new Uri(body.CoordinatorUrl)
             : new Uri($"{ctx.Request.Scheme}://localhost:{ctx.Connection.LocalPort}");
-        var result = await mixer.StartAsync(body.Passphrase, coordinatorUri);
-        return Results.Ok(new { status = result, coordinator = coordinatorUri.ToString() });
+
+        Kompaktor.TorOptions? torOptions = null;
+        if (!string.IsNullOrWhiteSpace(body.TorSocksHost))
+        {
+            torOptions = new Kompaktor.TorOptions
+            {
+                SocksHost = body.TorSocksHost,
+                SocksPort = body.TorSocksPort ?? 9050
+            };
+        }
+
+        var result = await mixer.StartAsync(body.Passphrase, coordinatorUri, torOptions);
+        return Results.Ok(new { status = result, coordinator = coordinatorUri.ToString(), torEnabled = torOptions is not null });
     }
     catch (Exception ex)
     {
@@ -1209,7 +1221,7 @@ record LabelRequest(string Text);
 record PassphraseRequest(string Passphrase);
 record RestoreRequest(string Mnemonic, string Passphrase, string? Name = null);
 record CreateWalletRequest(string Passphrase, string? Name = null, int? WordCount = null);
-record MixingStartRequest(string Passphrase, string? CoordinatorUrl = null);
+record MixingStartRequest(string Passphrase, string? CoordinatorUrl = null, string? TorSocksHost = null, int? TorSocksPort = null);
 record AddressBookRequest(string Label, string Address);
 record SendRequest(string Destination, long AmountSat, long FeeRateSatPerVb = 2, string Strategy = "PrivacyFirst", string Passphrase = "");
 record BroadcastPsbtRequest(string SignedPsbt);
