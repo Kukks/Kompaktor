@@ -114,6 +114,74 @@
         }
         .refresh-btn:hover { border-color: var(--accent); }
         .truncate { max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .frozen-row { opacity: 0.5; }
+        .freeze-btn, .unfreeze-btn {
+            background: none;
+            border: 1px solid var(--border);
+            color: var(--text-muted);
+            padding: 2px 8px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 11px;
+        }
+        .freeze-btn:hover { border-color: var(--yellow); color: var(--yellow); }
+        .unfreeze-btn { border-color: var(--yellow); color: var(--yellow); }
+        .unfreeze-btn:hover { border-color: var(--green); color: var(--green); }
+        .frozen-badge { background: rgba(210, 153, 34, 0.15); color: var(--yellow); padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+        .label-input {
+            background: var(--bg);
+            border: 1px solid var(--border);
+            color: var(--text);
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 11px;
+            width: 80px;
+        }
+        .label-input:focus { border-color: var(--accent); outline: none; }
+        .label-add-btn {
+            background: none;
+            border: 1px solid var(--border);
+            color: var(--accent);
+            padding: 2px 6px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 11px;
+        }
+        .label-add-btn:hover { border-color: var(--accent); }
+        .label-remove { cursor: pointer; margin-left: 2px; opacity: 0.6; }
+        .label-remove:hover { opacity: 1; }
+        .detail-panel {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 16px;
+            margin-top: 12px;
+            display: none;
+        }
+        .detail-panel h3 { font-size: 14px; margin-bottom: 8px; }
+        .detail-grid { display: grid; grid-template-columns: 140px 1fr; gap: 4px 12px; font-size: 13px; }
+        .detail-grid .label { color: var(--text-muted); }
+        .batch-bar {
+            display: none;
+            align-items: center;
+            gap: 12px;
+            padding: 8px 12px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            margin-bottom: 12px;
+            font-size: 13px;
+        }
+        .batch-bar button {
+            background: none;
+            border: 1px solid var(--border);
+            color: var(--text);
+            padding: 4px 10px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+        .batch-bar button:hover { border-color: var(--accent); }
     </style>
 </head>
 <body>
@@ -179,21 +247,31 @@
 
         <section>
             <h2>Wallet UTXOs</h2>
+            <div class="batch-bar" id="batchBar">
+                <span id="batchCount">0 selected</span>
+                <button onclick="batchFreeze(true)">Freeze Selected</button>
+                <button onclick="batchFreeze(false)">Unfreeze Selected</button>
+                <button onclick="clearSelection()">Clear</button>
+            </div>
             <table id="utxosTable">
                 <thead>
                     <tr>
+                        <th style="width:30px"><input type="checkbox" id="selectAll" onchange="toggleSelectAll(this)"></th>
                         <th>Outpoint</th>
                         <th>Amount</th>
                         <th>Anon Set</th>
                         <th>Score</th>
                         <th>CoinJoins</th>
                         <th>Labels</th>
+                        <th>Status</th>
+                        <th>Actions</th>
                     </tr>
                 </thead>
                 <tbody id="utxosBody">
-                    <tr><td colspan="6" class="empty">Loading...</td></tr>
+                    <tr><td colspan="9" class="empty">Loading...</td></tr>
                 </tbody>
             </table>
+            <div class="detail-panel" id="utxoDetail"></div>
         </section>
 
         <section>
@@ -334,21 +412,122 @@
             body.innerHTML = rows.join('') || '<tr><td colspan="5" class="empty">No active rounds</td></tr>';
         }
 
+        let selectedUtxos = new Set();
+
         async function loadUtxos() {
             const utxos = await fetchJson('/api/dashboard/utxos');
             const body = document.getElementById('utxosBody');
             if (!utxos || utxos.length === 0) {
-                body.innerHTML = '<tr><td colspan="6" class="empty">No UTXOs in wallet</td></tr>';
+                body.innerHTML = '<tr><td colspan="9" class="empty">No UTXOs in wallet</td></tr>';
                 return;
             }
-            body.innerHTML = utxos.map(u => `<tr>
-                <td class="truncate" title="${u.txId}:${u.outputIndex}">${truncate(u.txId)}:${u.outputIndex}</td>
+            body.innerHTML = utxos.map(u => `<tr class="${u.isFrozen ? 'frozen-row' : ''}" data-utxo-id="${u.id}">
+                <td><input type="checkbox" class="utxo-select" value="${u.id}" onchange="updateBatchBar()" ${selectedUtxos.has(u.id) ? 'checked' : ''}></td>
+                <td class="truncate" title="${esc(u.txId)}:${u.outputIndex}" style="cursor:pointer" onclick="showUtxoDetail(${u.id})">${truncate(u.txId)}:${u.outputIndex}</td>
                 <td>${u.amountBtc.toFixed(8)}</td>
                 <td>${u.rawAnonSet}</td>
                 <td><span class="score-badge ${scoreClass(u.effectiveScore)}">${u.effectiveScore}</span></td>
                 <td>${u.coinJoinCount}</td>
-                <td>${u.labels.map(l => `<span class="label-tag">${esc(l)}</span>`).join('')}</td>
+                <td>
+                    ${u.labels.map(l => `<span class="label-tag">${esc(l)}</span>`).join('')}
+                    <input class="label-input" placeholder="+label" onkeydown="if(event.key==='Enter')addLabel(${u.id},this.value,this)">
+                </td>
+                <td>${u.isFrozen ? '<span class="frozen-badge">FROZEN</span>' : '<span style="color:var(--green);font-size:11px">Active</span>'}</td>
+                <td>
+                    ${u.isFrozen
+                        ? `<button class="unfreeze-btn" onclick="toggleFreeze(${u.id},false)">Unfreeze</button>`
+                        : `<button class="freeze-btn" onclick="toggleFreeze(${u.id},true)">Freeze</button>`}
+                </td>
             </tr>`).join('');
+        }
+
+        async function toggleFreeze(utxoId, freeze) {
+            const url = freeze ? `/api/coin-control/freeze/${utxoId}` : `/api/coin-control/unfreeze/${utxoId}`;
+            await fetch(url, { method: 'POST' });
+            await loadUtxos();
+        }
+
+        async function batchFreeze(freeze) {
+            const ids = [...selectedUtxos];
+            if (ids.length === 0) return;
+            await fetch('/api/coin-control/batch-freeze', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ utxoIds: ids, freeze })
+            });
+            selectedUtxos.clear();
+            updateBatchBar();
+            await loadUtxos();
+        }
+
+        function updateBatchBar() {
+            const checks = document.querySelectorAll('.utxo-select:checked');
+            selectedUtxos = new Set([...checks].map(c => parseInt(c.value)));
+            const bar = document.getElementById('batchBar');
+            const count = document.getElementById('batchCount');
+            if (selectedUtxos.size > 0) {
+                bar.style.display = 'flex';
+                count.textContent = selectedUtxos.size + ' selected';
+            } else {
+                bar.style.display = 'none';
+            }
+        }
+
+        function toggleSelectAll(el) {
+            document.querySelectorAll('.utxo-select').forEach(c => { c.checked = el.checked; });
+            updateBatchBar();
+        }
+
+        function clearSelection() {
+            selectedUtxos.clear();
+            document.querySelectorAll('.utxo-select').forEach(c => { c.checked = false; });
+            document.getElementById('selectAll').checked = false;
+            updateBatchBar();
+        }
+
+        async function addLabel(utxoId, text, input) {
+            text = text.trim();
+            if (!text) return;
+            await fetch(`/api/coin-control/label/${utxoId}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text })
+            });
+            input.value = '';
+            await loadUtxos();
+        }
+
+        async function showUtxoDetail(utxoId) {
+            const panel = document.getElementById('utxoDetail');
+            const data = await fetchJson(`/api/coin-control/utxo/${utxoId}`);
+            if (!data) { panel.style.display = 'none'; return; }
+
+            panel.style.display = 'block';
+            panel.innerHTML = `
+                <h3>UTXO Detail</h3>
+                <div class="detail-grid">
+                    <span class="label">Outpoint</span><span>${esc(data.txId)}:${data.outputIndex}</span>
+                    <span class="label">Amount</span><span>${data.amountBtc.toFixed(8)} BTC (${data.amountSat.toLocaleString()} sat)</span>
+                    <span class="label">Block Height</span><span>${data.confirmedHeight ?? 'unconfirmed'}</span>
+                    <span class="label">Key Path</span><span>${esc(data.keyPath)}</span>
+                    <span class="label">Change</span><span>${data.isChange ? 'Yes' : 'No'}</span>
+                    <span class="label">Frozen</span><span>${data.isFrozen ? '<span class="frozen-badge">FROZEN</span>' : 'No'}</span>
+                    <span class="label">Spent</span><span>${data.isSpent ? esc(data.spentByTxId || 'Yes') : 'No'}</span>
+                    <span class="label">Labels</span>
+                    <span>
+                        ${data.labels.map(l => `<span class="label-tag">${esc(l.text)}<span class="label-remove" onclick="removeLabel(${utxoId},${l.id})">x</span></span>`).join(' ')}
+                        <input class="label-input" placeholder="+label" onkeydown="if(event.key==='Enter'){addLabel(${utxoId},this.value,this);showUtxoDetail(${utxoId})}">
+                    </span>
+                    <span class="label">CoinJoin History</span>
+                    <span>${data.coinjoinHistory.length === 0 ? 'None' :
+                        data.coinjoinHistory.map(h => `${esc(h.role)} in ${truncate(h.roundId, 8)} (${esc(h.status)})`).join('<br>')}</span>
+                </div>`;
+        }
+
+        async function removeLabel(utxoId, labelId) {
+            await fetch(`/api/coin-control/label/${utxoId}/${labelId}`, { method: 'DELETE' });
+            await showUtxoDetail(utxoId);
+            await loadUtxos();
         }
 
         async function loadCoinjoins() {

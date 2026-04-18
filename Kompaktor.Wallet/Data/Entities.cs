@@ -49,6 +49,7 @@ public class UtxoEntity
     public int? ConfirmedHeight { get; set; }
     public string? SpentByTxId { get; set; }
     public bool IsCoinBase { get; set; }
+    public bool IsFrozen { get; set; }
 
     public AddressEntity Address { get; set; } = null!;
 }

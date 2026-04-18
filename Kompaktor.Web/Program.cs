@@ -180,18 +180,20 @@ app.MapGet("/api/dashboard/utxos", async (WalletDbContext db) =>
     if (wallet is null) return Results.Ok(Array.Empty<object>());
 
     var selector = new WalletCoinSelector(db);
-    var scored = await selector.GetScoredUtxosAsync(wallet.Id);
+    var scored = await selector.GetScoredUtxosAsync(wallet.Id, includeFrozen: true);
 
     var result = scored
         .OrderByDescending(s => s.Utxo.AmountSat)
         .Take(100)
         .Select(s => new
         {
+            id = s.Utxo.Id,
             txId = s.Utxo.TxId,
             outputIndex = s.Utxo.OutputIndex,
             amountSat = s.Utxo.AmountSat,
             amountBtc = s.Utxo.AmountSat / 100_000_000.0,
             confirmedHeight = s.Utxo.ConfirmedHeight,
+            isFrozen = s.Utxo.IsFrozen,
             rawAnonSet = s.Score.RawAnonSet,
             effectiveScore = Math.Round(s.Score.EffectiveScore, 2),
             coinJoinCount = s.Score.CoinJoinCount,
@@ -354,6 +356,124 @@ app.MapGet("/api/dashboard/transactions", async (WalletDbContext db) =>
     return Results.Ok(txGroups);
 }).WithTags("Dashboard");
 
+// Coin control: freeze/unfreeze UTXOs
+app.MapPost("/api/coin-control/freeze/{utxoId}", async (int utxoId, WalletDbContext db) =>
+{
+    var utxo = await db.Utxos.FindAsync(utxoId);
+    if (utxo is null) return Results.NotFound();
+
+    utxo.IsFrozen = true;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { utxoId, frozen = true });
+}).WithTags("CoinControl");
+
+app.MapPost("/api/coin-control/unfreeze/{utxoId}", async (int utxoId, WalletDbContext db) =>
+{
+    var utxo = await db.Utxos.FindAsync(utxoId);
+    if (utxo is null) return Results.NotFound();
+
+    utxo.IsFrozen = false;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { utxoId, frozen = false });
+}).WithTags("CoinControl");
+
+// Coin control: batch freeze/unfreeze
+app.MapPost("/api/coin-control/batch-freeze", async (WalletDbContext db, HttpContext ctx) =>
+{
+    var body = await ctx.Request.ReadFromJsonAsync<BatchFreezeRequest>();
+    if (body is null) return Results.BadRequest("Invalid request");
+
+    var utxos = await db.Utxos
+        .Where(u => body.UtxoIds.Contains(u.Id))
+        .ToListAsync();
+
+    foreach (var utxo in utxos)
+        utxo.IsFrozen = body.Freeze;
+
+    await db.SaveChangesAsync();
+    return Results.Ok(new { updated = utxos.Count, frozen = body.Freeze });
+}).WithTags("CoinControl");
+
+// Labels: add label to a UTXO
+app.MapPost("/api/coin-control/label/{utxoId}", async (int utxoId, WalletDbContext db, HttpContext ctx) =>
+{
+    var body = await ctx.Request.ReadFromJsonAsync<LabelRequest>();
+    if (body is null || string.IsNullOrWhiteSpace(body.Text))
+        return Results.BadRequest("Label text required");
+
+    var utxo = await db.Utxos.FindAsync(utxoId);
+    if (utxo is null) return Results.NotFound();
+
+    // Don't add duplicate labels
+    var exists = await db.Labels.AnyAsync(l =>
+        l.EntityType == "Utxo" && l.EntityId == utxoId.ToString() && l.Text == body.Text);
+    if (exists) return Results.Ok(new { utxoId, label = body.Text, status = "already_exists" });
+
+    db.Labels.Add(new LabelEntity
+    {
+        EntityType = "Utxo",
+        EntityId = utxoId.ToString(),
+        Text = body.Text
+    });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { utxoId, label = body.Text, status = "added" });
+}).WithTags("CoinControl");
+
+// Labels: remove label from a UTXO
+app.MapDelete("/api/coin-control/label/{utxoId}/{labelId}", async (int utxoId, int labelId, WalletDbContext db) =>
+{
+    var label = await db.Labels.FindAsync(labelId);
+    if (label is null || label.EntityType != "Utxo" || label.EntityId != utxoId.ToString())
+        return Results.NotFound();
+
+    db.Labels.Remove(label);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { utxoId, labelId, status = "removed" });
+}).WithTags("CoinControl");
+
+// Coin control: get UTXO detail with all labels and coinjoin history
+app.MapGet("/api/coin-control/utxo/{utxoId}", async (int utxoId, WalletDbContext db) =>
+{
+    var utxo = await db.Utxos
+        .Include(u => u.Address)
+        .ThenInclude(a => a.Account)
+        .FirstOrDefaultAsync(u => u.Id == utxoId);
+
+    if (utxo is null) return Results.NotFound();
+
+    var labels = await db.Labels
+        .Where(l => l.EntityType == "Utxo" && l.EntityId == utxoId.ToString())
+        .ToListAsync();
+
+    var participations = await db.Set<CoinJoinParticipationEntity>()
+        .Include(p => p.CoinJoinRecord)
+        .Where(p => p.UtxoId == utxoId)
+        .ToListAsync();
+
+    return Results.Ok(new
+    {
+        id = utxo.Id,
+        txId = utxo.TxId,
+        outputIndex = utxo.OutputIndex,
+        amountSat = utxo.AmountSat,
+        amountBtc = utxo.AmountSat / 100_000_000.0,
+        confirmedHeight = utxo.ConfirmedHeight,
+        isFrozen = utxo.IsFrozen,
+        isSpent = utxo.SpentByTxId != null,
+        spentByTxId = utxo.SpentByTxId,
+        keyPath = utxo.Address.KeyPath,
+        isChange = utxo.Address.IsChange,
+        labels = labels.Select(l => new { id = l.Id, text = l.Text, createdAt = l.CreatedAt }),
+        coinjoinHistory = participations.Select(p => new
+        {
+            roundId = p.CoinJoinRecord.RoundId,
+            role = p.Role,
+            status = p.CoinJoinRecord.Status,
+            createdAt = p.CoinJoinRecord.CreatedAt
+        })
+    });
+}).WithTags("CoinControl");
+
 // Health check
 app.MapGet("/health", (KompaktorRoundManager manager) =>
 {
@@ -375,3 +495,5 @@ app.MapFallbackToFile("index.html");
 app.Run();
 
 record SendPlanRequest(string Destination, long AmountSat, long FeeRateSatPerVb = 2, string Strategy = "PrivacyFirst");
+record BatchFreezeRequest(int[] UtxoIds, bool Freeze);
+record LabelRequest(string Text);

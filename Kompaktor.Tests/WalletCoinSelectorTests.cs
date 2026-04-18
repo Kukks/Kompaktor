@@ -297,4 +297,132 @@ public class WalletCoinSelectorTests : IDisposable
         Assert.Single(scored);
         Assert.Equal("tx1", scored[0].Utxo.TxId);
     }
+
+    [Fact]
+    public async Task GetScoredUtxos_ExcludesFrozenByDefault()
+    {
+        var (wallet, address) = SeedWalletWithAddress();
+
+        _db.Utxos.Add(new UtxoEntity
+        {
+            TxId = "tx1", OutputIndex = 0, AddressId = address.Id,
+            AmountSat = 100_000, ScriptPubKey = [0xAA], ConfirmedHeight = 100
+        });
+        _db.Utxos.Add(new UtxoEntity
+        {
+            TxId = "tx2", OutputIndex = 0, AddressId = address.Id,
+            AmountSat = 200_000, ScriptPubKey = [0xAA], ConfirmedHeight = 101,
+            IsFrozen = true
+        });
+        _db.SaveChanges();
+
+        var selector = new WalletCoinSelector(_db);
+        var scored = await selector.GetScoredUtxosAsync(wallet.Id);
+
+        Assert.Single(scored);
+        Assert.Equal("tx1", scored[0].Utxo.TxId);
+    }
+
+    [Fact]
+    public async Task GetScoredUtxos_IncludesFrozenWhenRequested()
+    {
+        var (wallet, address) = SeedWalletWithAddress();
+
+        _db.Utxos.Add(new UtxoEntity
+        {
+            TxId = "tx1", OutputIndex = 0, AddressId = address.Id,
+            AmountSat = 100_000, ScriptPubKey = [0xAA], ConfirmedHeight = 100
+        });
+        _db.Utxos.Add(new UtxoEntity
+        {
+            TxId = "tx2", OutputIndex = 0, AddressId = address.Id,
+            AmountSat = 200_000, ScriptPubKey = [0xAA], ConfirmedHeight = 101,
+            IsFrozen = true
+        });
+        _db.SaveChanges();
+
+        var selector = new WalletCoinSelector(_db);
+        var scored = await selector.GetScoredUtxosAsync(wallet.Id, includeFrozen: true);
+
+        Assert.Equal(2, scored.Count);
+    }
+
+    [Fact]
+    public async Task GetCoinjoinCandidates_ExcludesFrozenCoins()
+    {
+        var (wallet, address) = SeedWalletWithAddress();
+
+        // Low-score coin that would normally be a candidate — but frozen
+        _db.Utxos.Add(new UtxoEntity
+        {
+            TxId = "tx1", OutputIndex = 0, AddressId = address.Id,
+            AmountSat = 100_000, ScriptPubKey = [0xAA], ConfirmedHeight = 100,
+            IsFrozen = true
+        });
+        // Unfrozen low-score coin
+        _db.Utxos.Add(new UtxoEntity
+        {
+            TxId = "tx2", OutputIndex = 0, AddressId = address.Id,
+            AmountSat = 50_000, ScriptPubKey = [0xAA], ConfirmedHeight = 101
+        });
+        _db.SaveChanges();
+
+        var selector = new WalletCoinSelector(_db);
+        var candidates = await selector.GetCoinjoinCandidatesAsync(wallet.Id);
+
+        // Only the unfrozen coin should be a candidate
+        Assert.Single(candidates);
+        Assert.Equal("tx2", candidates[0].Utxo.TxId);
+    }
+
+    [Fact]
+    public async Task SelectForSpend_ExcludesFrozenCoins()
+    {
+        var (wallet, address) = SeedWalletWithAddress();
+
+        _db.Utxos.Add(new UtxoEntity
+        {
+            TxId = "tx1", OutputIndex = 0, AddressId = address.Id,
+            AmountSat = 500_000, ScriptPubKey = [0xAA], ConfirmedHeight = 100,
+            IsFrozen = true
+        });
+        _db.Utxos.Add(new UtxoEntity
+        {
+            TxId = "tx2", OutputIndex = 0, AddressId = address.Id,
+            AmountSat = 200_000, ScriptPubKey = [0xAA], ConfirmedHeight = 101
+        });
+        _db.SaveChanges();
+
+        var selector = new WalletCoinSelector(_db);
+        var result = await selector.SelectForSpendAsync(wallet.Id, 100_000);
+
+        // Should only select from the unfrozen coin
+        Assert.All(result.Selected, s => Assert.Equal("tx2", s.Utxo.TxId));
+    }
+
+    [Fact]
+    public async Task GetPrivacySummary_ExcludesFrozenCoins()
+    {
+        var (wallet, address) = SeedWalletWithAddress();
+
+        _db.Utxos.Add(new UtxoEntity
+        {
+            TxId = "tx1", OutputIndex = 0, AddressId = address.Id,
+            AmountSat = 100_000, ScriptPubKey = [0xAA], ConfirmedHeight = 100
+        });
+        _db.Utxos.Add(new UtxoEntity
+        {
+            TxId = "tx2", OutputIndex = 0, AddressId = address.Id,
+            AmountSat = 300_000, ScriptPubKey = [0xAA], ConfirmedHeight = 101,
+            IsFrozen = true
+        });
+        _db.SaveChanges();
+
+        var selector = new WalletCoinSelector(_db);
+        var summary = await selector.GetPrivacySummaryAsync(wallet.Id);
+
+        // Frozen coin should be excluded from summary
+        Assert.Equal(1, summary.TotalUtxos);
+        Assert.Equal(100_000, summary.TotalAmountSat);
+    }
 }

@@ -25,16 +25,21 @@ public class WalletCoinSelector
     /// Loads and scores all unspent confirmed UTXOs for a wallet.
     /// </summary>
     public async Task<IReadOnlyList<ScoredUtxo>> GetScoredUtxosAsync(
-        string walletId, CancellationToken ct = default)
+        string walletId, bool includeFrozen = false, CancellationToken ct = default)
     {
-        var utxos = await _db.Utxos
+        var query = _db.Utxos
             .Include(u => u.Address)
             .ThenInclude(a => a.Account)
             .ThenInclude(acc => acc.Wallet)
             .Include(u => u.Address)
             .ThenInclude(a => a.Utxos)
             .Where(u => u.SpentByTxId == null && u.ConfirmedHeight != null)
-            .Where(u => u.Address.Account.Wallet.Id == walletId)
+            .Where(u => u.Address.Account.Wallet.Id == walletId);
+
+        if (!includeFrozen)
+            query = query.Where(u => !u.IsFrozen);
+
+        var utxos = await query
             .ToListAsync(ct);
 
         var utxoIds = utxos.Select(u => u.Id).ToHashSet();
@@ -79,7 +84,7 @@ public class WalletCoinSelector
         CoinSelectionStrategy strategy = CoinSelectionStrategy.PrivacyFirst,
         CancellationToken ct = default)
     {
-        var scored = await GetScoredUtxosAsync(walletId, ct);
+        var scored = await GetScoredUtxosAsync(walletId, ct: ct);
         return _advisor.SelectCoins(scored, targetAmountSat, strategy);
     }
 
@@ -92,7 +97,7 @@ public class WalletCoinSelector
         double? minEffectiveScore = null,
         CancellationToken ct = default)
     {
-        var scored = await GetScoredUtxosAsync(walletId, ct);
+        var scored = await GetScoredUtxosAsync(walletId, ct: ct);
         return _advisor.GetCoinjoinCandidates(scored, minEffectiveScore);
     }
 
@@ -103,7 +108,7 @@ public class WalletCoinSelector
     public async Task<WalletPrivacySummary> GetPrivacySummaryAsync(
         string walletId, CancellationToken ct = default)
     {
-        var scored = await GetScoredUtxosAsync(walletId, ct);
+        var scored = await GetScoredUtxosAsync(walletId, ct: ct);
 
         if (scored.Count == 0)
             return new WalletPrivacySummary(0, 0, 0, 0, 0, 0, 0);
