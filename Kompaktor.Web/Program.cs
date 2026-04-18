@@ -1239,7 +1239,9 @@ app.MapGet("/api/mixing/status", (MixingManager mixer) =>
         activeRoundPhase = mixer.ActiveRoundPhase,
         activeRoundInputs = mixer.ActiveRoundInputCount,
         torEnabled = mixer.TorEnabled,
-        mixingOutpoints = mixer.ActiveMixingOutpoints
+        mixingOutpoints = mixer.ActiveMixingOutpoints,
+        lastRoundStatus = mixer.LastRoundStatus,
+        lastRoundFailureReason = mixer.LastRoundFailureReason
     });
 }).WithTags("Mixing");
 

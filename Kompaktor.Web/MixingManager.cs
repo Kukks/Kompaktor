@@ -29,6 +29,8 @@ public class MixingManager : IAsyncDisposable
     public int FailedRounds => _service?.FailedRounds ?? 0;
     public Uri? CoordinatorUri { get; private set; }
     public bool TorEnabled { get; private set; }
+    public string? LastRoundStatus { get; private set; }
+    public string? LastRoundFailureReason { get; private set; }
 
     public string? ActiveRoundPhase
     {
@@ -133,6 +135,11 @@ public class MixingManager : IAsyncDisposable
                     }
                 });
             }
+
+            LastRoundStatus = result.Success ? "Completed" : "Failed";
+            LastRoundFailureReason = result.FailureReason == RoundFailureReason.None
+                ? null
+                : result.FailureReason.ToString();
 
             _eventBus.Publish("mixing");
             _eventBus.Publish("utxos");

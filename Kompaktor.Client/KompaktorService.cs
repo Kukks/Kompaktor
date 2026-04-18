@@ -1,5 +1,6 @@
 using Kompaktor.Behaviors;
 using Kompaktor.Contracts;
+using Kompaktor.Errors;
 using Kompaktor.Models;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -331,7 +332,10 @@ public class KompaktorService : IAsyncDisposable
             _logger.LogError(ex, "Failed to start polling for round {RoundId}", roundId);
             round.Dispose();
             pollApi.Dispose();
-            return new KompaktorRoundResult(roundId, false, ex.Message);
+            var reason = ex is HttpRequestException or TimeoutException
+                ? RoundFailureReason.NetworkError
+                : RoundFailureReason.Unknown;
+            return new KompaktorRoundResult(roundId, false, ex.Message, FailureReason: reason);
         }
 
         // Create behavior traits for this round
@@ -382,17 +386,24 @@ public class KompaktorService : IAsyncDisposable
                 tx,
                 ourInputs,
                 ourOutputScripts,
-                totalInputs);
+                totalInputs,
+                success ? RoundFailureReason.None : RoundFailureReason.RoundFailed);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             _logger.LogInformation("Round {RoundId} cancelled", roundId);
-            return new KompaktorRoundResult(roundId, false, "Cancelled");
+            return new KompaktorRoundResult(roundId, false, "Cancelled", FailureReason: RoundFailureReason.Cancelled);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Round {RoundId} failed with exception", roundId);
-            return new KompaktorRoundResult(roundId, false, ex.Message);
+            var failReason = ex switch
+            {
+                HttpRequestException or TimeoutException => RoundFailureReason.NetworkError,
+                KompaktorProtocolException => RoundFailureReason.ProtocolError,
+                _ => RoundFailureReason.Unknown
+            };
+            return new KompaktorRoundResult(roundId, false, ex.Message, FailureReason: failReason);
         }
         finally
         {
@@ -423,4 +434,17 @@ public record KompaktorRoundResult(
     Transaction? Transaction = null,
     OutPoint[]? OurInputOutpoints = null,
     Script[]? OurOutputScripts = null,
-    int TotalParticipantInputs = 0);
+    int TotalParticipantInputs = 0,
+    RoundFailureReason FailureReason = RoundFailureReason.None);
+
+public enum RoundFailureReason
+{
+    None,
+    RoundFailed,
+    NetworkError,
+    ProtocolError,
+    Cancelled,
+    Timeout,
+    IntersectionBackoff,
+    Unknown
+}

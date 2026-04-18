@@ -1944,7 +1944,8 @@
             }
             if (data.failedRounds > lastMixFailed) {
                 const diff = data.failedRounds - lastMixFailed;
-                addMixEvent('\u2717', `${diff} round${diff > 1 ? 's' : ''} failed`);
+                const reason = data.lastRoundFailureReason ? ` (${data.lastRoundFailureReason})` : '';
+                addMixEvent('\u2717', `${diff} round${diff > 1 ? 's' : ''} failed${reason}`);
             }
             if (data.running && data.activeRoundPhase && data.activeRoundPhase !== lastMixPhase) {
                 const inputs = data.activeRoundInputs ? ` (${data.activeRoundInputs} inputs)` : '';
