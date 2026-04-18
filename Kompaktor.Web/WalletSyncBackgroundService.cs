@@ -26,6 +26,16 @@ public class WalletSyncBackgroundService : BackgroundService
     public DateTimeOffset? LastSyncTime { get; private set; }
     public int LastSyncUtxoCount { get; private set; }
 
+    private readonly SemaphoreSlim _resyncSignal = new(0, 1);
+
+    /// <summary>
+    /// Signals the background service to perform an immediate resync.
+    /// </summary>
+    public void TriggerResync()
+    {
+        _resyncSignal.Release();
+    }
+
     public WalletSyncBackgroundService(
         IServiceProvider services,
         IBlockchainBackend blockchain,
@@ -106,12 +116,20 @@ public class WalletSyncBackgroundService : BackgroundService
             _logger.LogError(ex, "Failed to start real-time monitoring");
         }
 
-        // Periodic re-sync every 60 seconds to catch anything missed
+        // Periodic re-sync every 60 seconds, or immediately on manual trigger
         while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
-                await Task.Delay(TimeSpan.FromSeconds(60), stoppingToken);
+                // Wait for either 60s timeout or manual resync trigger
+                using var delayCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+                var delayTask = Task.Delay(TimeSpan.FromSeconds(60), delayCts.Token);
+                var signalTask = _resyncSignal.WaitAsync(delayCts.Token);
+                await Task.WhenAny(delayTask, signalTask);
+                delayCts.Cancel(); // Cancel whichever didn't finish
+
+                if (stoppingToken.IsCancellationRequested) break;
+
                 IsSyncing = true;
                 await _syncService.FullSyncAsync(wallet.Id, stoppingToken);
                 LastSyncTime = DateTimeOffset.UtcNow;

@@ -1336,6 +1336,15 @@ app.MapGet("/api/wallet/sync-status", (WalletSyncBackgroundService sync) =>
     });
 }).WithTags("Wallet");
 
+app.MapPost("/api/wallet/resync", (WalletSyncBackgroundService sync) =>
+{
+    if (sync.IsSyncing)
+        return Results.Ok(new { status = "already syncing" });
+
+    sync.TriggerResync();
+    return Results.Ok(new { status = "resync triggered" });
+}).WithTags("Wallet");
+
 // Auto-mixing: start/stop/status
 app.MapGet("/api/mixing/status", (MixingManager mixer) =>
 {

@@ -1124,7 +1124,7 @@
             </section>
 
             <section>
-                <h2>Sync Status</h2>
+                <h2>Sync Status <button class="refresh-btn" onclick="triggerResync()" id="resyncBtn" style="font-size:11px;padding:2px 8px;margin-left:8px">Resync Now</button></h2>
                 <div class="detail-grid" id="syncDetailGrid" style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:16px;font-size:13px">
                     <span class="label">Status</span><span id="settSyncStatus">-</span>
                     <span class="label">Last Sync</span><span id="settLastSync">-</span>
@@ -2500,6 +2500,23 @@
             } else {
                 activeTab = 'overview';
             }
+        }
+
+        // Trigger manual wallet resync
+        async function triggerResync() {
+            const btn = document.getElementById('resyncBtn');
+            btn.disabled = true;
+            btn.textContent = 'Syncing...';
+            try {
+                const res = await fetch('/api/wallet/resync', { method: 'POST' });
+                const data = await res.json();
+                showToast(data.status === 'already syncing' ? 'Sync already in progress' : 'Resync triggered', 'info');
+            } catch (err) {
+                showToast('Resync failed: ' + err.message, 'warning');
+            }
+            btn.disabled = false;
+            btn.textContent = 'Resync Now';
+            setTimeout(() => loadSettingsInfo(), 2000);
         }
 
         // Settings: export mnemonic
