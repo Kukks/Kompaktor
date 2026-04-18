@@ -893,7 +893,10 @@ app.MapGet("/api/mixing/status", (MixingManager mixer) =>
     {
         running = mixer.IsRunning,
         completedRounds = mixer.CompletedRounds,
-        failedRounds = mixer.FailedRounds
+        failedRounds = mixer.FailedRounds,
+        coordinatorUrl = mixer.CoordinatorUri?.ToString(),
+        activeRoundPhase = mixer.ActiveRoundPhase,
+        activeRoundInputs = mixer.ActiveRoundInputCount
     });
 }).WithTags("Mixing");
 

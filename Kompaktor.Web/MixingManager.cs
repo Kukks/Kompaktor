@@ -27,6 +27,25 @@ public class MixingManager : IAsyncDisposable
     public bool IsRunning => _service?.IsRunning == true;
     public int CompletedRounds => _service?.CompletedRounds ?? 0;
     public int FailedRounds => _service?.FailedRounds ?? 0;
+    public Uri? CoordinatorUri { get; private set; }
+
+    public string? ActiveRoundPhase
+    {
+        get
+        {
+            var round = _service?.ActiveRound;
+            return round?.Round?.Status.ToString();
+        }
+    }
+
+    public int? ActiveRoundInputCount
+    {
+        get
+        {
+            var round = _service?.ActiveRound;
+            return round?.Round?.Inputs.Count;
+        }
+    }
 
     public MixingManager(
         IServiceProvider services,
@@ -110,6 +129,7 @@ public class MixingManager : IAsyncDisposable
             _service = service;
         }
 
+        CoordinatorUri = coordinatorUri;
         _eventBus.Publish("mixing");
         _logger.LogInformation("Auto-mixing started for wallet {WalletId}", wallet.WalletId);
         return "Started";

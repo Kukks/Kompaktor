@@ -574,6 +574,7 @@
             <div class="mixing-stats">
                 <span><span style="color:var(--green)">&#10003;</span> <span id="mixCompleted">0</span> completed</span>
                 <span><span style="color:var(--red)">&#10007;</span> <span id="mixFailed">0</span> failed</span>
+                <span id="mixPhase" style="font-size:11px;color:var(--text-muted)"></span>
             </div>
         </div>
 
@@ -1410,6 +1411,13 @@
             label.style.color = mixingRunning ? 'var(--green)' : 'var(--text-muted)';
             document.getElementById('mixCompleted').textContent = data.completedRounds;
             document.getElementById('mixFailed').textContent = data.failedRounds;
+            const phaseEl = document.getElementById('mixPhase');
+            if (data.running && data.activeRoundPhase) {
+                const inputs = data.activeRoundInputs ? ` (${data.activeRoundInputs} inputs)` : '';
+                phaseEl.textContent = `${data.activeRoundPhase}${inputs}`;
+            } else {
+                phaseEl.textContent = '';
+            }
         }
 
         function toggleMixing() {
