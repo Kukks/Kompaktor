@@ -237,7 +237,9 @@ public class KompaktorService : IAsyncDisposable
                 else
                 {
                     FailedRounds++;
-                    _consecutiveFailures++;
+                    // Network errors are transient — don't count toward pause threshold
+                    if (result.FailureReason != RoundFailureReason.NetworkError)
+                        _consecutiveFailures++;
                 }
 
                 RoundCompleted?.Invoke(result);
