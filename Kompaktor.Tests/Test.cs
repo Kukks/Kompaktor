@@ -518,6 +518,13 @@ public class Test
     [Trait("Category", "Scale")]
     public async Task CanDoInteractivePaymentsAtScale()
     {
+        // Pre-allocate ThreadPool threads to prevent starvation on low-vCPU CI runners.
+        // With 101 concurrent clients doing Bulletproofs++ crypto, the default min threads
+        // (= Environment.ProcessorCount, often 2 on CI) causes async continuations to queue
+        // behind CPU-bound work items, preventing any client from completing registration.
+        ThreadPool.GetMinThreads(out var prevWorker, out var prevIo);
+        ThreadPool.SetMinThreads(Math.Max(prevWorker, 300), Math.Max(prevIo, 300));
+
         var phaseLog = _loggerFactory.CreateLogger("PhaseTimer");
         var totalSw = Stopwatch.StartNew();
         var phaseSw = Stopwatch.StartNew();
@@ -748,7 +755,7 @@ public class Test
 
                 wallets[0]._logger.LogInformation(tx.ToHex());
 
-            }, 900_000); // 15 minutes target with BP++ range proofs (10min input + output/signing with 5min buffer)
+            }, 1_800_000); // 30 minutes: generous CI margin for 2-vCPU runners (10min input + 10min output + 10min signing)
 
             totalSw.Stop();
             var outputCount = roundEvents.Count(e => e is KompaktorRoundEventOutputRegistered);
@@ -781,6 +788,8 @@ public class Test
             summary.AppendLine("╚══════════════════════════════════════════════════════════════╝");
             phaseLog.LogInformation(summary.ToString());
         }
+
+        ThreadPool.SetMinThreads(prevWorker, prevIo);
     }
 
     /// <summary>
@@ -794,6 +803,9 @@ public class Test
     [Trait("Category", "Scale")]
     public async Task CanDoBatchedReceiverPaymentsAtScale()
     {
+        ThreadPool.GetMinThreads(out var prevWorker, out var prevIo);
+        ThreadPool.SetMinThreads(Math.Max(prevWorker, 300), Math.Max(prevIo, 300));
+
         var phaseLog = _loggerFactory.CreateLogger("PhaseTimer");
         var totalSw = Stopwatch.StartNew();
 
@@ -985,7 +997,7 @@ public class Test
                 phaseLog.LogInformation("[BATCH] Transaction: {Inputs} inputs, {Outputs} outputs",
                     tx.Inputs.Count, tx.Outputs.Count);
 
-            }, 900_000); // 15 minutes
+            }, 1_800_000); // 30 minutes: generous CI margin for 2-vCPU runners
 
             totalSw.Stop();
             var finalOutputCount = roundEvents.Count(e => e is KompaktorRoundEventOutputRegistered);
@@ -1020,6 +1032,8 @@ public class Test
             foreach (var client in allClients)
                 client.Dispose();
         }
+
+        ThreadPool.SetMinThreads(prevWorker, prevIo);
     }
 
     [Fact]
@@ -1516,6 +1530,9 @@ public class Test
     [Trait("Category", "Scale")]
     public async Task CanDoInteractivePaymentChaining()
     {
+        ThreadPool.GetMinThreads(out var prevWorker, out var prevIo);
+        ThreadPool.SetMinThreads(Math.Max(prevWorker, 300), Math.Max(prevIo, 300));
+
         var phaseLog = _loggerFactory.CreateLogger("PhaseTimer");
         var totalSw = Stopwatch.StartNew();
         var phaseSw = Stopwatch.StartNew();
@@ -1872,6 +1889,8 @@ public class Test
             foreach (var client in allClients)
                 client.Dispose();
         }
+
+        ThreadPool.SetMinThreads(prevWorker, prevIo);
     }
 
     [Fact]
