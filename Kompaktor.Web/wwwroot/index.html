@@ -498,6 +498,32 @@
         .tab-panel { display: none; }
         .tab-panel.active { display: block; }
 
+        /* Event log */
+        .event-log {
+            max-height: 300px;
+            overflow-y: auto;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            font-size: 12px;
+            font-family: 'SFMono-Regular', Consolas, monospace;
+        }
+        .event-log-entry {
+            padding: 4px 10px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            gap: 8px;
+        }
+        .event-log-entry:last-child { border-bottom: none; }
+        .event-log-entry .etime { color: var(--text-muted); white-space: nowrap; }
+        .event-log-entry .etype { font-weight: 600; min-width: 70px; }
+        .event-log-entry .etype.rounds { color: var(--accent); }
+        .event-log-entry .etype.utxos { color: var(--green); }
+        .event-log-entry .etype.wallet { color: var(--yellow); }
+        .event-log-entry .etype.mixing { color: var(--orange); }
+        .event-log-entry .etype.connected { color: var(--green); }
+        .event-log-entry .emsg { color: var(--text-muted); }
+
         /* Responsive: mobile */
         @media (max-width: 768px) {
             .container { padding: 12px; }
@@ -893,6 +919,13 @@
                     <span class="label">Status</span><span id="settSyncStatus">-</span>
                     <span class="label">Last Sync</span><span id="settLastSync">-</span>
                     <span class="label">UTXOs Found</span><span id="settSyncUtxos">-</span>
+                </div>
+            </section>
+
+            <section>
+                <h2>Event Log <button class="refresh-btn" onclick="clearEventLog()" style="font-size:11px;padding:2px 8px;margin-left:8px">Clear</button></h2>
+                <div class="event-log" id="eventLog">
+                    <div class="event-log-entry"><span class="etime">-</span><span class="emsg">No events yet</span></div>
                 </div>
             </section>
         </div>
@@ -1685,6 +1718,41 @@
             updateConnectionStatus(sseConnected ? 'live' : 'polling');
         }
 
+        // Event log
+        const eventLogEntries = [];
+        const MAX_LOG_ENTRIES = 200;
+        const eventMessages = {
+            connected: 'SSE connection established',
+            rounds: 'Round state changed',
+            utxos: 'UTXO state updated',
+            wallet: 'Wallet state changed',
+            mixing: 'Mixing round completed'
+        };
+
+        function logEvent(type, message) {
+            const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+            eventLogEntries.unshift({ time, type, message: message || eventMessages[type] || type });
+            if (eventLogEntries.length > MAX_LOG_ENTRIES) eventLogEntries.pop();
+            renderEventLog();
+        }
+
+        function renderEventLog() {
+            const el = document.getElementById('eventLog');
+            if (!el) return;
+            if (eventLogEntries.length === 0) {
+                el.innerHTML = '<div class="event-log-entry"><span class="etime">-</span><span class="emsg">No events yet</span></div>';
+                return;
+            }
+            el.innerHTML = eventLogEntries.map(e =>
+                `<div class="event-log-entry"><span class="etime">${esc(e.time)}</span><span class="etype ${esc(e.type)}">${esc(e.type)}</span><span class="emsg">${esc(e.message)}</span></div>`
+            ).join('');
+        }
+
+        function clearEventLog() {
+            eventLogEntries.length = 0;
+            renderEventLog();
+        }
+
         // SSE: real-time updates with polling fallback
         let sseConnected = false;
         let pollTimer = null;
@@ -1695,6 +1763,7 @@
             source.addEventListener('connected', () => {
                 sseConnected = true;
                 updateConnectionStatus('live');
+                logEvent('connected');
                 // Stop polling — SSE is now the source of truth
                 if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
             });
@@ -1702,6 +1771,7 @@
             source.addEventListener('rounds', () => {
                 loadRounds();
                 loadSummary();
+                logEvent('rounds');
             });
 
             source.addEventListener('utxos', () => {
@@ -1709,17 +1779,20 @@
                 loadSummary();
                 loadPrivacySummary();
                 loadPrivacyDistribution();
+                logEvent('utxos');
                 showToast('UTXO state updated', 'info');
             });
 
             source.addEventListener('wallet', () => {
                 checkWallet();
+                logEvent('wallet');
                 showToast('Wallet state changed', 'info');
             });
 
             source.addEventListener('mixing', () => {
                 loadMixingStatus();
                 loadCoinjoins();
+                logEvent('mixing');
                 showToast('Mixing round completed', 'success');
             });
 
