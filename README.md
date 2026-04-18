@@ -172,7 +172,7 @@ Network identity isolation abstraction. `TorCircuitFactory` routes each identity
 
 ### `Kompaktor.Web`
 
-Combined coordinator and wallet dashboard in a single ASP.NET Core process. Runs the full coordinator (round management, scheduling) alongside dashboard API endpoints that expose wallet balance, privacy summary (average score, needs-mixing count), scored UTXOs with anonymity badges, coinjoin history, transaction history, and a send planning endpoint for previewing privacy-aware spending transactions. Includes coin control APIs for freezing/unfreezing UTXOs, managing labels, and viewing per-UTXO coinjoin history. Supports both Bitcoin Core RPC and Electrum backends via configuration. The frontend is a vanilla JS single-page dashboard with dark theme, auto-refresh, color-coded anonymity score indicators, interactive UTXO table with batch freeze operations, inline label editing, and a detail panel for individual coin inspection.
+Combined coordinator and wallet dashboard in a single ASP.NET Core process. Runs the full coordinator (round management, scheduling) alongside wallet management and dashboard APIs. Features include: wallet creation with mnemonic backup display, wallet restore from BIP-39 mnemonic, mnemonic export for backup, receive address generation (P2TR preferred), privacy summary with anonymity scoring, scored UTXOs with privacy badges, coin control (freeze/unfreeze, labels, batch operations), send transaction preview with post-mix spending warnings, coinjoin history with credential flow analysis, coordinator stats with round fill rates and demand metrics, and transaction history. Supports both Bitcoin Core RPC and Electrum backends via configuration. The frontend is a vanilla JS single-page dashboard with dark theme, auto-refresh, wallet setup wizard, receive address with copy-to-clipboard, interactive UTXO table with batch freeze operations, inline label editing, and a detail panel for individual coin inspection.
 
 ### Error Handling
 
@@ -404,6 +404,9 @@ The test suite includes 310+ tests covering:
 - WalletTransactionBuilder privacy-aware spending with strategy selection
 - Coin control: frozen UTXO exclusion from selection, candidates, summaries, and spend
 - Coin control: includeFrozen option for dashboard display queries
+- Post-mix spending warnings: wide anonymity spread, same-coinjoin output linking, unmixed coin advisory
+- Wallet restore from mnemonic with deterministic address verification
+- Mnemonic export with passphrase validation
 - Multi-server Electrum routing with round-robin assignment and script pinning
 - Credential lifecycle flow analysis with merge tree depth and fee calculation
 
