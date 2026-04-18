@@ -159,19 +159,19 @@ public class FreshAddressTests
 
     private class NoopWallet : IKompaktorWalletInterface
     {
-        public Task<Coin[]> GetCoins() => Task.FromResult(Array.Empty<Coin>());
-        public Task<NBitcoin.BIP322.BIP322Signature.Full> GenerateOwnershipProof(string message, Coin[] coins) => throw new NotImplementedException();
-        public Task<WitScript> GenerateWitness(Coin coin, Transaction tx, IEnumerable<Coin> txCoins) => throw new NotImplementedException();
+        public Task<Coin[]> GetCoins(CancellationToken ct = default) => Task.FromResult(Array.Empty<Coin>());
+        public Task<NBitcoin.BIP322.BIP322Signature.Full> GenerateOwnershipProof(string message, Coin[] coins, CancellationToken ct = default) => throw new NotImplementedException();
+        public Task<WitScript> GenerateWitness(Coin coin, Transaction tx, IEnumerable<Coin> txCoins, CancellationToken ct = default) => throw new NotImplementedException();
     }
 
     private class TrackingWallet : IKompaktorWalletInterface
     {
         public List<Script> ExposedScripts { get; } = new();
 
-        public Task<Coin[]> GetCoins() => Task.FromResult(Array.Empty<Coin>());
-        public Task<NBitcoin.BIP322.BIP322Signature.Full> GenerateOwnershipProof(string message, Coin[] coins) => throw new NotImplementedException();
-        public Task<WitScript> GenerateWitness(Coin coin, Transaction tx, IEnumerable<Coin> txCoins) => throw new NotImplementedException();
-        public Task MarkScriptsExposed(IEnumerable<Script> scripts)
+        public Task<Coin[]> GetCoins(CancellationToken ct = default) => Task.FromResult(Array.Empty<Coin>());
+        public Task<NBitcoin.BIP322.BIP322Signature.Full> GenerateOwnershipProof(string message, Coin[] coins, CancellationToken ct = default) => throw new NotImplementedException();
+        public Task<WitScript> GenerateWitness(Coin coin, Transaction tx, IEnumerable<Coin> txCoins, CancellationToken ct = default) => throw new NotImplementedException();
+        public Task MarkScriptsExposed(IEnumerable<Script> scripts, CancellationToken ct = default)
         {
             ExposedScripts.AddRange(scripts);
             return Task.CompletedTask;

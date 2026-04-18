@@ -291,7 +291,7 @@ public class KompaktorRoundClient : IDisposable
                     // Detects coordinator equivocation (serving different params to different clients).
                     await VerifyRoundConsistency();
 
-                    CoinCandidates = (await _walletInterface.GetCoins())
+                    CoinCandidates = (await _walletInterface.GetCoins(_cts.Token))
                         .Where(coin => Round.RoundEventCreated.InputAmount.Contains(coin.Amount)).ToList();
 
                     // Exclude coins that would reveal new wallet cluster pairings
@@ -366,7 +366,7 @@ public class KompaktorRoundClient : IDisposable
                 if (exposedScripts.Count > 0)
                 {
                     Logger.LogInformation($"Round ended ({Round.Status}) — marking {exposedScripts.Count} output scripts as exposed");
-                    await _walletInterface.MarkScriptsExposed(exposedScripts);
+                    await _walletInterface.MarkScriptsExposed(exposedScripts, _cts.Token);
                 }
             }
         }
@@ -481,7 +481,7 @@ public class KompaktorRoundClient : IDisposable
             return identity.RegisteredInputs.Select(async input =>
             {
                 var coin = RegisteredCoins.Value.First(coin => coin.Outpoint == input);
-                var witness = await _walletInterface.GenerateWitness(coin, tx, coins);
+                var witness = await _walletInterface.GenerateWitness(coin, tx, coins, _cts.Token);
                 return (identity.Api, new SignRequest()
                 {
                     OutPoint = coin.Outpoint,
@@ -576,7 +576,7 @@ public class KompaktorRoundClient : IDisposable
             {
                 var api = _factory.Create();
 
-                var ownershipProof = await _walletInterface.GenerateOwnershipProof(Round.RoundEventCreated.RoundId, [coin]);
+                var ownershipProof = await _walletInterface.GenerateOwnershipProof(Round.RoundEventCreated.RoundId, [coin], cts.Token);
 
                 var inputFee = ownershipProof.FundProofs.Sum(@in => coin.ScriptPubKey.EstimateFee(Round.RoundEventCreated.FeeRate));
                 var expectedCredentialAmount = coin.Amount - inputFee;
@@ -707,7 +707,7 @@ public class KompaktorRoundClient : IDisposable
         var invalidInputs = new List<OutPoint>();
         foreach (var coin in otherInputs)
         {
-            var result = await _walletInterface.VerifyUtxo(coin.Outpoint, coin.TxOut);
+            var result = await _walletInterface.VerifyUtxo(coin.Outpoint, coin.TxOut, _cts.Token);
             if (result == false)
             {
                 invalidInputs.Add(coin.Outpoint);

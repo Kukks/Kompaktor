@@ -187,9 +187,9 @@ public class OwnershipProofVerificationTests
 
     private class LightWallet : IKompaktorWalletInterface
     {
-        public Task<Coin[]> GetCoins() => Task.FromResult(Array.Empty<Coin>());
-        public Task<BIP322Signature.Full> GenerateOwnershipProof(string message, Coin[] coins) => throw new NotImplementedException();
-        public Task<WitScript> GenerateWitness(Coin coin, Transaction tx, IEnumerable<Coin> txCoins) => throw new NotImplementedException();
+        public Task<Coin[]> GetCoins(CancellationToken ct = default) => Task.FromResult(Array.Empty<Coin>());
+        public Task<BIP322Signature.Full> GenerateOwnershipProof(string message, Coin[] coins, CancellationToken ct = default) => throw new NotImplementedException();
+        public Task<WitScript> GenerateWitness(Coin coin, Transaction tx, IEnumerable<Coin> txCoins, CancellationToken ct = default) => throw new NotImplementedException();
     }
 
     private class FullNodeWallet : IKompaktorWalletInterface
@@ -197,10 +197,10 @@ public class OwnershipProofVerificationTests
         private readonly Dictionary<OutPoint, TxOut> _utxoSet;
         public FullNodeWallet(Dictionary<OutPoint, TxOut> utxoSet) => _utxoSet = utxoSet;
 
-        public Task<Coin[]> GetCoins() => Task.FromResult(Array.Empty<Coin>());
-        public Task<BIP322Signature.Full> GenerateOwnershipProof(string message, Coin[] coins) => throw new NotImplementedException();
-        public Task<WitScript> GenerateWitness(Coin coin, Transaction tx, IEnumerable<Coin> txCoins) => throw new NotImplementedException();
-        public Task<bool?> VerifyUtxo(OutPoint outpoint, TxOut expectedTxOut)
+        public Task<Coin[]> GetCoins(CancellationToken ct = default) => Task.FromResult(Array.Empty<Coin>());
+        public Task<BIP322Signature.Full> GenerateOwnershipProof(string message, Coin[] coins, CancellationToken ct = default) => throw new NotImplementedException();
+        public Task<WitScript> GenerateWitness(Coin coin, Transaction tx, IEnumerable<Coin> txCoins, CancellationToken ct = default) => throw new NotImplementedException();
+        public Task<bool?> VerifyUtxo(OutPoint outpoint, TxOut expectedTxOut, CancellationToken ct = default)
         {
             if (!_utxoSet.TryGetValue(outpoint, out var actual))
                 return Task.FromResult<bool?>(false);
@@ -214,10 +214,10 @@ public class OwnershipProofVerificationTests
         private readonly Dictionary<OutPoint, bool?> _results;
         public MixedWallet(Dictionary<OutPoint, bool?> results) => _results = results;
 
-        public Task<Coin[]> GetCoins() => Task.FromResult(Array.Empty<Coin>());
-        public Task<BIP322Signature.Full> GenerateOwnershipProof(string message, Coin[] coins) => throw new NotImplementedException();
-        public Task<WitScript> GenerateWitness(Coin coin, Transaction tx, IEnumerable<Coin> txCoins) => throw new NotImplementedException();
-        public Task<bool?> VerifyUtxo(OutPoint outpoint, TxOut expectedTxOut) =>
+        public Task<Coin[]> GetCoins(CancellationToken ct = default) => Task.FromResult(Array.Empty<Coin>());
+        public Task<BIP322Signature.Full> GenerateOwnershipProof(string message, Coin[] coins, CancellationToken ct = default) => throw new NotImplementedException();
+        public Task<WitScript> GenerateWitness(Coin coin, Transaction tx, IEnumerable<Coin> txCoins, CancellationToken ct = default) => throw new NotImplementedException();
+        public Task<bool?> VerifyUtxo(OutPoint outpoint, TxOut expectedTxOut, CancellationToken ct = default) =>
             Task.FromResult(_results.GetValueOrDefault(outpoint));
     }
 }

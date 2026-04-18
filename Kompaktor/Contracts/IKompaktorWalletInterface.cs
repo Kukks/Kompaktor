@@ -5,9 +5,9 @@ namespace Kompaktor.Contracts;
 
 public interface IKompaktorWalletInterface
 {
-    public Task<Coin[]> GetCoins();
-    public Task<BIP322Signature.Full> GenerateOwnershipProof(string message,Coin[] coins);
-    public Task<WitScript> GenerateWitness(Coin coin, Transaction tx, IEnumerable<Coin> txCoins);
+    public Task<Coin[]> GetCoins(CancellationToken ct = default);
+    public Task<BIP322Signature.Full> GenerateOwnershipProof(string message, Coin[] coins, CancellationToken ct = default);
+    public Task<WitScript> GenerateWitness(Coin coin, Transaction tx, IEnumerable<Coin> txCoins, CancellationToken ct = default);
 
     /// <summary>
     /// Verifies that a coin exists in the UTXO set with the claimed scriptPubKey and amount.
@@ -16,7 +16,7 @@ public interface IKompaktorWalletInterface
     /// (SPV/light client), true if verified, false if the UTXO doesn't match.
     /// Default implementation returns null (no verification capability).
     /// </summary>
-    Task<bool?> VerifyUtxo(OutPoint outpoint, TxOut expectedTxOut) => Task.FromResult<bool?>(null);
+    Task<bool?> VerifyUtxo(OutPoint outpoint, TxOut expectedTxOut, CancellationToken ct = default) => Task.FromResult<bool?>(null);
 
     /// <summary>
     /// Called when a round reaches a terminal state (Completed or Failed) after output addresses
@@ -24,5 +24,5 @@ public interface IKompaktorWalletInterface
     /// reuse them, to prevent cross-round address linking that enables intersection attacks.
     /// Default implementation is a no-op for backwards compatibility.
     /// </summary>
-    Task MarkScriptsExposed(IEnumerable<Script> scripts) => Task.CompletedTask;
+    Task MarkScriptsExposed(IEnumerable<Script> scripts, CancellationToken ct = default) => Task.CompletedTask;
 }

@@ -192,14 +192,14 @@ public class KompaktorHdWallet : IKompaktorWalletInterface
         return GetFreshAddressAsync(isChange: true).GetAwaiter().GetResult();
     }
 
-    public async Task<Coin[]> GetCoins()
+    public async Task<Coin[]> GetCoins(CancellationToken ct = default)
     {
         var utxos = await _db.Utxos
             .Include(u => u.Address)
             .ThenInclude(a => a.Account)
             .Where(u => u.SpentByTxId == null && u.ConfirmedHeight != null)
             .Where(u => u.Address.Account.Wallet.Id == WalletId)
-            .ToListAsync();
+            .ToListAsync(ct);
 
         return utxos.Select(u => new Coin(
             new OutPoint(uint256.Parse(u.TxId), u.OutputIndex),
@@ -207,7 +207,7 @@ public class KompaktorHdWallet : IKompaktorWalletInterface
         )).ToArray();
     }
 
-    public async Task<BIP322Signature.Full> GenerateOwnershipProof(string message, Coin[] coins)
+    public async Task<BIP322Signature.Full> GenerateOwnershipProof(string message, Coin[] coins, CancellationToken ct = default)
     {
         if (_masterKey is null) throw new InvalidOperationException("Wallet is locked");
 
@@ -223,7 +223,7 @@ public class KompaktorHdWallet : IKompaktorWalletInterface
         return (BIP322Signature.Full)BIP322Signature.FromPSBT(psbt, SignatureType.Full);
     }
 
-    public async Task<WitScript> GenerateWitness(Coin coin, Transaction tx, IEnumerable<Coin> txCoins)
+    public async Task<WitScript> GenerateWitness(Coin coin, Transaction tx, IEnumerable<Coin> txCoins, CancellationToken ct = default)
     {
         if (_masterKey is null) throw new InvalidOperationException("Wallet is locked");
 
@@ -239,7 +239,7 @@ public class KompaktorHdWallet : IKompaktorWalletInterface
         return signed.Inputs[idx].WitScript;
     }
 
-    public async Task<bool?> VerifyUtxo(OutPoint outpoint, TxOut expectedTxOut)
+    public async Task<bool?> VerifyUtxo(OutPoint outpoint, TxOut expectedTxOut, CancellationToken ct = default)
     {
         if (_blockchain is null) return null;
 
@@ -248,7 +248,7 @@ public class KompaktorHdWallet : IKompaktorWalletInterface
         return info.TxOut.Value == expectedTxOut.Value && info.TxOut.ScriptPubKey == expectedTxOut.ScriptPubKey;
     }
 
-    public async Task MarkScriptsExposed(IEnumerable<Script> scripts)
+    public async Task MarkScriptsExposed(IEnumerable<Script> scripts, CancellationToken ct = default)
     {
         var scriptBytesList = scripts.Select(s => s.ToBytes()).ToList();
 

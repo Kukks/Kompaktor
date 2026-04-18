@@ -247,12 +247,12 @@ public class Wallet : IOutboundPaymentManager, IKompaktorWalletInterface, IInbou
         PaymentProofs.TryAdd(pendingPaymentId, proof);
     }
 
-    public async Task<Coin[]> GetCoins()
+    public async Task<Coin[]> GetCoins(CancellationToken ct = default)
     {
         return GetUnspentCoins();
     }
 
-    public async Task<BIP322Signature.Full> GenerateOwnershipProof(string message, Coin[] coins)
+    public async Task<BIP322Signature.Full> GenerateOwnershipProof(string message, Coin[] coins, CancellationToken ct = default)
     {
         if (coins == null) throw new ArgumentNullException(nameof(coins));
         var addressToSignWith = coins.First().ScriptPubKey.GetDestinationAddress(_network);
@@ -262,7 +262,7 @@ public class Wallet : IOutboundPaymentManager, IKompaktorWalletInterface, IInbou
         return (BIP322Signature.Full) BIP322Signature.FromPSBT(psbt, SignatureType.Full);
     }
 
-    public async Task<WitScript> GenerateWitness(Coin coin, Transaction tx, IEnumerable<Coin> txCoins)
+    public async Task<WitScript> GenerateWitness(Coin coin, Transaction tx, IEnumerable<Coin> txCoins, CancellationToken ct = default)
 
     {
         tx = tx.Clone();

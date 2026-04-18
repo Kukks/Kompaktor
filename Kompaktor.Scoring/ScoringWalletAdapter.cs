@@ -36,7 +36,7 @@ public class ScoringWalletAdapter : IKompaktorWalletInterface
     /// Returns only coins that need more coinjoin mixing, ordered by lowest anonymity first.
     /// Falls back to the inner wallet's GetCoins() if scoring fails.
     /// </summary>
-    public async Task<Coin[]> GetCoins()
+    public async Task<Coin[]> GetCoins(CancellationToken ct = default)
     {
         try
         {
@@ -54,19 +54,19 @@ public class ScoringWalletAdapter : IKompaktorWalletInterface
         catch
         {
             // Fall back to unscored selection if scoring fails
-            return await _inner.GetCoins();
+            return await _inner.GetCoins(ct);
         }
     }
 
-    public Task<BIP322Signature.Full> GenerateOwnershipProof(string message, Coin[] coins)
-        => _inner.GenerateOwnershipProof(message, coins);
+    public Task<BIP322Signature.Full> GenerateOwnershipProof(string message, Coin[] coins, CancellationToken ct = default)
+        => _inner.GenerateOwnershipProof(message, coins, ct);
 
-    public Task<WitScript> GenerateWitness(Coin coin, Transaction tx, IEnumerable<Coin> txCoins)
-        => _inner.GenerateWitness(coin, tx, txCoins);
+    public Task<WitScript> GenerateWitness(Coin coin, Transaction tx, IEnumerable<Coin> txCoins, CancellationToken ct = default)
+        => _inner.GenerateWitness(coin, tx, txCoins, ct);
 
-    public Task<bool?> VerifyUtxo(OutPoint outpoint, TxOut expectedTxOut)
-        => _inner.VerifyUtxo(outpoint, expectedTxOut);
+    public Task<bool?> VerifyUtxo(OutPoint outpoint, TxOut expectedTxOut, CancellationToken ct = default)
+        => _inner.VerifyUtxo(outpoint, expectedTxOut, ct);
 
-    public Task MarkScriptsExposed(IEnumerable<Script> scripts)
-        => _inner.MarkScriptsExposed(scripts);
+    public Task MarkScriptsExposed(IEnumerable<Script> scripts, CancellationToken ct = default)
+        => _inner.MarkScriptsExposed(scripts, ct);
 }
