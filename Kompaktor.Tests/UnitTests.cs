@@ -1471,6 +1471,7 @@ public class BatchRequestModelTests
         Assert.Equal(0, response.SuccessCount);
         Assert.Equal(0, response.FailureCount);
     }
+
 }
 
 #endregion
