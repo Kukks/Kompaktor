@@ -738,6 +738,15 @@
                 </div>
             </div>
 
+            <!-- Payment Stats Summary -->
+            <div id="paymentStats" style="display:none;margin-bottom:16px;padding:12px 16px;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);font-size:12px;color:var(--text-muted)">
+                <span style="font-weight:600;color:var(--text);margin-right:12px">Payments</span>
+                <span id="psSent">-</span> sent &middot;
+                <span id="psReceived">-</span> received &middot;
+                <span id="psSuccess" style="color:var(--green)">-</span> success rate &middot;
+                <span id="psRetries">-</span> avg retries
+            </div>
+
             <!-- Privacy Health Meter -->
             <div class="privacy-meter" id="privacyMeter">
                 <h2>Privacy Health</h2>
@@ -2369,9 +2378,22 @@
             } catch { /* ignore parse errors */ }
         }
 
+        async function loadPaymentStats() {
+            const stats = await fetchJson('/api/payments/stats');
+            if (!stats || stats.total === 0) {
+                document.getElementById('paymentStats').style.display = 'none';
+                return;
+            }
+            document.getElementById('paymentStats').style.display = 'block';
+            document.getElementById('psSent').textContent = (stats.totalSentSat || 0).toLocaleString() + ' sats';
+            document.getElementById('psReceived').textContent = (stats.totalReceivedSat || 0).toLocaleString() + ' sats';
+            document.getElementById('psSuccess').textContent = stats.successRate.toFixed(0) + '%';
+            document.getElementById('psRetries').textContent = stats.averageRetries.toFixed(1);
+        }
+
         async function refreshAll() {
             document.getElementById('lastUpdate').textContent = 'Refreshing...';
-            await Promise.all([loadSummary(), loadPrivacySummary(), loadPrivacyDistribution(), loadPrivacyRecommendations(), loadRounds(), loadUtxos(), loadCoinjoins(), loadTransactions(), loadMixingStatus(), loadMixingStats(), loadSyncStatus(), loadAddressBook(), loadFeeEstimates(), loadSettingsInfo(), loadPayments()]);
+            await Promise.all([loadSummary(), loadPrivacySummary(), loadPrivacyDistribution(), loadPrivacyRecommendations(), loadRounds(), loadUtxos(), loadCoinjoins(), loadTransactions(), loadMixingStatus(), loadMixingStats(), loadSyncStatus(), loadAddressBook(), loadFeeEstimates(), loadSettingsInfo(), loadPayments(), loadPaymentStats()]);
             updateConnectionStatus(sseConnected ? 'live' : 'polling');
         }
 
@@ -2453,6 +2475,7 @@
 
             source.addEventListener('payments', () => {
                 loadPayments();
+                loadPaymentStats();
                 logEvent('payments');
                 notifyTab('payments');
             });

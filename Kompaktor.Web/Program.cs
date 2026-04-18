@@ -960,6 +960,49 @@ app.MapGet("/api/payments/{paymentId}/qr", async (string paymentId, WalletDbCont
     return Results.Content(svg, "image/svg+xml");
 }).WithTags("Payments");
 
+app.MapGet("/api/payments/{paymentId}/status", async (string paymentId, WalletDbContext db) =>
+{
+    var entity = await db.PendingPayments.FindAsync(paymentId);
+    if (entity is null) return Results.NotFound();
+
+    return Results.Ok(new
+    {
+        entity.Id, entity.Direction, entity.AmountSat,
+        amountBtc = entity.AmountSat / 100_000_000.0,
+        entity.Destination, entity.Status, entity.IsInteractive, entity.IsUrgent,
+        entity.RetryCount, entity.Label, entity.CompletedTxId, entity.ProofJson,
+        entity.CreatedAt, entity.CompletedAt, entity.ExpiresAt
+    });
+}).WithTags("Payments");
+
+app.MapGet("/api/payments/stats", async (WalletDbContext db) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.Ok(new { total = 0 });
+
+    var payments = await db.PendingPayments
+        .Where(p => p.WalletId == wallet.Id)
+        .ToListAsync();
+
+    var completed = payments.Where(p => p.Status == "Completed").ToList();
+    var pending = payments.Where(p => p.Status is "Pending" or "Reserved" or "Committed").ToList();
+    var failed = payments.Where(p => p.Status == "Failed").ToList();
+
+    return Results.Ok(new
+    {
+        total = payments.Count,
+        completedCount = completed.Count,
+        pendingCount = pending.Count,
+        failedCount = failed.Count,
+        totalSentSat = completed.Where(p => p.Direction == "Outbound").Sum(p => p.AmountSat),
+        totalReceivedSat = completed.Where(p => p.Direction == "Inbound").Sum(p => p.AmountSat),
+        averageRetries = completed.Count > 0 ? completed.Average(p => p.RetryCount) : 0,
+        successRate = payments.Count(p => p.Status is "Completed" or "Failed") > 0
+            ? (double)completed.Count / payments.Count(p => p.Status is "Completed" or "Failed") * 100
+            : 0
+    });
+}).WithTags("Payments");
+
 // Address book CRUD
 app.MapGet("/api/address-book", async (WalletDbContext db) =>
 {
