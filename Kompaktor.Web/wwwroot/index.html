@@ -2189,6 +2189,14 @@
                 const statusColor = p.status === 'Completed' ? 'var(--green)' : p.status === 'Failed' ? 'var(--red)' : p.status === 'Reserved' || p.status === 'Committed' ? 'var(--yellow)' : 'var(--text-muted)';
                 const typeLabel = p.isInteractive ? (p.isUrgent ? 'Interactive (Urgent)' : 'Interactive') : 'Standard';
                 const canCancel = p.status === 'Pending' || p.status === 'Reserved';
+                let expiryHtml = '';
+                if (p.expiresAt && (p.status === 'Pending' || p.status === 'Reserved')) {
+                    const expires = new Date(p.expiresAt);
+                    const remaining = Math.max(0, Math.round((expires - Date.now()) / 60000));
+                    expiryHtml = remaining > 0
+                        ? ` <span style="font-size:10px;color:var(--text-muted)" title="Expires ${expires.toLocaleString()}">${remaining}m left</span>`
+                        : ' <span style="font-size:10px;color:var(--red)">expired</span>';
+                }
                 const hasProof = p.status === 'Completed' && p.proofJson;
                 let proofHtml = '';
                 if (hasProof) {
@@ -2201,7 +2209,7 @@
                     <td>${dirIcon} ${esc(p.direction)}</td>
                     <td>${p.amountBtc.toFixed(8)} <span style="color:var(--text-muted)">${p.amountSat.toLocaleString()} sat</span></td>
                     <td class="truncate" title="${esc(p.destination)}">${truncate(p.destination, 16)}</td>
-                    <td><span style="color:${statusColor};font-weight:600;font-size:12px">${esc(p.status)}</span> ${proofHtml}</td>
+                    <td><span style="color:${statusColor};font-weight:600;font-size:12px">${esc(p.status)}</span>${expiryHtml} ${proofHtml}</td>
                     <td style="font-size:12px">${typeLabel}</td>
                     <td>${p.label ? esc(p.label) : '<span style="color:var(--text-muted)">-</span>'}</td>
                     <td>${p.completedTxId ? txLink(p.completedTxId, truncate(p.completedTxId, 10)) : '-'}</td>

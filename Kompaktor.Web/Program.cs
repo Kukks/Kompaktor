@@ -860,7 +860,7 @@ app.MapGet("/api/payments", async (WalletDbContext db) =>
             p.Id, p.Direction, p.AmountSat,
             amountBtc = p.AmountSat / 100_000_000.0,
             p.Destination, p.Status, p.IsInteractive, p.IsUrgent,
-            p.Label, p.CompletedTxId, p.ProofJson, p.CreatedAt, p.CompletedAt
+            p.Label, p.CompletedTxId, p.ProofJson, p.CreatedAt, p.CompletedAt, p.ExpiresAt
         })
         .ToListAsync();
 
@@ -886,8 +886,9 @@ app.MapPost("/api/payments/send", async (WalletDbContext db, HttpContext ctx) =>
     }
 
     var manager = new WalletPaymentManager(db, wallet.Id, network);
+    var expiry = body.ExpiryMinutes.HasValue ? TimeSpan.FromMinutes(body.ExpiryMinutes.Value) : (TimeSpan?)null;
     var entity = await manager.CreateOutboundPaymentAsync(
-        body.Destination, body.AmountSat, body.Interactive, body.Urgent, body.Label);
+        body.Destination, body.AmountSat, body.Interactive, body.Urgent, body.Label, expiry);
 
     return Results.Ok(new
     {
@@ -909,7 +910,8 @@ app.MapPost("/api/payments/receive", async (WalletDbContext db, HttpContext ctx)
         return Results.BadRequest("Amount required");
 
     var manager = new WalletPaymentManager(db, wallet.Id, network);
-    var entity = await manager.CreateInboundPaymentAsync(body.AmountSat, body.Label);
+    var recvExpiry = body.ExpiryMinutes.HasValue ? TimeSpan.FromMinutes(body.ExpiryMinutes.Value) : (TimeSpan?)null;
+    var entity = await manager.CreateInboundPaymentAsync(body.AmountSat, body.Label, recvExpiry);
 
     // Build BIP21 URI with Kompaktor extension parameter
     var bip21 = $"bitcoin:{entity.Destination}?amount={entity.AmountSat / 100_000_000.0:F8}";
@@ -1489,5 +1491,5 @@ record MixingStartRequest(string Passphrase, string? CoordinatorUrl = null, stri
 record AddressBookRequest(string Label, string Address);
 record SendRequest(string Destination, long AmountSat, long FeeRateSatPerVb = 2, string Strategy = "PrivacyFirst", string Passphrase = "");
 record BroadcastPsbtRequest(string SignedPsbt);
-record CreatePaymentRequest(string Destination, long AmountSat, bool Interactive = true, bool Urgent = false, string? Label = null);
-record CreateReceiveRequest(long AmountSat, string? Label = null);
+record CreatePaymentRequest(string Destination, long AmountSat, bool Interactive = true, bool Urgent = false, string? Label = null, int? ExpiryMinutes = null);
+record CreateReceiveRequest(long AmountSat, string? Label = null, int? ExpiryMinutes = null);

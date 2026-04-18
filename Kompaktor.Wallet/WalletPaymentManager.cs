@@ -34,6 +34,8 @@ public class WalletPaymentManager : IOutboundPaymentManager, IInboundPaymentMana
         await _lock.WaitAsync();
         try
         {
+            await ExpireStalePaymentsAsync();
+
             var query = _db.PendingPayments
                 .Where(p => p.WalletId == _walletId && p.Direction == "Outbound");
 
@@ -56,6 +58,8 @@ public class WalletPaymentManager : IOutboundPaymentManager, IInboundPaymentMana
         await _lock.WaitAsync();
         try
         {
+            await ExpireStalePaymentsAsync();
+
             var query = _db.PendingPayments
                 .Where(p => p.WalletId == _walletId && p.Direction == "Inbound");
 
@@ -143,7 +147,8 @@ public class WalletPaymentManager : IOutboundPaymentManager, IInboundPaymentMana
     /// Creates a new outbound payment (send to someone via CoinJoin).
     /// </summary>
     public async Task<PendingPaymentEntity> CreateOutboundPaymentAsync(
-        string destination, long amountSat, bool interactive = true, bool urgent = false, string? label = null)
+        string destination, long amountSat, bool interactive = true, bool urgent = false,
+        string? label = null, TimeSpan? expiry = null)
     {
         var address = BitcoinAddress.Create(destination, _network);
 
@@ -156,7 +161,8 @@ public class WalletPaymentManager : IOutboundPaymentManager, IInboundPaymentMana
             IsInteractive = interactive,
             IsUrgent = urgent,
             Label = label,
-            Status = "Pending"
+            Status = "Pending",
+            ExpiresAt = expiry.HasValue ? DateTimeOffset.UtcNow + expiry.Value : null
         };
 
         // For interactive outbound: generate a protocol key for the sender
@@ -176,7 +182,7 @@ public class WalletPaymentManager : IOutboundPaymentManager, IInboundPaymentMana
     /// Returns the entity including the generated Kompaktor key for the BIP21 URI.
     /// </summary>
     public async Task<PendingPaymentEntity> CreateInboundPaymentAsync(
-        long amountSat, string? label = null)
+        long amountSat, string? label = null, TimeSpan? expiry = null)
     {
         // Generate a protocol key pair for the receiver
         var privKeyBytes = System.Security.Cryptography.RandomNumberGenerator.GetBytes(32);
@@ -206,12 +212,34 @@ public class WalletPaymentManager : IOutboundPaymentManager, IInboundPaymentMana
             IsInteractive = true,
             KompaktorKeyHex = Convert.ToHexString(privKeyBytes),
             Label = label,
-            Status = "Pending"
+            Status = "Pending",
+            ExpiresAt = expiry.HasValue ? DateTimeOffset.UtcNow + expiry.Value : null
         };
 
         _db.PendingPayments.Add(entity);
         await _db.SaveChangesAsync();
         return entity;
+    }
+
+    private async Task ExpireStalePaymentsAsync()
+    {
+        var now = DateTimeOffset.UtcNow;
+        // Fetch all active payments with expiry and check client-side
+        // (nullable DateTimeOffset comparisons vary across EF providers)
+        var candidates = await _db.PendingPayments
+            .Where(p => p.WalletId == _walletId)
+            .Where(p => p.Status == "Pending" || p.Status == "Reserved")
+            .Where(p => p.ExpiresAt != null)
+            .ToListAsync();
+
+        var expired = candidates.Where(p => p.ExpiresAt <= now).ToList();
+
+        if (expired.Count > 0)
+        {
+            foreach (var p in expired)
+                p.Status = "Failed";
+            await _db.SaveChangesAsync();
+        }
     }
 
     /// <summary>Cancels a pending payment.</summary>

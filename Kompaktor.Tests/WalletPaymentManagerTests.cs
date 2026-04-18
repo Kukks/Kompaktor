@@ -240,4 +240,44 @@ public class WalletPaymentManagerTests : IDisposable
         await Assert.ThrowsAsync<InvalidOperationException>(
             () => _manager.CreateInboundPaymentAsync(50_000));
     }
+
+    [Fact]
+    public async Task CreateOutboundPayment_WithExpiry_SetsExpiresAt()
+    {
+        var addr = new Key().PubKey.GetAddress(ScriptPubKeyType.TaprootBIP86, _network).ToString();
+        var entity = await _manager.CreateOutboundPaymentAsync(
+            addr, 50_000, expiry: TimeSpan.FromMinutes(30));
+
+        Assert.NotNull(entity.ExpiresAt);
+        Assert.True(entity.ExpiresAt > DateTimeOffset.UtcNow);
+        Assert.True(entity.ExpiresAt < DateTimeOffset.UtcNow.AddMinutes(31));
+    }
+
+    [Fact]
+    public async Task ExpiredPayments_AreAutoCancelled()
+    {
+        var addr = new Key().PubKey.GetAddress(ScriptPubKeyType.TaprootBIP86, _network).ToString();
+        // Create a payment that already expired
+        var entity = await _manager.CreateOutboundPaymentAsync(addr, 50_000);
+        entity.ExpiresAt = DateTimeOffset.UtcNow.AddMinutes(-1);
+        await _db.SaveChangesAsync();
+
+        // Fetching pending payments should auto-expire it
+        var pending = await _manager.GetOutboundPendingPayments(includeReserved: false);
+        Assert.Empty(pending);
+
+        var updated = await _db.PendingPayments.FindAsync(entity.Id);
+        Assert.Equal("Failed", updated!.Status);
+    }
+
+    [Fact]
+    public async Task NonExpiredPayments_AreNotCancelled()
+    {
+        var addr = new Key().PubKey.GetAddress(ScriptPubKeyType.TaprootBIP86, _network).ToString();
+        var entity = await _manager.CreateOutboundPaymentAsync(
+            addr, 50_000, expiry: TimeSpan.FromMinutes(60));
+
+        var pending = await _manager.GetOutboundPendingPayments(includeReserved: false);
+        Assert.Single(pending);
+    }
 }
