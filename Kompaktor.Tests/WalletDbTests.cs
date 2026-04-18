@@ -139,6 +139,67 @@ public class WalletDbTests : IDisposable
     }
 
     [Fact]
+    public async Task CoinJoinRecorder_RecordsRound_CreatesOutputUtxos()
+    {
+        var wallet = new WalletEntity { Name = "RecorderTest" };
+        var account = new AccountEntity { Purpose = 86, AccountIndex = 0, Wallet = wallet };
+
+        // Create an address and input UTXO
+        var key = new NBitcoin.Key();
+        var script = key.PubKey.GetScriptPubKey(NBitcoin.ScriptPubKeyType.TaprootBIP86);
+        var address = new AddressEntity
+        {
+            KeyPath = "0/0", ScriptPubKey = script.ToBytes(), Account = account
+        };
+        _db.Wallets.Add(wallet);
+        _db.Addresses.Add(address);
+        _db.SaveChanges();
+
+        var inputUtxo = new UtxoEntity
+        {
+            TxId = "aabb000000000000000000000000000000000000000000000000000000000000",
+            OutputIndex = 0, AddressId = address.Id,
+            AmountSat = 100_000, ScriptPubKey = script.ToBytes(),
+            ConfirmedHeight = 100
+        };
+        _db.Utxos.Add(inputUtxo);
+        _db.SaveChanges();
+
+        // Build a fake coinjoin transaction with one of our outputs
+        var tx = NBitcoin.Network.RegTest.CreateTransaction();
+        tx.Inputs.Add(new NBitcoin.TxIn(new NBitcoin.OutPoint(
+            NBitcoin.uint256.Parse("aabb000000000000000000000000000000000000000000000000000000000000"), 0)));
+        tx.Outputs.Add(new NBitcoin.TxOut(NBitcoin.Money.Satoshis(90_000), script));
+
+        var recorder = new Kompaktor.Wallet.CoinJoinRecorder(_db, wallet.Id);
+        await recorder.RecordRoundAsync(
+            "test-round",
+            tx,
+            [new NBitcoin.OutPoint(NBitcoin.uint256.Parse("aabb000000000000000000000000000000000000000000000000000000000000"), 0)],
+            [script],
+            totalParticipants: 5);
+
+        // Verify the coinjoin record
+        var record = _db.CoinJoinRecords
+            .Include(r => r.Participations)
+            .Single();
+        Assert.Equal("Completed", record.Status);
+        Assert.Equal("test-round", record.RoundId);
+        Assert.Equal(1, record.OurInputCount);
+        Assert.Equal(5, record.ParticipantCount);
+        Assert.Equal(2, record.Participations.Count); // 1 input + 1 output
+
+        // Verify input was marked as spent
+        var spentUtxo = _db.Utxos.Single(u => u.Id == inputUtxo.Id);
+        Assert.NotNull(spentUtxo.SpentByTxId);
+
+        // Verify output UTXO was created
+        var outputUtxos = _db.Utxos.Where(u => u.TxId == tx.GetHash().ToString()).ToList();
+        Assert.Single(outputUtxos);
+        Assert.Equal(90_000, outputUtxos[0].AmountSat);
+    }
+
+    [Fact]
     public async Task WalletSyncService_GetBalance_SeparatesConfirmedAndUnconfirmed()
     {
         var wallet = new WalletEntity { Name = "SyncTest" };
