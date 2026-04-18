@@ -79,6 +79,7 @@ Kompaktor.sln
 ├── Kompaktor.Wallet/       # HD wallet library with EF Core persistence
 │   ├── KompaktorHdWallet.cs           # IKompaktorWalletInterface with BIP-39/84/86
 │   ├── MnemonicEncryption.cs          # AES-256-GCM mnemonic encryption
+│   ├── WalletSyncService.cs           # UTXO sync engine with blockchain monitoring
 │   └── Data/                          # EF Core entities and WalletDbContext
 ├── Kompaktor.Wallet.Sample/ # Console app: coordinator + client in one process
 ├── Kompaktor.Scoring/      # Anonymity scoring, label clustering, coin selection
@@ -90,7 +91,8 @@ Kompaktor.sln
 │   ├── KompaktorCoordinatorClient.cs   # High-level entry point: round discovery, status, factory creation
 │   ├── HttpKompaktorRoundApi.cs        # IKompaktorRoundApi over HTTP with event polling
 │   ├── HttpKompaktorRoundApiFactory.cs # Factory with per-identity circuit isolation
-│   └── RemoteKompaktorRound.cs        # Event-polling round state for remote participation
+│   ├── RemoteKompaktorRound.cs        # Event-polling round state with exponential backoff
+│   └── KompaktorService.cs           # High-level orchestrator for continuous coinjoin participation
 ├── Kompaktor.Web/          # Combined coordinator + wallet dashboard
 │   ├── Program.cs                     # ASP.NET Core host with coordinator + dashboard APIs
 │   └── wwwroot/index.html             # Dark-themed single-page dashboard
@@ -264,29 +266,54 @@ The coordinator reads configuration from `appsettings.json`, environment variabl
 
 ### Client Integration
 
-External wallets integrate by referencing `Kompaktor.Client`:
+**Recommended: KompaktorService** — manages continuous coinjoin participation automatically:
 
 ```csharp
-// 1. Connect to coordinator with Tor privacy
+// 1. Configure service with Tor privacy
+var service = new KompaktorService(
+    new KompaktorServiceOptions
+    {
+        CoordinatorUri = new Uri("http://coordinator.onion"),
+        Network = Network.Main,
+        CircuitFactory = new TorCircuitFactory(new TorOptions { SocksPort = 9050 }),
+        Random = SecureRandom.Instance
+    },
+    wallet, logger);
+
+// 2. Configure behavior traits (created fresh per round)
+service.BehaviorFactory = (round, factory) =>
+[
+    new ConsolidationBehaviorTrait(10),
+    new PrivacyAwareCoinSelectionTrait(outpoint => scorer.GetScore(outpoint)),
+    new SelfSendChangeBehaviorTrait(wallet.GetChangeScript, TimeSpan.FromSeconds(30))
+];
+
+// 3. Optionally filter rounds by parameters
+service.RoundFilter = info => info.FeeRateSatPerK <= 50_000; // Max 50 sat/vB
+
+// 4. Start continuous participation (runs until cancelled)
+await service.StartAsync(cts.Token);
+// Service auto-discovers rounds, joins, handles failures, and rejoins
+```
+
+**Advanced: Manual round participation** for fine-grained control:
+
+```csharp
 var tor = new TorCircuitFactory(new TorOptions { SocksPort = 9050 });
 var coordinator = new KompaktorCoordinatorClient(
-    new Uri("http://coordinator.onion"), tor);
+    new Uri("http://coordinator.onion"), tor, logger);
 
-// 2. Discover rounds and get parameters
 var rounds = await coordinator.GetActiveRoundsAsync();
 var info = await coordinator.GetRoundInfoAsync(rounds[0]);
-
-// 3. Create event-synced round from remote coordinator
 var factory = coordinator.CreateRoundApiFactory(rounds[0]);
 var api = (HttpKompaktorRoundApi)factory.Create();
-var round = new RemoteKompaktorRound(api, pollInterval: TimeSpan.FromSeconds(1));
+var round = new RemoteKompaktorRound(api, logger: logger);
 await round.StartPollingAsync(cts.Token);
 
-// 4. Join round with wallet
 var client = new KompaktorRoundClient(
     SecureRandom.Instance, network, round, factory,
     behaviorTraits, wallet, logger);
-await client.PhasesTask; // Runs through all phases
+await client.PhasesTask;
 ```
 
 ## Prerequisites
@@ -342,6 +369,8 @@ The test suite includes 310+ tests covering:
 - Electrum Stratum JSON-RPC framing, request correlation, and notification dispatch
 - Anonymity scoring with multiplicative composition, amount penalties, and label penalties
 - Label cluster analysis with union-find grouping and external source detection
+- Remote round poll resilience with exponential backoff and failure tracking
+- Wallet sync service balance calculation with confirmed/unconfirmed separation
 - Privacy-aware coin selection with cluster mixing warnings
 - Multi-server Electrum routing with round-robin assignment and script pinning
 - Credential lifecycle flow analysis with merge tree depth and fee calculation
