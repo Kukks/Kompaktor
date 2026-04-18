@@ -205,6 +205,24 @@
                 </tbody>
             </table>
         </section>
+
+        <section id="flowsSection" style="display:none">
+            <h2>Credential Flows <span id="flowsRoundLabel" style="font-size:12px;color:var(--text-muted)"></span></h2>
+            <table id="flowsTable">
+                <thead>
+                    <tr>
+                        <th>Input</th>
+                        <th>Output</th>
+                        <th>Change</th>
+                        <th>Fee</th>
+                        <th>Reissuances</th>
+                        <th>Depth</th>
+                    </tr>
+                </thead>
+                <tbody id="flowsBody">
+                </tbody>
+            </table>
+        </section>
     </div>
 
     <script>
@@ -304,7 +322,7 @@
                 body.innerHTML = '<tr><td colspan="7" class="empty">No coinjoin history</td></tr>';
                 return;
             }
-            body.innerHTML = cjs.map(c => `<tr>
+            body.innerHTML = cjs.map(c => `<tr style="cursor:pointer" onclick="loadFlows(${c.id})">
                 <td class="truncate" title="${c.roundId}">${truncate(c.roundId, 12)}</td>
                 <td class="truncate" title="${c.transactionId}">${truncate(c.transactionId, 12)}</td>
                 <td><span class="status-badge ${statusClass(c.status)}">${esc(c.status)}</span></td>
@@ -312,6 +330,28 @@
                 <td>${c.totalInputCount}/${c.totalOutputCount}</td>
                 <td>${c.participantCount}</td>
                 <td>${formatDate(c.createdAt)}</td>
+            </tr>`).join('');
+        }
+
+        async function loadFlows(roundId) {
+            const section = document.getElementById('flowsSection');
+            const body = document.getElementById('flowsBody');
+            const label = document.getElementById('flowsRoundLabel');
+            label.textContent = '(Round #' + roundId + ')';
+            section.style.display = '';
+
+            const flows = await fetchJson('/api/dashboard/credential-flows/' + roundId);
+            if (!flows || flows.length === 0) {
+                body.innerHTML = '<tr><td colspan="6" class="empty">No credential flow data</td></tr>';
+                return;
+            }
+            body.innerHTML = flows.map(f => `<tr>
+                <td>${f.inputAmountBtc.toFixed(8)}</td>
+                <td>${f.outputAmountBtc.toFixed(8)}</td>
+                <td>${(f.changeAmountSat / 100000000).toFixed(8)}</td>
+                <td>${f.feeSat}</td>
+                <td>${f.reissuanceSteps}</td>
+                <td>${f.graphDepth}</td>
             </tr>`).join('');
         }
 
