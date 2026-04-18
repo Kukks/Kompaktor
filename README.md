@@ -36,7 +36,9 @@ Kompaktor includes multiple layers of defense against malicious coordinators and
 | **Coordinator transcript signatures** | BIP-340 Schnorr signatures over round event transcripts provide non-repudiable equivocation proof |
 | **Fee transparency audit** | Clients verify fee breakdown before signing — detects coordinator fee extraction attacks |
 | **Fresh addresses after failure** | Output scripts disclosed during failed rounds are marked as exposed and never reused |
-| **Input cluster memory** | `RoundHistoryTracker` uses union-find connected components to prevent cross-round intersection attacks |
+| **Input cluster memory** | `RoundHistoryTracker` uses union-find connected components to prevent cross-round intersection attacks. `PersistentRoundHistoryTracker` persists this to the wallet DB so protection survives restarts. |
+| **Trait failure isolation** | Behavior trait exceptions are caught and logged individually — one failing trait cannot crash an entire coinjoin round |
+| **Cancellable wallet operations** | All `IKompaktorWalletInterface` methods accept `CancellationToken`, preventing slow blockchain queries from stalling rounds |
 | **Coin selection shuffle** | Fisher-Yates shuffle of coin candidates prevents deterministic selection profiling |
 | **UTXO verification** | Clients with full-node access verify other participants' inputs exist in the UTXO set |
 | **Timing randomization** | Pre-registration delays and randomized task scheduling prevent client fingerprinting |
@@ -81,6 +83,7 @@ Kompaktor.sln
 │   ├── MnemonicEncryption.cs          # AES-256-GCM mnemonic encryption
 │   ├── WalletSyncService.cs           # UTXO sync engine with blockchain monitoring
 │   ├── CoinJoinRecorder.cs            # Persists completed/failed rounds to wallet DB
+│   ├── PersistentRoundHistoryTracker.cs # DB-backed intersection attack tracking
 │   └── Data/                          # EF Core entities and WalletDbContext
 ├── Kompaktor.Wallet.Sample/ # Console app: coordinator + client in one process
 ├── Kompaktor.Scoring/      # Anonymity scoring, label clustering, coin selection
@@ -161,9 +164,9 @@ Analyzes WabiSabi credential lifecycle events (Acquired → Reissued → Spent) 
 
 Binary merge tree for credential reissuance. Given N input credentials and M desired outputs, it builds a DAG of reissuance operations that efficiently combines and splits credential values. Nodes execute concurrently via `Task.Run` with `Interlocked` tracking of in-flight operations.
 
-### `RoundHistoryTracker`
+### `RoundHistoryTracker` / `PersistentRoundHistoryTracker`
 
-Client-side defense against intersection attacks. Tracks which inputs were co-registered in failed rounds and builds connected components using union-find. When selecting coins for a new round, it ensures at most one coin per previously-observed cluster is registered, limiting the information a malicious coordinator can learn by deliberately failing rounds.
+Client-side defense against intersection attacks. Tracks which inputs were co-registered in failed rounds and builds connected components using union-find. When selecting coins for a new round, it ensures at most one coin per previously-observed cluster is registered, limiting the information a malicious coordinator can learn by deliberately failing rounds. The `PersistentRoundHistoryTracker` extends this to the wallet database so cluster memory survives service restarts — without persistence, an attacker can simply wait for a restart to reset the protection.
 
 ### `KompaktorPrison`
 
