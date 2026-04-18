@@ -1,6 +1,8 @@
 using Kompaktor.Scoring;
+using Kompaktor.Wallet;
 using Kompaktor.Wallet.Data;
 using Microsoft.EntityFrameworkCore;
+using NBitcoin;
 using Xunit;
 
 namespace Kompaktor.Tests;
@@ -190,6 +192,77 @@ public class WalletCoinSelectorTests : IDisposable
 
         Assert.Equal(0, summary.TotalUtxos);
         Assert.Equal(0, summary.TotalAmountSat);
+    }
+
+    [Fact]
+    public async Task ScoringWalletAdapter_ReturnsOnlyLowScoreCoins()
+    {
+        var (wallet, address) = SeedWalletWithAddress();
+
+        // Add two confirmed UTXOs — both virgin (score 1.0, below default threshold 5.0)
+        _db.Utxos.Add(new UtxoEntity
+        {
+            TxId = "aa11000000000000000000000000000000000000000000000000000000000000",
+            OutputIndex = 0, AddressId = address.Id,
+            AmountSat = 100_000, ScriptPubKey = [0xAA], ConfirmedHeight = 100
+        });
+        _db.Utxos.Add(new UtxoEntity
+        {
+            TxId = "bb22000000000000000000000000000000000000000000000000000000000000",
+            OutputIndex = 0, AddressId = address.Id,
+            AmountSat = 200_000, ScriptPubKey = [0xAA], ConfirmedHeight = 101
+        });
+        _db.SaveChanges();
+
+        var hdWallet = await KompaktorHdWallet.CreateAsync(_db, Network.RegTest, "Adapter", "pass");
+        var selector = new WalletCoinSelector(_db);
+        var adapter = new ScoringWalletAdapter(hdWallet, selector, wallet.Id);
+
+        var coins = await adapter.GetCoins();
+
+        // Both coins are virgin (score 1.0 < 5.0 threshold) so both should be returned
+        Assert.Equal(2, coins.Length);
+    }
+
+    [Fact]
+    public async Task ScoringWalletAdapter_ReturnsEmpty_WhenAllCoinsWellMixed()
+    {
+        var (wallet, address) = SeedWalletWithAddress();
+
+        var utxo = new UtxoEntity
+        {
+            TxId = "cc33000000000000000000000000000000000000000000000000000000000000",
+            OutputIndex = 0, AddressId = address.Id,
+            AmountSat = 100_000, ScriptPubKey = [0xAA], ConfirmedHeight = 100
+        };
+        _db.Utxos.Add(utxo);
+        _db.SaveChanges();
+
+        // Fake a coinjoin with high participant count to push score above threshold
+        var tx = new TransactionEntity { Id = "cjtx99", RawHex = "0200..." };
+        _db.Transactions.Add(tx);
+        var record = new CoinJoinRecordEntity
+        {
+            TransactionId = "cjtx99", RoundId = "round-99", Status = "Completed",
+            ParticipantCount = 50, OurInputCount = 1, TotalInputCount = 60,
+            OurOutputCount = 1, TotalOutputCount = 60,
+            OutputValuesSat = Enumerable.Repeat(100_000L, 60).ToArray()
+        };
+        record.Participations.Add(new CoinJoinParticipationEntity
+        {
+            UtxoId = utxo.Id, Role = "Output"
+        });
+        _db.CoinJoinRecords.Add(record);
+        _db.SaveChanges();
+
+        var hdWallet = await KompaktorHdWallet.CreateAsync(_db, Network.RegTest, "Adapter2", "pass");
+        var selector = new WalletCoinSelector(_db);
+        var adapter = new ScoringWalletAdapter(hdWallet, selector, wallet.Id);
+
+        var coins = await adapter.GetCoins();
+
+        // Score should be 50 (well above 5.0 threshold) — no candidates
+        Assert.Empty(coins);
     }
 
     [Fact]
