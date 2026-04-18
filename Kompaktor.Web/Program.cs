@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Threading.RateLimiting;
 using Kompaktor.Utils;
 using Kompaktor.Blockchain;
 using Kompaktor.JsonConverters;
@@ -90,7 +91,32 @@ var signingKey = !string.IsNullOrEmpty(coordinatorOptions.CoordinatorSigningKeyH
     ? coordinatorOptions.CoordinatorSigningKeyHex.ToPrivKey()
     : ECPrivKey.Create(RandomNumberGenerator.GetBytes(32));
 
+// Rate limiting
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.AddPolicy("protocol", context =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 200,
+                Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 0
+            }));
+    options.AddPolicy("discovery", context =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 60,
+                Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 0
+            }));
+});
+
 // Services
+var random = network == Network.RegTest ? new InsecureRandom() : (WasabiRandom)SecureRandom.Instance;
 builder.Services.AddSingleton(coordinatorOptions);
 builder.Services.AddSingleton(new KompaktorPrison());
 builder.Services.AddSingleton(blockchain);
@@ -99,7 +125,7 @@ builder.Services.AddSingleton<KompaktorRoundManager>(sp =>
     new KompaktorRoundManager(
         network,
         blockchain,
-        new InsecureRandom(),
+        random,
         sp.GetRequiredService<ILoggerFactory>(),
         coordinatorOptions,
         sp.GetRequiredService<KompaktorPrison>(),
@@ -119,6 +145,8 @@ using (var scope = app.Services.CreateScope())
 
 // Connect blockchain
 await blockchain.ConnectAsync();
+
+app.UseRateLimiter();
 
 // Static files (dashboard HTML/JS/CSS)
 app.UseStaticFiles();
