@@ -886,20 +886,27 @@ app.MapPost("/api/payments/send", async (WalletDbContext db, HttpContext ctx, Da
         return Results.BadRequest("Invalid Bitcoin address");
     }
 
-    var manager = new WalletPaymentManager(db, wallet.Id, network);
-    var expiry = body.ExpiryMinutes.HasValue ? TimeSpan.FromMinutes(body.ExpiryMinutes.Value) : (TimeSpan?)null;
-    var entity = await manager.CreateOutboundPaymentAsync(
-        body.Destination, body.AmountSat, body.Interactive, body.Urgent, body.Label, expiry);
-
-    bus.Publish("payments");
-    return Results.Ok(new
+    try
     {
-        entity.Id, entity.Direction, entity.AmountSat,
-        amountBtc = entity.AmountSat / 100_000_000.0,
-        entity.Destination, entity.Status, entity.IsInteractive,
-        kompaktorPubKey = entity.KompaktorKeyHex,
-        entity.Label, entity.CreatedAt
-    });
+        var manager = new WalletPaymentManager(db, wallet.Id, network);
+        var expiry = body.ExpiryMinutes.HasValue ? TimeSpan.FromMinutes(body.ExpiryMinutes.Value) : (TimeSpan?)null;
+        var entity = await manager.CreateOutboundPaymentAsync(
+            body.Destination, body.AmountSat, body.Interactive, body.Urgent, body.Label, expiry);
+
+        bus.Publish("payments");
+        return Results.Ok(new
+        {
+            entity.Id, entity.Direction, entity.AmountSat,
+            amountBtc = entity.AmountSat / 100_000_000.0,
+            entity.Destination, entity.Status, entity.IsInteractive,
+            kompaktorPubKey = entity.KompaktorKeyHex,
+            entity.Label, entity.CreatedAt
+        });
+    }
+    catch (ArgumentException ex)
+    {
+        return Results.BadRequest(ex.Message);
+    }
 }).WithTags("Payments");
 
 app.MapPost("/api/payments/receive", async (WalletDbContext db, HttpContext ctx, DashboardEventBus bus) =>
@@ -911,25 +918,36 @@ app.MapPost("/api/payments/receive", async (WalletDbContext db, HttpContext ctx,
     if (body is null || body.AmountSat <= 0)
         return Results.BadRequest("Amount required");
 
-    var manager = new WalletPaymentManager(db, wallet.Id, network);
-    var recvExpiry = body.ExpiryMinutes.HasValue ? TimeSpan.FromMinutes(body.ExpiryMinutes.Value) : (TimeSpan?)null;
-    var entity = await manager.CreateInboundPaymentAsync(body.AmountSat, body.Label, recvExpiry);
-
-    // Build BIP21 URI with Kompaktor extension parameter
-    var bip21 = $"bitcoin:{entity.Destination}?amount={entity.AmountSat / 100_000_000.0:F8}";
-    if (entity.KompaktorKeyHex is not null)
-        bip21 += $"&kompaktor={entity.KompaktorKeyHex.ToLower()}";
-
-    bus.Publish("payments");
-    return Results.Ok(new
+    try
     {
-        entity.Id, entity.Direction, entity.AmountSat,
-        amountBtc = entity.AmountSat / 100_000_000.0,
-        entity.Destination, entity.Status, entity.IsInteractive,
-        bip21Uri = bip21,
-        kompaktorKey = entity.KompaktorKeyHex,
-        entity.Label, entity.CreatedAt
-    });
+        var manager = new WalletPaymentManager(db, wallet.Id, network);
+        var recvExpiry = body.ExpiryMinutes.HasValue ? TimeSpan.FromMinutes(body.ExpiryMinutes.Value) : (TimeSpan?)null;
+        var entity = await manager.CreateInboundPaymentAsync(body.AmountSat, body.Label, recvExpiry);
+
+        // Build BIP21 URI with Kompaktor extension parameter
+        var bip21 = $"bitcoin:{entity.Destination}?amount={entity.AmountSat / 100_000_000.0:F8}";
+        if (entity.KompaktorKeyHex is not null)
+            bip21 += $"&kompaktor={entity.KompaktorKeyHex.ToLower()}";
+
+        bus.Publish("payments");
+        return Results.Ok(new
+        {
+            entity.Id, entity.Direction, entity.AmountSat,
+            amountBtc = entity.AmountSat / 100_000_000.0,
+            entity.Destination, entity.Status, entity.IsInteractive,
+            bip21Uri = bip21,
+            kompaktorKey = entity.KompaktorKeyHex,
+            entity.Label, entity.CreatedAt
+        });
+    }
+    catch (ArgumentException ex)
+    {
+        return Results.BadRequest(ex.Message);
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(ex.Message);
+    }
 }).WithTags("Payments");
 
 app.MapDelete("/api/payments/{paymentId}", async (string paymentId, WalletDbContext db, DashboardEventBus bus) =>
