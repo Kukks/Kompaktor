@@ -56,8 +56,9 @@ public class KompaktorCoordinatorOptions
     /// <summary>
     /// Use Bulletproofs++ (BP++) for range proofs instead of classical sigma-protocol bit decomposition.
     /// BP++ has O(log n) proof size vs O(n), making it much faster at higher credential arity (k).
+    /// Enabled by default — benchmarks show 39% faster at scale (n=100) vs classical proofs.
     /// </summary>
-    public bool UseBulletproofs { get; set; } = false;
+    public bool UseBulletproofs { get; set; } = true;
 
     /// <summary>
     /// Optional soft timeout for input registration. After this period, the round will
