@@ -301,4 +301,19 @@ public class WalletPaymentManagerTests : IDisposable
         var pending = await _manager.GetOutboundPendingPayments(includeReserved: false);
         Assert.Single(pending);
     }
+
+    [Fact]
+    public async Task CreateOutboundPayment_RejectsDustAmount()
+    {
+        var addr = new Key().PubKey.GetAddress(ScriptPubKeyType.TaprootBIP86, _network).ToString();
+        await Assert.ThrowsAsync<ArgumentException>(
+            () => _manager.CreateOutboundPaymentAsync(addr, 100));
+    }
+
+    [Fact]
+    public async Task CreateInboundPayment_RejectsDustAmount()
+    {
+        await Assert.ThrowsAsync<ArgumentException>(
+            () => _manager.CreateInboundPaymentAsync(500));
+    }
 }

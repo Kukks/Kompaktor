@@ -151,6 +151,9 @@ public class WalletPaymentManager : IOutboundPaymentManager, IInboundPaymentMana
         string destination, long amountSat, bool interactive = true, bool urgent = false,
         string? label = null, TimeSpan? expiry = null)
     {
+        if (amountSat < 546)
+            throw new ArgumentException("Amount below dust limit (546 sats)");
+
         var address = BitcoinAddress.Create(destination, _network);
 
         var entity = new PendingPaymentEntity
@@ -185,6 +188,9 @@ public class WalletPaymentManager : IOutboundPaymentManager, IInboundPaymentMana
     public async Task<PendingPaymentEntity> CreateInboundPaymentAsync(
         long amountSat, string? label = null, TimeSpan? expiry = null)
     {
+        if (amountSat < 546)
+            throw new ArgumentException("Amount below dust limit (546 sats)");
+
         // Generate a protocol key pair for the receiver
         var privKeyBytes = System.Security.Cryptography.RandomNumberGenerator.GetBytes(32);
         var ecPrivKey = ECPrivKey.Create(privKeyBytes);
