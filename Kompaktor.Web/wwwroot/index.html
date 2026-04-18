@@ -843,10 +843,11 @@
                             <th>Block</th>
                             <th>UTXOs</th>
                             <th>Status</th>
+                            <th>Action</th>
                         </tr>
                     </thead>
                     <tbody id="txBody">
-                        <tr><td colspan="5" class="empty">Loading...</td></tr>
+                        <tr><td colspan="6" class="empty">Loading...</td></tr>
                     </tbody>
                 </table>
             </section>
@@ -1614,16 +1615,48 @@
             const txs = await fetchJson('/api/dashboard/transactions');
             const body = document.getElementById('txBody');
             if (!txs || txs.length === 0) {
-                body.innerHTML = '<tr><td colspan="5" class="empty">No transactions</td></tr>';
+                body.innerHTML = '<tr><td colspan="6" class="empty">No transactions</td></tr>';
                 return;
             }
-            body.innerHTML = txs.map(t => `<tr>
+            body.innerHTML = txs.map(t => {
+                const isUnconfirmed = !t.confirmedHeight;
+                const bumpBtn = isUnconfirmed ? `<button class="refresh-btn" style="font-size:11px;padding:2px 8px" onclick="showFeeBump('${esc(t.txId)}')">Fee Bump</button>` : '-';
+                return `<tr>
                 <td class="truncate">${txLink(t.txId)}</td>
                 <td>${t.amountBtc.toFixed(8)}</td>
                 <td>${t.confirmedHeight ?? '<span style="color:var(--yellow)">pending</span>'}</td>
                 <td>${t.utxoCount}</td>
                 <td><span class="status-badge ${t.isSpent ? 'status-failed' : 'status-completed'}">${t.isSpent ? 'Spent' : 'Received'}</span></td>
-            </tr>`).join('');
+                <td>${bumpBtn}</td>
+            </tr>`;
+            }).join('');
+        }
+
+        async function showFeeBump(txId) {
+            const newRate = prompt(`Fee bump transaction ${txId.substring(0,12)}...\n\nEnter new fee rate (sat/vB).\nCurrent network estimates:\n  Next block: ~10 sat/vB\n  6 blocks: ~2 sat/vB\n\nNew fee rate:`, '10');
+            if (!newRate) return;
+            const rate = parseInt(newRate);
+            if (!rate || rate <= 0) { showToast('Invalid fee rate', 'error'); return; }
+
+            try {
+                const res = await fetch('/api/dashboard/fee-bump', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ txId, newFeeRateSatPerVb: rate })
+                });
+                const data = await res.json();
+                if (!res.ok) {
+                    showToast(typeof data === 'string' ? data : data.detail || JSON.stringify(data), 'error');
+                    return;
+                }
+                // Show the PSBT for signing
+                const psbtText = data.bumpedPsbt;
+                const copied = await navigator.clipboard.writeText(psbtText).then(() => true).catch(() => false);
+                showToast(`Fee bump PSBT created (${data.estimatedFeeSat} sat fee). ${copied ? 'Copied to clipboard!' : 'Copy the PSBT from the console.'}`, 'success');
+                console.log('Fee bump PSBT:', psbtText);
+            } catch (err) {
+                showToast('Fee bump failed: ' + err.message, 'error');
+            }
         }
 
         async function loadFlows(roundId) {
