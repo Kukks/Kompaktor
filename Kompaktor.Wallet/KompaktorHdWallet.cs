@@ -96,6 +96,38 @@ public class KompaktorHdWallet : IKompaktorWalletInterface
         _masterKey = null;
     }
 
+    /// <summary>
+    /// Returns a fresh (unused, unexposed) receive address script.
+    /// Prefers P2TR (purpose 86) over P2WPKH (purpose 84) for privacy.
+    /// </summary>
+    public async Task<Script> GetFreshAddressAsync(bool isChange = false)
+    {
+        var address = await _db.Addresses
+            .Include(a => a.Account)
+            .Where(a => a.Account.WalletId == WalletId)
+            .Where(a => !a.IsUsed && !a.IsExposed)
+            .Where(a => a.IsChange == isChange)
+            .OrderByDescending(a => a.Account.Purpose) // Prefer P2TR (86) over P2WPKH (84)
+            .ThenBy(a => a.Id)
+            .FirstOrDefaultAsync();
+
+        if (address is null)
+            throw new InvalidOperationException(
+                "No fresh addresses available. Gap limit may need extension.");
+
+        return new Script(address.ScriptPubKey);
+    }
+
+    /// <summary>
+    /// Returns a fresh change address script. Convenience wrapper for behavior traits.
+    /// </summary>
+    public Script GetChangeScript()
+    {
+        // Synchronous wrapper for SelfSendChangeBehaviorTrait's Func<Script> delegate.
+        // Safe because EF Core SQLite operations complete synchronously in practice.
+        return GetFreshAddressAsync(isChange: true).GetAwaiter().GetResult();
+    }
+
     public async Task<Coin[]> GetCoins()
     {
         var utxos = await _db.Utxos

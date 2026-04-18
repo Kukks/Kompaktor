@@ -125,4 +125,66 @@ public class KompaktorHdWalletTests : IDisposable
         var result = await wallet.VerifyUtxo(new OutPoint(uint256.One, 0), new TxOut(Money.Coins(1), new Key().GetScriptPubKey(ScriptPubKeyType.Segwit)));
         Assert.Null(result);
     }
+
+    [Fact]
+    public async Task GetFreshAddress_ReturnsFreshExternalAddress()
+    {
+        var wallet = await KompaktorHdWallet.CreateAsync(_db, _network, "Test", Passphrase);
+
+        var script = await wallet.GetFreshAddressAsync();
+        Assert.NotNull(script);
+
+        // Should be a valid script
+        var address = script.GetDestinationAddress(_network);
+        Assert.NotNull(address);
+    }
+
+    [Fact]
+    public async Task GetFreshAddress_PrefersTaproot()
+    {
+        var wallet = await KompaktorHdWallet.CreateAsync(_db, _network, "Test", Passphrase);
+
+        var script = await wallet.GetFreshAddressAsync();
+        var address = script.GetDestinationAddress(_network);
+
+        // P2TR address on regtest starts with "bcrt1p"
+        Assert.StartsWith("bcrt1p", address!.ToString());
+    }
+
+    [Fact]
+    public async Task GetFreshAddress_SkipsExposedAddresses()
+    {
+        var wallet = await KompaktorHdWallet.CreateAsync(_db, _network, "Test", Passphrase);
+
+        // Get first fresh address and mark it as exposed
+        var first = await wallet.GetFreshAddressAsync();
+        await wallet.MarkScriptsExposed([first]);
+
+        // Next address should be different
+        var second = await wallet.GetFreshAddressAsync();
+        Assert.NotEqual(first, second);
+    }
+
+    [Fact]
+    public async Task GetFreshAddress_ChangeAddress_ReturnsDifferentFromReceive()
+    {
+        var wallet = await KompaktorHdWallet.CreateAsync(_db, _network, "Test", Passphrase);
+
+        var receive = await wallet.GetFreshAddressAsync(isChange: false);
+        var change = await wallet.GetFreshAddressAsync(isChange: true);
+
+        Assert.NotEqual(receive, change);
+    }
+
+    [Fact]
+    public async Task GetChangeScript_ReturnsFreshChangeScript()
+    {
+        var wallet = await KompaktorHdWallet.CreateAsync(_db, _network, "Test", Passphrase);
+
+        var script = wallet.GetChangeScript();
+        Assert.NotNull(script);
+
+        var address = script.GetDestinationAddress(_network);
+        Assert.NotNull(address);
+    }
 }
