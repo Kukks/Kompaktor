@@ -108,6 +108,9 @@
         .status-signing { background: rgba(219, 109, 40, 0.15); color: var(--orange); }
         .status-completed { background: rgba(63, 185, 80, 0.15); color: var(--green); }
         .status-failed { background: rgba(248, 81, 73, 0.15); color: var(--red); }
+        .status-pending { background: rgba(139, 148, 158, 0.15); color: var(--text-muted); }
+        .status-reserved { background: rgba(210, 153, 34, 0.15); color: var(--yellow); }
+        .status-committed { background: rgba(219, 109, 40, 0.15); color: var(--orange); }
         .label-tag {
             display: inline-block;
             padding: 1px 6px;
@@ -615,7 +618,7 @@
                 <span id="lastUpdate"></span>
                 <button class="refresh-btn" onclick="toggleTheme()" id="themeBtn" title="Toggle dark/light theme (T)">Light</button>
                 <button class="refresh-btn" onclick="refreshAll()" title="Refresh all data (R)">Refresh</button>
-                <span style="font-size:10px;color:var(--text-muted);cursor:help" title="Keyboard: 1-5 tabs, arrows prev/next, R refresh, T theme, Esc close panels">?</span>
+                <span style="font-size:10px;color:var(--text-muted);cursor:help" title="Keyboard: 1-6 tabs, arrows prev/next, R refresh, T theme, Esc close panels">?</span>
             </div>
         </header>
 
@@ -684,6 +687,7 @@
         <div class="tab-bar" id="tabBar">
             <button class="tab-btn active" onclick="switchTab('overview')">Overview</button>
             <button class="tab-btn" onclick="switchTab('send-receive')">Send & Receive</button>
+            <button class="tab-btn" onclick="switchTab('payments')">Payments</button>
             <button class="tab-btn" onclick="switchTab('utxos')">UTXOs</button>
             <button class="tab-btn" onclick="switchTab('coinjoins')">CoinJoins</button>
             <button class="tab-btn" onclick="switchTab('settings')">Settings</button>
@@ -861,6 +865,98 @@
                     <input type="text" id="abAddress" placeholder="bc1q..." style="width:280px;font-family:'SFMono-Regular',Consolas,monospace">
                     <button class="label-add-btn" onclick="addAddressBookEntry()">Add</button>
                 </div>
+            </section>
+        </div>
+
+        <!-- TAB: Payments -->
+        <div class="tab-panel" data-tab="payments">
+            <section>
+                <h2>Interactive Payments</h2>
+                <p style="color:var(--text-muted);font-size:13px;margin-bottom:16px">Send and receive Bitcoin privately through CoinJoin rounds. Payments are fulfilled during mixing — no separate on-chain transaction needed.</p>
+
+                <div style="display:flex;gap:16px;margin-bottom:24px;flex-wrap:wrap">
+                    <!-- Send Payment Form -->
+                    <div style="flex:1;min-width:280px;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:16px">
+                        <h3 style="font-size:14px;margin-bottom:12px">Send Payment</h3>
+                        <div class="field" style="margin-bottom:8px">
+                            <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;display:block;margin-bottom:4px">Destination</label>
+                            <input type="text" id="payDest" placeholder="bc1q... or bitcoin: URI" list="addressBookSuggestions" style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:4px;font-size:13px;font-family:'SFMono-Regular',Consolas,monospace">
+                        </div>
+                        <div style="display:flex;gap:8px;margin-bottom:8px">
+                            <div class="field" style="flex:1">
+                                <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;display:block;margin-bottom:4px">Amount (sats)</label>
+                                <input type="number" id="payAmount" placeholder="100000" style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:4px;font-size:13px;font-family:'SFMono-Regular',Consolas,monospace">
+                            </div>
+                            <div class="field" style="flex:1">
+                                <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;display:block;margin-bottom:4px">Label</label>
+                                <input type="text" id="payLabel" placeholder="Optional" style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:4px;font-size:13px">
+                            </div>
+                        </div>
+                        <div style="display:flex;gap:12px;align-items:center;margin-bottom:12px">
+                            <label style="font-size:12px;color:var(--text-muted);cursor:pointer"><input type="checkbox" id="payInteractive" checked> Interactive</label>
+                            <label style="font-size:12px;color:var(--text-muted);cursor:pointer" title="Fall back to non-interactive if peer is offline"><input type="checkbox" id="payUrgent"> Urgent</label>
+                        </div>
+                        <button class="send-btn" onclick="createSendPayment()">Queue Payment</button>
+                        <span id="payStatus" style="font-size:12px;margin-left:8px"></span>
+                    </div>
+
+                    <!-- Receive Payment Form -->
+                    <div style="flex:1;min-width:280px;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:16px">
+                        <h3 style="font-size:14px;margin-bottom:12px">Receive Payment</h3>
+                        <div style="display:flex;gap:8px;margin-bottom:8px">
+                            <div class="field" style="flex:1">
+                                <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;display:block;margin-bottom:4px">Amount (sats)</label>
+                                <input type="number" id="recvAmount" placeholder="100000" style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:4px;font-size:13px;font-family:'SFMono-Regular',Consolas,monospace">
+                            </div>
+                            <div class="field" style="flex:1">
+                                <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;display:block;margin-bottom:4px">Label</label>
+                                <input type="text" id="recvLabel" placeholder="Optional" style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:4px;font-size:13px">
+                            </div>
+                        </div>
+                        <button class="send-btn" onclick="createReceivePayment()">Create Invoice</button>
+                        <span id="recvStatus" style="font-size:12px;margin-left:8px"></span>
+                        <div id="recvResult" style="display:none;margin-top:12px;padding:12px;background:var(--bg);border:1px solid var(--border);border-radius:6px">
+                            <div style="font-size:11px;color:var(--text-muted);text-transform:uppercase;margin-bottom:4px">Share this URI with the sender</div>
+                            <div class="address-display">
+                                <span class="addr" id="recvBip21" style="font-size:12px;word-break:break-all"></span>
+                                <button class="copy-btn" onclick="copyPaymentUri()">Copy</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <section>
+                <h2>Payment Queue</h2>
+                <div style="display:flex;gap:8px;margin-bottom:12px">
+                    <button class="refresh-btn" onclick="loadPayments()" style="font-size:12px">Refresh</button>
+                    <select id="payFilter" onchange="loadPayments()" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:4px;font-size:12px">
+                        <option value="all">All</option>
+                        <option value="Pending">Pending</option>
+                        <option value="Reserved">Reserved</option>
+                        <option value="Committed">Committed</option>
+                        <option value="Completed">Completed</option>
+                        <option value="Failed">Failed</option>
+                    </select>
+                </div>
+                <table id="paymentsTable">
+                    <thead>
+                        <tr>
+                            <th>Direction</th>
+                            <th>Amount</th>
+                            <th>Destination</th>
+                            <th>Status</th>
+                            <th>Type</th>
+                            <th>Label</th>
+                            <th>TX</th>
+                            <th>Created</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="paymentsBody">
+                        <tr><td colspan="9" class="empty">Loading...</td></tr>
+                    </tbody>
+                </table>
             </section>
         </div>
 
@@ -2054,9 +2150,137 @@
                 ).join('');
         }
 
+        // Payments
+        let paymentsCache = [];
+
+        async function loadPayments() {
+            const payments = await fetchJson('/api/payments');
+            const body = document.getElementById('paymentsBody');
+            if (!payments || payments.length === 0) {
+                body.innerHTML = '<tr><td colspan="9" class="empty">No payments yet</td></tr>';
+                paymentsCache = [];
+                return;
+            }
+            paymentsCache = payments;
+            const filter = document.getElementById('payFilter')?.value || 'all';
+            const filtered = filter === 'all' ? payments : payments.filter(p => p.status === filter);
+            if (filtered.length === 0) {
+                body.innerHTML = `<tr><td colspan="9" class="empty">No ${esc(filter.toLowerCase())} payments</td></tr>`;
+                return;
+            }
+            body.innerHTML = filtered.map(p => {
+                const dirIcon = p.direction === 'Outbound' ? '<span style="color:var(--red)">&#8593;</span>' : '<span style="color:var(--green)">&#8595;</span>';
+                const statusColor = p.status === 'Completed' ? 'var(--green)' : p.status === 'Failed' ? 'var(--red)' : p.status === 'Reserved' || p.status === 'Committed' ? 'var(--yellow)' : 'var(--text-muted)';
+                const typeLabel = p.isInteractive ? (p.isUrgent ? 'Interactive (Urgent)' : 'Interactive') : 'Standard';
+                const canCancel = p.status === 'Pending' || p.status === 'Reserved';
+                return `<tr>
+                    <td>${dirIcon} ${esc(p.direction)}</td>
+                    <td>${p.amountBtc.toFixed(8)} <span style="color:var(--text-muted)">${p.amountSat.toLocaleString()} sat</span></td>
+                    <td class="truncate" title="${esc(p.destination)}">${truncate(p.destination, 16)}</td>
+                    <td><span style="color:${statusColor};font-weight:600;font-size:12px">${esc(p.status)}</span></td>
+                    <td style="font-size:12px">${typeLabel}</td>
+                    <td>${p.label ? esc(p.label) : '<span style="color:var(--text-muted)">-</span>'}</td>
+                    <td>${p.completedTxId ? txLink(p.completedTxId, truncate(p.completedTxId, 10)) : '-'}</td>
+                    <td style="font-size:12px">${formatDate(p.createdAt)}</td>
+                    <td>${canCancel ? `<button class="freeze-btn" onclick="cancelPayment('${esc(p.id)}')" title="Cancel this payment">Cancel</button>` : ''}</td>
+                </tr>`;
+            }).join('');
+        }
+
+        async function createSendPayment() {
+            const dest = document.getElementById('payDest').value.trim();
+            const amount = parseInt(document.getElementById('payAmount').value);
+            const label = document.getElementById('payLabel').value.trim();
+            const interactive = document.getElementById('payInteractive').checked;
+            const urgent = document.getElementById('payUrgent').checked;
+            const status = document.getElementById('payStatus');
+
+            if (!dest || !amount || amount <= 0) {
+                status.innerHTML = '<span style="color:var(--red)">Destination and amount required</span>';
+                return;
+            }
+
+            status.innerHTML = '<span style="color:var(--yellow)">Creating...</span>';
+            try {
+                const res = await fetch('/api/payments/send', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ destination: dest, amountSat: amount, interactive, urgent, label: label || null })
+                });
+                const data = await res.json();
+                if (!res.ok) {
+                    status.innerHTML = `<span style="color:var(--red)">${esc(typeof data === 'string' ? data : data.detail || JSON.stringify(data))}</span>`;
+                    return;
+                }
+                status.innerHTML = '<span style="color:var(--green)">Queued</span>';
+                document.getElementById('payDest').value = '';
+                document.getElementById('payAmount').value = '';
+                document.getElementById('payLabel').value = '';
+                showToast(`Payment of ${amount.toLocaleString()} sats queued`, 'success');
+                await loadPayments();
+                setTimeout(() => { status.innerHTML = ''; }, 3000);
+            } catch (err) {
+                status.innerHTML = `<span style="color:var(--red)">Failed: ${esc(err.message)}</span>`;
+            }
+        }
+
+        async function createReceivePayment() {
+            const amount = parseInt(document.getElementById('recvAmount').value);
+            const label = document.getElementById('recvLabel').value.trim();
+            const status = document.getElementById('recvStatus');
+
+            if (!amount || amount <= 0) {
+                status.innerHTML = '<span style="color:var(--red)">Amount required</span>';
+                return;
+            }
+
+            status.innerHTML = '<span style="color:var(--yellow)">Creating...</span>';
+            try {
+                const res = await fetch('/api/payments/receive', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ amountSat: amount, label: label || null })
+                });
+                const data = await res.json();
+                if (!res.ok) {
+                    status.innerHTML = `<span style="color:var(--red)">${esc(typeof data === 'string' ? data : data.detail || JSON.stringify(data))}</span>`;
+                    return;
+                }
+                status.innerHTML = '<span style="color:var(--green)">Created</span>';
+                document.getElementById('recvBip21').textContent = data.bip21Uri;
+                document.getElementById('recvResult').style.display = '';
+                document.getElementById('recvAmount').value = '';
+                document.getElementById('recvLabel').value = '';
+                showToast(`Receive invoice for ${amount.toLocaleString()} sats created`, 'success');
+                await loadPayments();
+                setTimeout(() => { status.innerHTML = ''; }, 3000);
+            } catch (err) {
+                status.innerHTML = `<span style="color:var(--red)">Failed: ${esc(err.message)}</span>`;
+            }
+        }
+
+        async function cancelPayment(paymentId) {
+            try {
+                const res = await fetch(`/api/payments/${encodeURIComponent(paymentId)}`, { method: 'DELETE' });
+                if (res.ok) {
+                    showToast('Payment cancelled', 'info');
+                    await loadPayments();
+                } else {
+                    showToast('Failed to cancel payment', 'warning');
+                }
+            } catch (err) {
+                showToast('Error: ' + err.message, 'warning');
+            }
+        }
+
+        function copyPaymentUri() {
+            const uri = document.getElementById('recvBip21').textContent;
+            navigator.clipboard.writeText(uri).then(() => showToast('URI copied', 'info'));
+        }
+
         async function refreshAll() {
             document.getElementById('lastUpdate').textContent = 'Refreshing...';
-            await Promise.all([loadSummary(), loadPrivacySummary(), loadPrivacyDistribution(), loadPrivacyRecommendations(), loadRounds(), loadUtxos(), loadCoinjoins(), loadTransactions(), loadMixingStatus(), loadMixingStats(), loadSyncStatus(), loadAddressBook(), loadFeeEstimates(), loadSettingsInfo()]);
+            await Promise.all([loadSummary(), loadPrivacySummary(), loadPrivacyDistribution(), loadPrivacyRecommendations(), loadRounds(), loadUtxos(), loadCoinjoins(), loadTransactions(), loadMixingStatus(), loadMixingStats(), loadSyncStatus(), loadAddressBook(), loadFeeEstimates(), loadSettingsInfo(), loadPayments()]);
             updateConnectionStatus(sseConnected ? 'live' : 'polling');
         }
 
@@ -2139,8 +2363,10 @@
             source.addEventListener('mixing', () => {
                 loadMixingStatus();
                 loadCoinjoins();
+                loadPayments();
                 logEvent('mixing');
                 notifyTab('coinjoins');
+                notifyTab('payments');
                 showToast('Mixing round completed', 'success');
                 sendBrowserNotification('Kompaktor', 'CoinJoin round completed — your privacy has improved');
             });
@@ -2354,8 +2580,8 @@
             if (e.key === 'r' || e.key === 'R') { e.preventDefault(); refreshAll(); }
             if (e.key === 't' || e.key === 'T') { e.preventDefault(); toggleTheme(); }
             // Number keys 1-5 switch tabs
-            const tabs = ['overview', 'send-receive', 'utxos', 'coinjoins', 'settings'];
-            const tabKeys = { '1': 'overview', '2': 'send-receive', '3': 'utxos', '4': 'coinjoins', '5': 'settings' };
+            const tabs = ['overview', 'send-receive', 'payments', 'utxos', 'coinjoins', 'settings'];
+            const tabKeys = { '1': 'overview', '2': 'send-receive', '3': 'payments', '4': 'utxos', '5': 'coinjoins', '6': 'settings' };
             if (tabKeys[e.key]) { e.preventDefault(); switchTab(tabKeys[e.key]); }
             // Arrow keys navigate between tabs
             if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
