@@ -80,12 +80,15 @@ Kompaktor.sln
 │   ├── KompaktorHdWallet.cs           # IKompaktorWalletInterface with BIP-39/84/86
 │   ├── MnemonicEncryption.cs          # AES-256-GCM mnemonic encryption
 │   ├── WalletSyncService.cs           # UTXO sync engine with blockchain monitoring
+│   ├── CoinJoinRecorder.cs            # Persists completed/failed rounds to wallet DB
 │   └── Data/                          # EF Core entities and WalletDbContext
 ├── Kompaktor.Wallet.Sample/ # Console app: coordinator + client in one process
 ├── Kompaktor.Scoring/      # Anonymity scoring, label clustering, coin selection
 │   ├── AnonymityScorer.cs              # Per-UTXO anonymity score calculator
 │   ├── LabelClusterAnalyzer.cs         # Label propagation and cluster detection
 │   ├── CoinSelectionAdvisor.cs         # Privacy-aware coin selection
+│   ├── WalletCoinSelector.cs          # Bridges wallet DB with scorer for UTXO queries
+│   ├── ScoringWalletAdapter.cs        # IKompaktorWalletInterface decorator for auto-mixing
 │   └── CredentialFlowTracker.cs       # Credential lifecycle flow analysis
 ├── Kompaktor.Client/       # HTTP client for remote coordinator communication
 │   ├── KompaktorCoordinatorClient.cs   # High-level entry point: round discovery, status, factory creation
@@ -134,9 +137,13 @@ Abstraction over blockchain data access that replaces the hard `RPCClient` depen
 
 HD wallet implementing `IKompaktorWalletInterface` with BIP-39 mnemonic generation, BIP-84 (P2WPKH) and BIP-86 (P2TR) key derivation, AES-256-GCM mnemonic encryption at rest, and EF Core/SQLite persistence for addresses, UTXOs, transactions, and coinjoin history. Gap limit of 20 addresses per chain with automatic exposed-address tracking for failed rounds.
 
+### `CoinJoinRecorder`
+
+Persists completed and failed coinjoin rounds to the wallet database. For completed rounds, creates `TransactionEntity`, `CoinJoinRecordEntity`, and `CoinJoinParticipationEntity` records linking our input and output UTXOs. Marks input UTXOs as spent and creates new output UTXOs. For failed rounds, records the attempt for intersection attack analysis. The `KompaktorRoundResult` from `KompaktorService` carries all required data (`Transaction`, `OurInputOutpoints`, `OurOutputScripts`) for direct feeding into the recorder.
+
 ### `AnonymityScorer`
 
-Per-UTXO anonymity scoring engine. Computes raw anonymity set from coinjoin participant counts with multiplicative composition across rounds. Applies penalties for amount distinguishability (unique/rare output values), label clustering (known external sources like exchanges), and address reuse. Paired with `LabelClusterAnalyzer` (union-find label propagation) and `CoinSelectionAdvisor` (privacy-first, fee-saver, and consolidation strategies with cluster mixing warnings).
+Per-UTXO anonymity scoring engine. Computes raw anonymity set from coinjoin participant counts with multiplicative composition across rounds. Applies penalties for amount distinguishability (unique/rare output values), label clustering (known external sources like exchanges), and address reuse. Paired with `LabelClusterAnalyzer` (union-find label propagation), `CoinSelectionAdvisor` (privacy-first, fee-saver, and consolidation strategies with cluster mixing warnings), `WalletCoinSelector` (bridges wallet DB with scorer for scored UTXO queries and privacy health summaries), and `ScoringWalletAdapter` (decorator that wraps `IKompaktorWalletInterface` to return only coins needing more mixing — creates the auto-mixing feedback loop).
 
 ### `MultiServerBackend`
 
@@ -269,7 +276,11 @@ The coordinator reads configuration from `appsettings.json`, environment variabl
 **Recommended: KompaktorService** — manages continuous coinjoin participation automatically:
 
 ```csharp
-// 1. Configure service with Tor privacy
+// 1. Setup privacy-aware wallet adapter (only sends low-anon coins to coinjoin)
+var coinSelector = new WalletCoinSelector(db);
+var scoringWallet = new ScoringWalletAdapter(wallet, coinSelector, wallet.WalletId);
+
+// 2. Configure service with Tor privacy
 var service = new KompaktorService(
     new KompaktorServiceOptions
     {
@@ -278,9 +289,9 @@ var service = new KompaktorService(
         CircuitFactory = new TorCircuitFactory(new TorOptions { SocksPort = 9050 }),
         Random = SecureRandom.Instance
     },
-    wallet, logger);
+    scoringWallet, logger);  // Uses scoring adapter instead of raw wallet
 
-// 2. Configure behavior traits (created fresh per round)
+// 3. Configure behavior traits (created fresh per round)
 service.BehaviorFactory = (round, factory) =>
 [
     new ConsolidationBehaviorTrait(10),
@@ -288,12 +299,26 @@ service.BehaviorFactory = (round, factory) =>
     new SelfSendChangeBehaviorTrait(wallet.GetChangeScript, TimeSpan.FromSeconds(30))
 ];
 
-// 3. Optionally filter rounds by parameters
+// 4. Optionally filter rounds by parameters
 service.RoundFilter = info => info.FeeRateSatPerK <= 50_000; // Max 50 sat/vB
 
-// 4. Start continuous participation (runs until cancelled)
+// 5. Wire CoinJoinRecorder for the full feedback loop
+var recorder = new CoinJoinRecorder(db, wallet.WalletId);
+service.RoundCompleted += async result =>
+{
+    if (result.Success && result.Transaction is not null)
+        await recorder.RecordRoundAsync(result.RoundId, result.Transaction,
+            result.OurInputOutpoints!, result.OurOutputScripts!,
+            result.TotalParticipantInputs);
+    else if (!result.Success && result.OurInputOutpoints is not null)
+        await recorder.RecordFailedRoundAsync(result.RoundId, result.OurInputOutpoints);
+};
+
+// 6. Start continuous participation (runs until cancelled)
 await service.StartAsync(cts.Token);
 // Service auto-discovers rounds, joins, handles failures, and rejoins
+// Scoring adapter ensures only low-privacy coins are selected
+// Recorder persists results → scorer reflects new anonymity → feedback loop
 ```
 
 **Advanced: Manual round participation** for fine-grained control:
@@ -372,6 +397,9 @@ The test suite includes 310+ tests covering:
 - Remote round poll resilience with exponential backoff and failure tracking
 - Wallet sync service balance calculation with confirmed/unconfirmed separation
 - Privacy-aware coin selection with cluster mixing warnings
+- CoinJoinRecorder round persistence with UTXO creation and spend tracking
+- WalletCoinSelector scored UTXO queries with privacy summary generation
+- ScoringWalletAdapter auto-mixing threshold filtering
 - Multi-server Electrum routing with round-robin assignment and script pinning
 - Credential lifecycle flow analysis with merge tree depth and fee calculation
 
