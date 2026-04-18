@@ -861,6 +861,28 @@
 
         <!-- TAB: CoinJoins -->
         <div class="tab-panel" data-tab="coinjoins">
+            <div class="cards" id="mixStatsCards" style="margin-bottom:24px">
+                <div class="card">
+                    <div class="label">Total Rounds</div>
+                    <div class="value" id="msTotalRounds">-</div>
+                </div>
+                <div class="card">
+                    <div class="label">Success Rate</div>
+                    <div class="value" id="msSuccessRate">-</div>
+                    <div class="unit">%</div>
+                </div>
+                <div class="card">
+                    <div class="label">Our Inputs</div>
+                    <div class="value" id="msTotalInputs">-</div>
+                    <div class="unit">total</div>
+                </div>
+                <div class="card">
+                    <div class="label">Avg Participants</div>
+                    <div class="value" id="msAvgParticipants">-</div>
+                    <div class="unit">per round</div>
+                </div>
+            </div>
+
             <section>
                 <h2>CoinJoin History</h2>
                 <table id="coinjoinsTable">
@@ -930,10 +952,17 @@
             </section>
 
             <section>
-                <h2>Export Wallet Data</h2>
+                <h2>Export / Import Wallet Data</h2>
                 <div style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:16px">
-                    <p style="color:var(--text-muted);font-size:13px;margin-bottom:12px">Export labels, address book, and coinjoin history as JSON. This does not include private keys — use the backup section above for recovery phrases.</p>
-                    <button class="send-btn" onclick="exportWalletData()">Export JSON</button>
+                    <p style="color:var(--text-muted);font-size:13px;margin-bottom:12px">Export or import labels, address book, and coinjoin history as JSON. Does not include private keys.</p>
+                    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                        <button class="send-btn" onclick="exportWalletData()">Export JSON</button>
+                        <label class="send-btn" style="background:var(--surface);color:var(--text);border:1px solid var(--border);cursor:pointer">
+                            Import JSON
+                            <input type="file" accept=".json" onchange="importWalletData(this)" style="display:none">
+                        </label>
+                        <span id="importStatus" style="font-size:12px"></span>
+                    </div>
                 </div>
             </section>
 
@@ -1792,7 +1821,7 @@
 
         async function refreshAll() {
             document.getElementById('lastUpdate').textContent = 'Refreshing...';
-            await Promise.all([loadSummary(), loadPrivacySummary(), loadPrivacyDistribution(), loadPrivacyRecommendations(), loadRounds(), loadUtxos(), loadCoinjoins(), loadTransactions(), loadMixingStatus(), loadSyncStatus(), loadAddressBook(), loadFeeEstimates(), loadSettingsInfo()]);
+            await Promise.all([loadSummary(), loadPrivacySummary(), loadPrivacyDistribution(), loadPrivacyRecommendations(), loadRounds(), loadUtxos(), loadCoinjoins(), loadTransactions(), loadMixingStatus(), loadMixingStats(), loadSyncStatus(), loadAddressBook(), loadFeeEstimates(), loadSettingsInfo()]);
             updateConnectionStatus(sseConnected ? 'live' : 'polling');
         }
 
@@ -1975,6 +2004,46 @@
             } catch (err) {
                 status.innerHTML = `<span style="color:var(--red)">Failed: ${esc(err.message)}</span>`;
             }
+        }
+
+        // Mixing statistics
+        async function loadMixingStats() {
+            const data = await fetchJson('/api/mixing/statistics');
+            if (!data) return;
+            document.getElementById('msTotalRounds').textContent = data.totalRounds;
+            document.getElementById('msSuccessRate').textContent = data.successRate;
+            document.getElementById('msTotalInputs').textContent = data.totalOurInputs;
+            document.getElementById('msAvgParticipants').textContent = data.averageParticipantsPerRound;
+        }
+
+        // Settings: import wallet data
+        async function importWalletData(input) {
+            const file = input.files[0];
+            if (!file) return;
+            const status = document.getElementById('importStatus');
+
+            try {
+                const text = await file.text();
+                const data = JSON.parse(text);
+                status.innerHTML = '<span style="color:var(--yellow)">Importing...</span>';
+
+                const res = await fetch('/api/wallet/import', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: text
+                });
+                const result = await res.json();
+                if (!res.ok) {
+                    status.innerHTML = `<span style="color:var(--red)">${esc(typeof result === 'string' ? result : JSON.stringify(result))}</span>`;
+                    return;
+                }
+                status.innerHTML = `<span style="color:var(--green)">Imported ${result.labelsImported} labels, ${result.addressBookImported} address book entries</span>`;
+                showToast(`Imported ${result.labelsImported} labels, ${result.addressBookImported} contacts`, 'success');
+                await Promise.all([loadUtxos(), loadAddressBook()]);
+            } catch (err) {
+                status.innerHTML = `<span style="color:var(--red)">Invalid file: ${esc(err.message)}</span>`;
+            }
+            input.value = ''; // Reset file input
         }
 
         // Settings: export wallet data

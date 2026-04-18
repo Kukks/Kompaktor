@@ -1100,6 +1100,88 @@ app.MapGet("/api/wallet/export", async (WalletDbContext db) =>
     return Results.Json(export, contentType: "application/json");
 }).WithTags("Wallet");
 
+// Wallet data import (labels, address book)
+app.MapPost("/api/wallet/import", async (WalletDbContext db, HttpContext ctx, DashboardEventBus bus) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.BadRequest("No wallet found");
+
+    var body = await ctx.Request.ReadFromJsonAsync<System.Text.Json.JsonElement>();
+    var imported = new { labels = 0, addressBook = 0 };
+    int labelsAdded = 0, abAdded = 0;
+
+    // Import labels
+    if (body.TryGetProperty("labels", out var labelsArr) && labelsArr.ValueKind == System.Text.Json.JsonValueKind.Array)
+    {
+        foreach (var l in labelsArr.EnumerateArray())
+        {
+            var entityType = l.GetProperty("entityType").GetString() ?? "";
+            var entityId = l.GetProperty("entityId").GetString() ?? "";
+            var text = l.GetProperty("text").GetString() ?? "";
+            if (string.IsNullOrEmpty(text)) continue;
+
+            var exists = await db.Labels.AnyAsync(x =>
+                x.EntityType == entityType && x.EntityId == entityId && x.Text == text);
+            if (!exists)
+            {
+                db.Labels.Add(new LabelEntity { EntityType = entityType, EntityId = entityId, Text = text });
+                labelsAdded++;
+            }
+        }
+    }
+
+    // Import address book
+    if (body.TryGetProperty("addressBook", out var abArr) && abArr.ValueKind == System.Text.Json.JsonValueKind.Array)
+    {
+        foreach (var a in abArr.EnumerateArray())
+        {
+            var label = a.GetProperty("label").GetString() ?? "";
+            var address = a.GetProperty("address").GetString() ?? "";
+            if (string.IsNullOrEmpty(address)) continue;
+
+            var exists = await db.AddressBook.AnyAsync(x =>
+                x.WalletId == wallet.Id && x.Address == address);
+            if (!exists)
+            {
+                db.AddressBook.Add(new AddressBookEntry { WalletId = wallet.Id, Label = label, Address = address });
+                abAdded++;
+            }
+        }
+    }
+
+    await db.SaveChangesAsync();
+    bus.Publish("utxos");
+    return Results.Ok(new { labelsImported = labelsAdded, addressBookImported = abAdded });
+}).WithTags("Wallet");
+
+// Mixing statistics summary
+app.MapGet("/api/mixing/statistics", async (WalletDbContext db) =>
+{
+    var records = await db.CoinJoinRecords.ToListAsync();
+    var completed = records.Where(r => r.Status == "Completed").ToList();
+    var failed = records.Where(r => r.Status != "Completed").ToList();
+
+    var totalInputsSat = completed.Sum(r =>
+    {
+        // Approximate from output values if available
+        return r.OutputValuesSat.Length > 0 ? r.OutputValuesSat.Sum() : 0L;
+    });
+
+    return Results.Ok(new
+    {
+        totalRounds = records.Count,
+        completedRounds = completed.Count,
+        failedRounds = failed.Count,
+        successRate = records.Count > 0 ? Math.Round(100.0 * completed.Count / records.Count, 1) : 0.0,
+        totalOurInputs = completed.Sum(r => r.OurInputCount),
+        totalOurOutputs = completed.Sum(r => r.OurOutputCount),
+        totalParticipants = completed.Sum(r => r.ParticipantCount),
+        averageParticipantsPerRound = completed.Count > 0 ? Math.Round((double)completed.Sum(r => r.ParticipantCount) / completed.Count, 1) : 0.0,
+        firstRound = records.Min(r => (DateTimeOffset?)r.CreatedAt),
+        lastRound = records.Max(r => (DateTimeOffset?)r.CreatedAt)
+    });
+}).WithTags("Mixing");
+
 // Wallet sync status
 app.MapGet("/api/wallet/sync-status", (WalletSyncBackgroundService sync) =>
 {
