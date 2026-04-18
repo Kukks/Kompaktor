@@ -105,19 +105,42 @@ public class WalletPaymentManager : IOutboundPaymentManager, IInboundPaymentMana
     public async Task BreakCommitment(string pendingPaymentId)
     {
         await _lock.WaitAsync();
+        PendingPaymentEntity? entity;
+        bool exhausted = false;
         try
         {
-            var entity = await _db.PendingPayments.FindAsync(pendingPaymentId);
+            entity = await _db.PendingPayments.FindAsync(pendingPaymentId);
             if (entity is null || entity.WalletId != _walletId) return;
 
-            // Reset to pending so it can be retried in the next round
-            entity.Status = "Pending";
             entity.RetryCount++;
+
+            // Check retry limit (0 = unlimited)
+            if (entity.MaxRetries > 0 && entity.RetryCount >= entity.MaxRetries)
+            {
+                entity.Status = "Failed";
+                exhausted = true;
+            }
+            else
+            {
+                entity.Status = "Pending";
+            }
+
             await _db.SaveChangesAsync();
         }
         finally
         {
             _lock.Release();
+        }
+
+        // Fire webhook if retries exhausted (outside lock)
+        if (exhausted)
+        {
+            try
+            {
+                var webhookSvc = new PaymentWebhookService(_db, _walletId);
+                await webhookSvc.DeliverAsync(entity!, "RetriesExhausted");
+            }
+            catch { }
         }
     }
 

@@ -367,4 +367,55 @@ public class WalletPaymentManagerTests : IDisposable
         Assert.Equal("Pending", e2.Status);
         Assert.Equal("Pending", e3.Status);
     }
+
+    [Fact]
+    public async Task BreakCommitment_RetriesExhausted_FailsPayment()
+    {
+        var addr = new Key().PubKey.GetAddress(ScriptPubKeyType.TaprootBIP86, _network).ToString();
+        var entity = await _manager.CreateOutboundPaymentAsync(addr, 50_000);
+
+        // Set a low retry limit for testing
+        entity.MaxRetries = 3;
+        await _db.SaveChangesAsync();
+
+        // Simulate commit + break cycles
+        await _manager.Commit(entity.Id);
+        await _manager.BreakCommitment(entity.Id); // retry 1
+        var updated = await _db.PendingPayments.FindAsync(entity.Id);
+        Assert.Equal("Pending", updated!.Status);
+        Assert.Equal(1, updated.RetryCount);
+
+        await _manager.Commit(entity.Id);
+        await _manager.BreakCommitment(entity.Id); // retry 2
+        updated = await _db.PendingPayments.FindAsync(entity.Id);
+        Assert.Equal("Pending", updated!.Status);
+
+        await _manager.Commit(entity.Id);
+        await _manager.BreakCommitment(entity.Id); // retry 3 = max → Failed
+        updated = await _db.PendingPayments.FindAsync(entity.Id);
+        Assert.Equal("Failed", updated!.Status);
+        Assert.Equal(3, updated.RetryCount);
+    }
+
+    [Fact]
+    public async Task BreakCommitment_UnlimitedRetries_NeverFails()
+    {
+        var addr = new Key().PubKey.GetAddress(ScriptPubKeyType.TaprootBIP86, _network).ToString();
+        var entity = await _manager.CreateOutboundPaymentAsync(addr, 50_000);
+
+        // Set unlimited retries
+        entity.MaxRetries = 0;
+        await _db.SaveChangesAsync();
+
+        // Run 20 retry cycles — should never auto-fail
+        for (int i = 0; i < 20; i++)
+        {
+            await _manager.Commit(entity.Id);
+            await _manager.BreakCommitment(entity.Id);
+        }
+
+        var updated = await _db.PendingPayments.FindAsync(entity.Id);
+        Assert.Equal("Pending", updated!.Status);
+        Assert.Equal(20, updated.RetryCount);
+    }
 }
