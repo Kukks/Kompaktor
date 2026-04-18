@@ -843,6 +843,97 @@ app.MapPost("/api/dashboard/send", async (WalletDbContext db, IBlockchainBackend
     }
 }).WithTags("Dashboard");
 
+// Export transaction plan as PSBT for hardware wallet signing
+app.MapPost("/api/dashboard/export-psbt", async (WalletDbContext db, HttpContext ctx) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.BadRequest("No wallet found");
+
+    var body = await ctx.Request.ReadFromJsonAsync<SendPlanRequest>();
+    if (body is null) return Results.BadRequest("Invalid request");
+
+    try
+    {
+        var destination = BitcoinAddress.Create(body.Destination, network);
+        var amount = Money.Satoshis(body.AmountSat);
+        var feeRate = new FeeRate(Money.Satoshis(body.FeeRateSatPerVb), 1);
+        var strategy = Enum.TryParse<CoinSelectionStrategy>(body.Strategy, true, out var s)
+            ? s : CoinSelectionStrategy.PrivacyFirst;
+
+        var txBuilder = new WalletTransactionBuilder(db, network);
+        var plan = await txBuilder.PlanTransactionAsync(
+            wallet.Id, destination.ScriptPubKey, amount, feeRate, strategy);
+
+        // Create PSBT from the unsigned transaction
+        var psbt = PSBT.FromTransaction(plan.Transaction, network);
+
+        // Add witness UTXO data for each input so hardware wallets can verify
+        for (var i = 0; i < plan.InputCoins.Length; i++)
+        {
+            psbt.Inputs[i].WitnessUtxo = plan.InputCoins[i].TxOut;
+        }
+
+        return Results.Ok(new
+        {
+            psbt = psbt.ToBase64(),
+            inputCount = plan.InputCoins.Length,
+            outputCount = plan.Transaction.Outputs.Count,
+            estimatedFeeSat = plan.EstimatedFee.Satoshi,
+            warnings = plan.Warnings
+        });
+    }
+    catch (Exception ex)
+    {
+        return Results.BadRequest(ex.Message);
+    }
+}).WithTags("Dashboard");
+
+// Broadcast a signed PSBT
+app.MapPost("/api/dashboard/broadcast-psbt", async (WalletDbContext db, IBlockchainBackend chain, HttpContext ctx, DashboardEventBus bus) =>
+{
+    var body = await ctx.Request.ReadFromJsonAsync<BroadcastPsbtRequest>();
+    if (body is null || string.IsNullOrWhiteSpace(body.SignedPsbt))
+        return Results.BadRequest("Signed PSBT required");
+
+    try
+    {
+        var psbt = PSBT.Parse(body.SignedPsbt, network);
+
+        if (!psbt.TryFinalize(out _))
+            return Results.BadRequest("PSBT is not fully signed — all inputs must be signed before broadcast");
+
+        var tx = psbt.ExtractTransaction();
+        var txId = await chain.BroadcastAsync(tx);
+
+        // Mark spent UTXOs
+        foreach (var input in tx.Inputs)
+        {
+            var utxo = await db.Utxos.FirstOrDefaultAsync(u =>
+                u.TxId == input.PrevOut.Hash.ToString() && u.OutputIndex == (int)input.PrevOut.N);
+            if (utxo is not null) utxo.SpentByTxId = txId.ToString();
+        }
+        await db.SaveChangesAsync();
+
+        bus.Publish("utxos");
+        bus.Publish("wallet");
+
+        return Results.Ok(new
+        {
+            txId = txId.ToString(),
+            inputCount = tx.Inputs.Count,
+            outputCount = tx.Outputs.Count
+        });
+    }
+    catch (FormatException)
+    {
+        return Results.BadRequest("Invalid PSBT format");
+    }
+    catch (Exception ex)
+    {
+        return Results.BadRequest(ex.Message);
+    }
+}).WithTags("Dashboard");
+
 // Fee estimation for send form
 app.MapGet("/api/dashboard/fee-estimates", async (IBlockchainBackend chain) =>
 {
@@ -1013,3 +1104,4 @@ record CreateWalletRequest(string Passphrase, string? Name = null, int? WordCoun
 record MixingStartRequest(string Passphrase, string? CoordinatorUrl = null);
 record AddressBookRequest(string Label, string Address);
 record SendRequest(string Destination, long AmountSat, long FeeRateSatPerVb = 2, string Strategy = "PrivacyFirst", string Passphrase = "");
+record BroadcastPsbtRequest(string SignedPsbt);

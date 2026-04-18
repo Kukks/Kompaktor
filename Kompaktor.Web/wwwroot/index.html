@@ -1295,6 +1295,7 @@
                     <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);display:flex;gap:8px;align-items:center;flex-wrap:wrap">
                         <input type="password" id="sendPassphrase" placeholder="Passphrase to sign" style="padding:6px 10px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:13px;width:200px" onkeydown="if(event.key==='Enter')confirmSend()">
                         <button class="send-btn" onclick="confirmSend()">Sign &amp; Broadcast</button>
+                        <button class="send-btn" onclick="exportPsbt()" style="background:var(--surface);color:var(--text);border:1px solid var(--border)">Export PSBT</button>
                         <span id="sendStatus" style="font-size:12px;color:var(--text-muted)"></span>
                     </div>
                 `;
@@ -1346,6 +1347,74 @@
                 document.getElementById('sendAmount').value = '';
                 document.getElementById('sendPassphrase').value = '';
                 showToast('Transaction broadcast: ' + data.txId.substring(0, 16) + '...', 'success');
+            } catch (err) {
+                status.innerHTML = `<span style="color:var(--red)">Failed: ${esc(err.message)}</span>`;
+            }
+        }
+
+        async function exportPsbt() {
+            const dest = document.getElementById('sendDest').value.trim();
+            const amount = parseInt(document.getElementById('sendAmount').value);
+            const feeRate = parseInt(document.getElementById('sendFeeRate').value) || 2;
+            const strategy = document.getElementById('sendStrategy').value;
+            const status = document.getElementById('sendStatus');
+
+            if (!dest || !amount) { status.innerHTML = '<span style="color:var(--red)">Fill in destination and amount first</span>'; return; }
+            status.innerHTML = '<span style="color:var(--yellow)">Generating PSBT...</span>';
+
+            try {
+                const res = await fetch('/api/dashboard/export-psbt', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ destination: dest, amountSat: amount, feeRateSatPerVb: feeRate, strategy })
+                });
+                const data = await res.json();
+                if (!res.ok) { status.innerHTML = `<span style="color:var(--red)">${esc(data.detail || data.title || JSON.stringify(data))}</span>`; return; }
+
+                // Download PSBT as file
+                const blob = new Blob([data.psbt], { type: 'text/plain' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url; a.download = 'kompaktor-tx.psbt'; a.click();
+                URL.revokeObjectURL(url);
+                status.innerHTML = `<span style="color:var(--green)">PSBT exported</span> &mdash; <button onclick="showPsbtImport()" style="background:none;border:none;color:var(--accent);cursor:pointer;font-size:12px;text-decoration:underline">Import signed PSBT</button>`;
+            } catch (err) {
+                status.innerHTML = `<span style="color:var(--red)">Failed: ${esc(err.message)}</span>`;
+            }
+        }
+
+        function showPsbtImport() {
+            const panel = document.getElementById('planResult');
+            panel.innerHTML += `
+                <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
+                    <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;display:block;margin-bottom:4px">Import Signed PSBT</label>
+                    <textarea id="signedPsbtInput" rows="3" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px;font-family:monospace;padding:8px;resize:vertical" placeholder="Paste base64-encoded signed PSBT here..."></textarea>
+                    <button class="send-btn" onclick="broadcastPsbt()" style="margin-top:8px">Broadcast Signed PSBT</button>
+                    <span id="psbtBroadcastStatus" style="font-size:12px;color:var(--text-muted);margin-left:8px"></span>
+                </div>`;
+        }
+
+        async function broadcastPsbt() {
+            const psbtText = document.getElementById('signedPsbtInput').value.trim();
+            const status = document.getElementById('psbtBroadcastStatus');
+            if (!psbtText) { status.innerHTML = '<span style="color:var(--red)">Paste a signed PSBT</span>'; return; }
+
+            status.innerHTML = '<span style="color:var(--yellow)">Broadcasting...</span>';
+            try {
+                const res = await fetch('/api/dashboard/broadcast-psbt', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ signedPsbt: psbtText })
+                });
+                const data = await res.json();
+                if (!res.ok) { status.innerHTML = `<span style="color:var(--red)">${esc(data.detail || data.title || JSON.stringify(data))}</span>`; return; }
+
+                document.getElementById('planResult').innerHTML = `
+                    <div style="padding:12px;text-align:center">
+                        <div style="color:var(--green);font-size:16px;font-weight:600;margin-bottom:8px">&#10003; PSBT Broadcast</div>
+                        <div style="font-size:12px;color:var(--text-muted)">TxID: ${txLink(data.txId, esc(data.txId))}</div>
+                    </div>`;
+                showToast('PSBT transaction broadcast: ' + data.txId.substring(0, 16) + '...', 'success');
             } catch (err) {
                 status.innerHTML = `<span style="color:var(--red)">Failed: ${esc(err.message)}</span>`;
             }
