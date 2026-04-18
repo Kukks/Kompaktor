@@ -216,6 +216,24 @@
             </table>
         </section>
 
+        <section>
+            <h2>Transaction History</h2>
+            <table id="txTable">
+                <thead>
+                    <tr>
+                        <th>Transaction</th>
+                        <th>Amount</th>
+                        <th>Block</th>
+                        <th>UTXOs</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody id="txBody">
+                    <tr><td colspan="5" class="empty">Loading...</td></tr>
+                </tbody>
+            </table>
+        </section>
+
         <section id="flowsSection" style="display:none">
             <h2>Credential Flows <span id="flowsRoundLabel" style="font-size:12px;color:var(--text-muted)"></span></h2>
             <table id="flowsTable">
@@ -351,6 +369,22 @@
             </tr>`).join('');
         }
 
+        async function loadTransactions() {
+            const txs = await fetchJson('/api/dashboard/transactions');
+            const body = document.getElementById('txBody');
+            if (!txs || txs.length === 0) {
+                body.innerHTML = '<tr><td colspan="5" class="empty">No transactions</td></tr>';
+                return;
+            }
+            body.innerHTML = txs.map(t => `<tr>
+                <td class="truncate" title="${t.txId}">${truncate(t.txId)}</td>
+                <td>${t.amountBtc.toFixed(8)}</td>
+                <td>${t.confirmedHeight ?? '<span style="color:var(--yellow)">pending</span>'}</td>
+                <td>${t.utxoCount}</td>
+                <td><span class="status-badge ${t.isSpent ? 'status-failed' : 'status-completed'}">${t.isSpent ? 'Spent' : 'Received'}</span></td>
+            </tr>`).join('');
+        }
+
         async function loadFlows(roundId) {
             const section = document.getElementById('flowsSection');
             const body = document.getElementById('flowsBody');
@@ -375,7 +409,7 @@
 
         async function refreshAll() {
             document.getElementById('lastUpdate').textContent = 'Refreshing...';
-            await Promise.all([loadSummary(), loadPrivacySummary(), loadRounds(), loadUtxos(), loadCoinjoins()]);
+            await Promise.all([loadSummary(), loadPrivacySummary(), loadRounds(), loadUtxos(), loadCoinjoins(), loadTransactions()]);
             document.getElementById('lastUpdate').textContent = 'Updated ' + new Date().toLocaleTimeString();
         }
 
