@@ -8,6 +8,9 @@ using Microsoft.EntityFrameworkCore;
 using NBitcoin;
 using NBitcoin.Secp256k1;
 
+using XPubKey = NBitcoin.Secp256k1.ECXOnlyPubKey;
+using PrivKey = NBitcoin.Secp256k1.ECPrivKey;
+
 namespace Kompaktor.Wallet;
 
 /// <summary>
@@ -195,15 +198,8 @@ public class WalletPaymentManager : IOutboundPaymentManager, IInboundPaymentMana
         var privKeyBytes = System.Security.Cryptography.RandomNumberGenerator.GetBytes(32);
         var ecPrivKey = ECPrivKey.Create(privKeyBytes);
 
-        // Get a fresh receive address
-        var address = await _db.Addresses
-            .Include(a => a.Account)
-            .Where(a => a.Account.WalletId == _walletId)
-            .Where(a => !a.IsUsed && !a.IsExposed && !a.IsChange)
-            .OrderByDescending(a => a.Account.Purpose)
-            .ThenBy(a => a.Id)
-            .FirstOrDefaultAsync();
-
+        // Get a fresh receive address, auto-extending gap if needed
+        var address = await GetOrExtendFreshAddressAsync(isChange: false);
         if (address is null)
             throw new InvalidOperationException("No fresh addresses available");
 
@@ -259,6 +255,51 @@ public class WalletPaymentManager : IOutboundPaymentManager, IInboundPaymentMana
         entity.Status = "Failed";
         await _db.SaveChangesAsync();
         return true;
+    }
+
+    private async Task<AddressEntity?> GetOrExtendFreshAddressAsync(bool isChange)
+    {
+        var chain = isChange ? 1 : 0;
+        var address = await _db.Addresses
+            .Include(a => a.Account)
+            .Where(a => a.Account.WalletId == _walletId)
+            .Where(a => !a.IsUsed && !a.IsExposed && a.IsChange == isChange)
+            .OrderByDescending(a => a.Account.Purpose)
+            .ThenBy(a => a.Id)
+            .FirstOrDefaultAsync();
+
+        if (address is not null) return address;
+
+        // Auto-extend from stored xpub
+        var accounts = await _db.Accounts
+            .Include(a => a.Addresses)
+            .Where(a => a.WalletId == _walletId && a.AccountXPub != null)
+            .ToListAsync();
+
+        foreach (var acct in accounts)
+        {
+            var chainAddrs = acct.Addresses.Where(a => a.KeyPath.StartsWith($"{chain}/")).ToList();
+            var maxIdx = chainAddrs.Count > 0
+                ? chainAddrs.Max(a => int.Parse(a.KeyPath.Split('/')[1]))
+                : -1;
+            var newAddrs = KompaktorHdWallet.DeriveAddressesFromXPub(
+                acct.AccountXPub!, _network, acct.Purpose, chain, maxIdx + 1, 20);
+            foreach (var a in newAddrs)
+            {
+                a.AccountId = acct.Id;
+                _db.Addresses.Add(a);
+            }
+        }
+
+        if (accounts.Count > 0) await _db.SaveChangesAsync();
+
+        return await _db.Addresses
+            .Include(a => a.Account)
+            .Where(a => a.Account.WalletId == _walletId)
+            .Where(a => !a.IsUsed && !a.IsExposed && a.IsChange == isChange)
+            .OrderByDescending(a => a.Account.Purpose)
+            .ThenBy(a => a.Id)
+            .FirstOrDefaultAsync();
     }
 
     private PendingPayment ToProtocolPayment(PendingPaymentEntity entity)
