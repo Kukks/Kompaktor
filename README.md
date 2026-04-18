@@ -88,8 +88,9 @@ Kompaktor.sln
 │   └── CredentialFlowTracker.cs       # Credential lifecycle flow analysis
 ├── Kompaktor.Client/       # HTTP client for remote coordinator communication
 │   ├── KompaktorCoordinatorClient.cs   # High-level entry point: round discovery, status, factory creation
-│   ├── HttpKompaktorRoundApi.cs        # IKompaktorRoundApi over HTTP
-│   └── HttpKompaktorRoundApiFactory.cs # Factory with per-identity circuit isolation
+│   ├── HttpKompaktorRoundApi.cs        # IKompaktorRoundApi over HTTP with event polling
+│   ├── HttpKompaktorRoundApiFactory.cs # Factory with per-identity circuit isolation
+│   └── RemoteKompaktorRound.cs        # Event-polling round state for remote participation
 ├── Kompaktor.Web/          # Combined coordinator + wallet dashboard
 │   ├── Program.cs                     # ASP.NET Core host with coordinator + dashboard APIs
 │   └── wwwroot/index.html             # Dark-themed single-page dashboard
@@ -260,6 +261,33 @@ The coordinator reads configuration from `appsettings.json`, environment variabl
 - Configure a persistent `CoordinatorSigningKeyHex` for transcript signature continuity
 - Place behind a reverse proxy with TLS termination
 - HTTP rate limiting is enabled by default (200 req/min protocol, 60 req/min discovery per IP)
+
+### Client Integration
+
+External wallets integrate by referencing `Kompaktor.Client`:
+
+```csharp
+// 1. Connect to coordinator with Tor privacy
+var tor = new TorCircuitFactory(new TorOptions { SocksPort = 9050 });
+var coordinator = new KompaktorCoordinatorClient(
+    new Uri("http://coordinator.onion"), tor);
+
+// 2. Discover rounds and get parameters
+var rounds = await coordinator.GetActiveRoundsAsync();
+var info = await coordinator.GetRoundInfoAsync(rounds[0]);
+
+// 3. Create event-synced round from remote coordinator
+var factory = coordinator.CreateRoundApiFactory(rounds[0]);
+var api = (HttpKompaktorRoundApi)factory.Create();
+var round = new RemoteKompaktorRound(api, pollInterval: TimeSpan.FromSeconds(1));
+await round.StartPollingAsync(cts.Token);
+
+// 4. Join round with wallet
+var client = new KompaktorRoundClient(
+    SecureRandom.Instance, network, round, factory,
+    behaviorTraits, wallet, logger);
+await client.PhasesTask; // Runs through all phases
+```
 
 ## Prerequisites
 
