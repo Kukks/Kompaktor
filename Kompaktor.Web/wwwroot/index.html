@@ -1877,6 +1877,7 @@
         // SSE: real-time updates with polling fallback
         let sseConnected = false;
         let pollTimer = null;
+        let sseRetryDelay = 0;
 
         function connectSSE() {
             const source = new EventSource('/api/dashboard/events');
@@ -1925,13 +1926,16 @@
             source.onerror = () => {
                 sseConnected = false;
                 updateConnectionStatus('polling');
+                logEvent('connected', 'SSE connection lost — reconnecting');
                 source.close();
                 // Fall back to polling
                 if (!pollTimer) {
                     pollTimer = setInterval(refreshAll, 10000);
                 }
-                // Try to reconnect SSE after 5 seconds
-                setTimeout(connectSSE, 5000);
+                // Exponential backoff with jitter (2s, 4s, 8s, 16s... cap 30s)
+                sseRetryDelay = Math.min((sseRetryDelay || 1000) * 2, 30000);
+                const jitter = Math.random() * 1000;
+                setTimeout(connectSSE, sseRetryDelay + jitter);
             };
         }
 
