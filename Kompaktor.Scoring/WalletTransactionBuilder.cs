@@ -78,6 +78,25 @@ public class WalletTransactionBuilder
         if (scores.Count > 1 && scores.Max() / Math.Max(scores.Min(), 0.01) > 10)
             warnings.Add("Selected coins have very different anonymity levels — consider mixing first");
 
+        // Privacy warning: spending unmixed coins
+        var unmixedInputs = selection.Selected.Count(s => s.Score.CoinJoinCount == 0);
+        if (unmixedInputs > 0)
+            warnings.Add($"{unmixedInputs} of {selection.Selected.Count} inputs have never been mixed — this transaction may be traceable");
+
+        // Privacy warning: address reuse on inputs
+        var reusedInputs = selection.Selected.Count(s => s.Score.ReusePenalty < 1.0);
+        if (reusedInputs > 0)
+            warnings.Add($"{reusedInputs} input(s) come from reused addresses — address reuse degrades privacy");
+
+        // Privacy warning: script type mismatch between inputs and destination
+        if (coins.Length > 0)
+        {
+            var inputIsP2tr = coins[0].TxOut.ScriptPubKey.IsScriptType(ScriptType.Taproot);
+            var destIsP2tr = destination.IsScriptType(ScriptType.Taproot);
+            if (inputIsP2tr != destIsP2tr)
+                warnings.Add("Script type mismatch between inputs and destination — change output may be identifiable by type");
+        }
+
         return new TransactionPlan(
             tx,
             coins,
