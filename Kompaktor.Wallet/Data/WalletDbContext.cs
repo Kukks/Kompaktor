@@ -17,6 +17,7 @@ public class WalletDbContext : DbContext
     public DbSet<LabelEntity> Labels => Set<LabelEntity>();
     public DbSet<AddressBookEntry> AddressBook => Set<AddressBookEntry>();
     public DbSet<PendingPaymentEntity> PendingPayments => Set<PendingPaymentEntity>();
+    public DbSet<PrivacySnapshotEntity> PrivacySnapshots => Set<PrivacySnapshotEntity>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -93,6 +94,12 @@ public class WalletDbContext : DbContext
         {
             e.HasKey(p => p.Id);
             e.HasIndex(p => new { p.WalletId, p.Direction, p.Status });
+        });
+
+        modelBuilder.Entity<PrivacySnapshotEntity>(e =>
+        {
+            e.HasKey(s => s.Id);
+            e.HasIndex(s => new { s.WalletId, s.Timestamp });
         });
 
         modelBuilder.Entity<FailedRoundInputEntity>(e =>

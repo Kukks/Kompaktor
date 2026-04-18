@@ -146,6 +146,9 @@ public class MixingManager : IAsyncDisposable
                             result.RoundId, result.Transaction,
                             result.OurInputOutpoints!, result.OurOutputScripts!,
                             result.TotalParticipantInputs);
+
+                        // Record privacy snapshot after successful round
+                        await RecordPrivacySnapshotAsync(db, coinSelector, wallet.WalletId);
                     }
                     catch (Exception ex)
                     {
@@ -162,6 +165,7 @@ public class MixingManager : IAsyncDisposable
             _eventBus.Publish("mixing");
             _eventBus.Publish("utxos");
             _eventBus.Publish("payments");
+            _eventBus.Publish("privacy");
         };
 
         await service.StartAsync();
@@ -197,6 +201,34 @@ public class MixingManager : IAsyncDisposable
         _eventBus.Publish("mixing");
         _logger.LogInformation("Auto-mixing stopped");
         return "Stopped";
+    }
+
+    private async Task RecordPrivacySnapshotAsync(WalletDbContext db, WalletCoinSelector coinSelector, string walletId)
+    {
+        try
+        {
+            var summary = await coinSelector.GetPrivacySummaryAsync(walletId);
+            var roundCount = await db.CoinJoinRecords
+                .CountAsync(r => r.Status == "Completed");
+
+            db.PrivacySnapshots.Add(new Wallet.Data.PrivacySnapshotEntity
+            {
+                WalletId = walletId,
+                TotalUtxos = summary.TotalUtxos,
+                TotalAmountSat = summary.TotalAmountSat,
+                AverageAnonScore = summary.AverageEffectiveScore,
+                MinAnonScore = summary.MinEffectiveScore,
+                MaxAnonScore = summary.MaxEffectiveScore,
+                MixedUtxoCount = summary.MixedUtxoCount,
+                UnmixedUtxoCount = summary.NeedsMixingCount,
+                CoinJoinRoundNumber = roundCount
+            });
+            await db.SaveChangesAsync();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to record privacy snapshot");
+        }
     }
 
     public async ValueTask DisposeAsync()

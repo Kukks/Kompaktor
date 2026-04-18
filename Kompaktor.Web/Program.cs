@@ -845,6 +845,37 @@ app.MapGet("/api/dashboard/privacy-recommendations", async (WalletDbContext db, 
     return Results.Ok(new { recommendations });
 }).WithTags("Dashboard");
 
+// Privacy trend history — returns time-series data for dashboard chart
+app.MapGet("/api/dashboard/privacy-history", async (WalletDbContext db, HttpContext ctx) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.Ok(Array.Empty<object>());
+
+    // Default last 30 days, configurable via query params
+    var daysStr = ctx.Request.Query["days"].FirstOrDefault();
+    var days = int.TryParse(daysStr, out var d) && d is > 0 and <= 365 ? d : 30;
+    var since = DateTimeOffset.UtcNow.AddDays(-days);
+
+    var snapshots = await db.PrivacySnapshots
+        .Where(s => s.WalletId == wallet.Id && s.Timestamp >= since)
+        .OrderBy(s => s.Timestamp)
+        .Select(s => new
+        {
+            timestamp = s.Timestamp,
+            totalUtxos = s.TotalUtxos,
+            totalAmountSat = s.TotalAmountSat,
+            averageAnonScore = Math.Round(s.AverageAnonScore, 2),
+            minAnonScore = Math.Round(s.MinAnonScore, 2),
+            maxAnonScore = Math.Round(s.MaxAnonScore, 2),
+            mixedUtxoCount = s.MixedUtxoCount,
+            unmixedUtxoCount = s.UnmixedUtxoCount,
+            coinJoinRoundNumber = s.CoinJoinRoundNumber
+        })
+        .ToListAsync();
+
+    return Results.Ok(snapshots);
+}).WithTags("Dashboard");
+
 // Interactive Payments: create, list, cancel
 app.MapGet("/api/payments", async (WalletDbContext db) =>
 {
