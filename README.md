@@ -86,6 +86,7 @@ Kompaktor.sln
 │   ├── CoinSelectionAdvisor.cs         # Privacy-aware coin selection
 │   └── CredentialFlowTracker.cs       # Credential lifecycle flow analysis
 ├── Kompaktor.Client/       # HTTP client for remote coordinator communication
+│   ├── KompaktorCoordinatorClient.cs   # High-level entry point: round discovery, status, factory creation
 │   ├── HttpKompaktorRoundApi.cs        # IKompaktorRoundApi over HTTP
 │   └── HttpKompaktorRoundApiFactory.cs # Factory with per-identity circuit isolation
 ├── Kompaktor.Web/          # Combined coordinator + wallet dashboard
