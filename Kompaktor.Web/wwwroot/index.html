@@ -472,6 +472,32 @@
         @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
         @keyframes fadeOut { from { opacity: 1; } to { opacity: 0; } }
 
+        /* Tab navigation */
+        .tab-bar {
+            display: flex;
+            gap: 0;
+            border-bottom: 1px solid var(--border);
+            margin-bottom: 24px;
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+        }
+        .tab-btn {
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            padding: 10px 18px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            border-bottom: 2px solid transparent;
+            white-space: nowrap;
+            transition: color 0.15s, border-color 0.15s;
+        }
+        .tab-btn:hover { color: var(--text); }
+        .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+        .tab-panel { display: none; }
+        .tab-panel.active { display: block; }
+
         /* Responsive: mobile */
         @media (max-width: 768px) {
             .container { padding: 12px; }
@@ -493,6 +519,7 @@
             .ab-add-form { flex-direction: column; }
             .ab-add-form input { width: 100% !important; }
             .tier-legend { gap: 8px; }
+            .tab-btn { padding: 8px 12px; font-size: 13px; }
         }
 
         @media (max-width: 480px) {
@@ -552,24 +579,7 @@
         <!-- Main Dashboard (shown when wallet exists) -->
         <div id="mainDashboard" style="display:none">
 
-        <!-- Receive Address -->
-        <div class="receive-section" id="receiveSection">
-            <h2>Receive Address</h2>
-            <div style="display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap">
-                <div id="receiveQr" style="width:160px;height:160px;background:var(--bg);border:1px solid var(--border);border-radius:6px;display:flex;align-items:center;justify-content:center;overflow:hidden">
-                    <span style="color:var(--text-muted);font-size:11px">Loading QR...</span>
-                </div>
-                <div style="flex:1;min-width:200px">
-                    <div class="address-display">
-                        <span class="addr" id="receiveAddr">Loading...</span>
-                        <button class="copy-btn" onclick="copyAddress()">Copy</button>
-                    </div>
-                    <div class="addr-meta" id="receiveAddrMeta"></div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Auto-Mixing Control -->
+        <!-- Auto-Mixing Control (always visible) -->
         <div class="mixing-control" id="mixingControl">
             <div class="left">
                 <h2>Auto-Mix</h2>
@@ -585,221 +595,307 @@
             </div>
         </div>
 
-        <div class="cards" id="summaryCards">
-            <div class="card">
-                <div class="label">Balance</div>
-                <div class="value" id="balance">-</div>
-                <div class="unit">BTC</div>
-            </div>
-            <div class="card">
-                <div class="label">UTXOs</div>
-                <div class="value" id="utxoCount">-</div>
-                <div class="unit">unspent</div>
-            </div>
-            <div class="card">
-                <div class="label">CoinJoins</div>
-                <div class="value" id="coinjoinCount">-</div>
-                <div class="unit">completed</div>
-            </div>
-            <div class="card">
-                <div class="label">Active Rounds</div>
-                <div class="value" id="activeRounds">-</div>
-                <div class="unit">rounds</div>
-            </div>
-            <div class="card">
-                <div class="label">Avg Privacy Score</div>
-                <div class="value" id="avgScore">-</div>
-                <div class="unit">effective</div>
-            </div>
-            <div class="card">
-                <div class="label">Needs Mixing</div>
-                <div class="value" id="needsMixing">-</div>
-                <div class="unit">UTXOs</div>
-            </div>
+        <!-- Tab Navigation -->
+        <div class="tab-bar" id="tabBar">
+            <button class="tab-btn active" onclick="switchTab('overview')">Overview</button>
+            <button class="tab-btn" onclick="switchTab('send-receive')">Send & Receive</button>
+            <button class="tab-btn" onclick="switchTab('utxos')">UTXOs</button>
+            <button class="tab-btn" onclick="switchTab('coinjoins')">CoinJoins</button>
+            <button class="tab-btn" onclick="switchTab('settings')">Settings</button>
         </div>
 
-        <!-- Privacy Health Meter -->
-        <div class="privacy-meter" id="privacyMeter">
-            <h2>Privacy Health</h2>
-            <div class="meter-bar" id="meterBar"></div>
-            <div class="tier-legend" id="tierLegend"></div>
-        </div>
-
-        <!-- Privacy Recommendations -->
-        <div id="privacyRecommendations" style="margin-bottom:24px"></div>
-
-        <section>
-            <h2>Coordinator</h2>
-            <div class="cards" id="coordCards">
+        <!-- TAB: Overview -->
+        <div class="tab-panel active" data-tab="overview">
+            <div class="cards" id="summaryCards">
                 <div class="card">
-                    <div class="label">Network</div>
-                    <div class="value" id="coordNetwork" style="font-size:20px">-</div>
+                    <div class="label">Balance</div>
+                    <div class="value" id="balance">-</div>
+                    <div class="unit">BTC</div>
                 </div>
                 <div class="card">
-                    <div class="label">Completed (30m)</div>
-                    <div class="value" id="coordCompleted">-</div>
+                    <div class="label">UTXOs</div>
+                    <div class="value" id="utxoCount">-</div>
+                    <div class="unit">unspent</div>
+                </div>
+                <div class="card">
+                    <div class="label">CoinJoins</div>
+                    <div class="value" id="coinjoinCount">-</div>
+                    <div class="unit">completed</div>
+                </div>
+                <div class="card">
+                    <div class="label">Active Rounds</div>
+                    <div class="value" id="activeRounds">-</div>
                     <div class="unit">rounds</div>
                 </div>
                 <div class="card">
-                    <div class="label">Failed (30m)</div>
-                    <div class="value" id="coordFailed">-</div>
-                    <div class="unit">rounds</div>
+                    <div class="label">Avg Privacy Score</div>
+                    <div class="value" id="avgScore">-</div>
+                    <div class="unit">effective</div>
                 </div>
                 <div class="card">
-                    <div class="label">Avg Fill Rate</div>
-                    <div class="value" id="coordFillRate">-</div>
-                    <div class="unit">%</div>
+                    <div class="label">Needs Mixing</div>
+                    <div class="value" id="needsMixing">-</div>
+                    <div class="unit">UTXOs</div>
                 </div>
             </div>
-        </section>
 
-        <section>
-            <h2>Active Rounds</h2>
-            <table id="roundsTable">
-                <thead>
-                    <tr>
-                        <th>Round ID</th>
-                        <th>Status</th>
-                        <th>Inputs</th>
-                        <th>Max Inputs</th>
-                        <th>Fill %</th>
-                        <th>Outputs</th>
-                        <th>Signatures</th>
-                        <th>Type</th>
-                    </tr>
-                </thead>
-                <tbody id="roundsBody">
-                    <tr><td colspan="8" class="empty">Loading...</td></tr>
-                </tbody>
-            </table>
-        </section>
-
-        <section>
-            <h2>Wallet UTXOs</h2>
-            <div class="batch-bar" id="batchBar">
-                <span id="batchCount">0 selected</span>
-                <button onclick="batchFreeze(true)">Freeze Selected</button>
-                <button onclick="batchFreeze(false)">Unfreeze Selected</button>
-                <button onclick="clearSelection()">Clear</button>
+            <!-- Privacy Health Meter -->
+            <div class="privacy-meter" id="privacyMeter">
+                <h2>Privacy Health</h2>
+                <div class="meter-bar" id="meterBar"></div>
+                <div class="tier-legend" id="tierLegend"></div>
             </div>
-            <table id="utxosTable">
-                <thead>
-                    <tr>
-                        <th style="width:30px"><input type="checkbox" id="selectAll" onchange="toggleSelectAll(this)"></th>
-                        <th>Outpoint</th>
-                        <th>Amount</th>
-                        <th>Anon Set</th>
-                        <th>Score</th>
-                        <th>CoinJoins</th>
-                        <th>Labels</th>
-                        <th>Status</th>
-                        <th>Actions</th>
-                    </tr>
-                </thead>
-                <tbody id="utxosBody">
-                    <tr><td colspan="9" class="empty">Loading...</td></tr>
-                </tbody>
-            </table>
-            <div class="detail-panel" id="utxoDetail"></div>
-        </section>
 
-        <section>
-            <h2>CoinJoin History</h2>
-            <table id="coinjoinsTable">
-                <thead>
-                    <tr>
-                        <th>Round</th>
-                        <th>Transaction</th>
-                        <th>Status</th>
-                        <th>Our In/Out</th>
-                        <th>Total In/Out</th>
-                        <th>Participants</th>
-                        <th>Date</th>
-                    </tr>
-                </thead>
-                <tbody id="coinjoinsBody">
-                    <tr><td colspan="7" class="empty">Loading...</td></tr>
-                </tbody>
-            </table>
-        </section>
+            <!-- Privacy Recommendations -->
+            <div id="privacyRecommendations" style="margin-bottom:24px"></div>
 
-        <section>
-            <h2>Transaction History</h2>
-            <table id="txTable">
-                <thead>
-                    <tr>
-                        <th>Transaction</th>
-                        <th>Amount</th>
-                        <th>Block</th>
-                        <th>UTXOs</th>
-                        <th>Status</th>
-                    </tr>
-                </thead>
-                <tbody id="txBody">
-                    <tr><td colspan="5" class="empty">Loading...</td></tr>
-                </tbody>
-            </table>
-        </section>
+            <section>
+                <h2>Coordinator</h2>
+                <div class="cards" id="coordCards">
+                    <div class="card">
+                        <div class="label">Network</div>
+                        <div class="value" id="coordNetwork" style="font-size:20px">-</div>
+                    </div>
+                    <div class="card">
+                        <div class="label">Completed (30m)</div>
+                        <div class="value" id="coordCompleted">-</div>
+                        <div class="unit">rounds</div>
+                    </div>
+                    <div class="card">
+                        <div class="label">Failed (30m)</div>
+                        <div class="value" id="coordFailed">-</div>
+                        <div class="unit">rounds</div>
+                    </div>
+                    <div class="card">
+                        <div class="label">Avg Fill Rate</div>
+                        <div class="value" id="coordFillRate">-</div>
+                        <div class="unit">%</div>
+                    </div>
+                </div>
+            </section>
 
-        <section>
-            <h2>Address Book</h2>
-            <ul class="address-book-list" id="addressBookList">
-                <li class="empty">Loading...</li>
-            </ul>
-            <div class="ab-add-form">
-                <input type="text" id="abLabel" placeholder="Label" style="width:120px">
-                <input type="text" id="abAddress" placeholder="bc1q..." style="width:280px;font-family:'SFMono-Regular',Consolas,monospace">
-                <button class="label-add-btn" onclick="addAddressBookEntry()">Add</button>
+            <section>
+                <h2>Active Rounds</h2>
+                <table id="roundsTable">
+                    <thead>
+                        <tr>
+                            <th>Round ID</th>
+                            <th>Status</th>
+                            <th>Inputs</th>
+                            <th>Max Inputs</th>
+                            <th>Fill %</th>
+                            <th>Outputs</th>
+                            <th>Signatures</th>
+                            <th>Type</th>
+                        </tr>
+                    </thead>
+                    <tbody id="roundsBody">
+                        <tr><td colspan="8" class="empty">Loading...</td></tr>
+                    </tbody>
+                </table>
+            </section>
+
+            <section>
+                <h2>Transaction History</h2>
+                <table id="txTable">
+                    <thead>
+                        <tr>
+                            <th>Transaction</th>
+                            <th>Amount</th>
+                            <th>Block</th>
+                            <th>UTXOs</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody id="txBody">
+                        <tr><td colspan="5" class="empty">Loading...</td></tr>
+                    </tbody>
+                </table>
+            </section>
+        </div>
+
+        <!-- TAB: Send & Receive -->
+        <div class="tab-panel" data-tab="send-receive">
+            <!-- Receive Address -->
+            <div class="receive-section" id="receiveSection">
+                <h2>Receive Address</h2>
+                <div style="display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap">
+                    <div id="receiveQr" style="width:160px;height:160px;background:var(--bg);border:1px solid var(--border);border-radius:6px;display:flex;align-items:center;justify-content:center;overflow:hidden">
+                        <span style="color:var(--text-muted);font-size:11px">Loading QR...</span>
+                    </div>
+                    <div style="flex:1;min-width:200px">
+                        <div class="address-display">
+                            <span class="addr" id="receiveAddr">Loading...</span>
+                            <button class="copy-btn" onclick="copyAddress()">Copy</button>
+                        </div>
+                        <div class="addr-meta" id="receiveAddrMeta"></div>
+                    </div>
+                </div>
             </div>
-        </section>
 
-        <section>
-            <h2>Send</h2>
-            <div class="send-form">
-                <div class="field">
-                    <label>Destination Address</label>
-                    <input type="text" id="sendDest" class="wide" placeholder="bc1q...">
+            <section>
+                <h2>Send</h2>
+                <div class="send-form">
+                    <div class="field">
+                        <label>Destination Address</label>
+                        <input type="text" id="sendDest" class="wide" placeholder="bc1q...">
+                    </div>
+                    <div class="field">
+                        <label>Amount (sats) <button onclick="sendMax()" style="background:none;border:none;color:var(--accent);cursor:pointer;font-size:10px;text-transform:uppercase;padding:0">Max</button></label>
+                        <input type="number" id="sendAmount" class="narrow" placeholder="100000" oninput="updateBtcEquiv()">
+                        <span id="btcEquiv" style="font-size:11px;color:var(--text-muted)"></span>
+                    </div>
+                    <div class="field">
+                        <label>Fee Rate (sat/vB)</label>
+                        <input type="number" id="sendFeeRate" class="narrow" value="2">
+                        <div class="fee-presets" id="feePresets"></div>
+                    </div>
+                    <div class="field">
+                        <label>Strategy</label>
+                        <select id="sendStrategy">
+                            <option value="PrivacyFirst">Privacy First</option>
+                            <option value="FeeSaver">Fee Saver</option>
+                            <option value="Consolidation">Consolidation</option>
+                        </select>
+                    </div>
+                    <button class="send-btn" id="planBtn" onclick="planSend()">Preview Transaction</button>
                 </div>
-                <div class="field">
-                    <label>Amount (sats) <button onclick="sendMax()" style="background:none;border:none;color:var(--accent);cursor:pointer;font-size:10px;text-transform:uppercase;padding:0">Max</button></label>
-                    <input type="number" id="sendAmount" class="narrow" placeholder="100000" oninput="updateBtcEquiv()">
-                    <span id="btcEquiv" style="font-size:11px;color:var(--text-muted)"></span>
-                </div>
-                <div class="field">
-                    <label>Fee Rate (sat/vB)</label>
-                    <input type="number" id="sendFeeRate" class="narrow" value="2">
-                    <div class="fee-presets" id="feePresets"></div>
-                </div>
-                <div class="field">
-                    <label>Strategy</label>
-                    <select id="sendStrategy">
-                        <option value="PrivacyFirst">Privacy First</option>
-                        <option value="FeeSaver">Fee Saver</option>
-                        <option value="Consolidation">Consolidation</option>
-                    </select>
-                </div>
-                <button class="send-btn" id="planBtn" onclick="planSend()">Preview Transaction</button>
-            </div>
-            <div class="plan-result" id="planResult"></div>
-        </section>
+                <div class="plan-result" id="planResult"></div>
+            </section>
 
-        <section id="flowsSection" style="display:none">
-            <h2>Credential Flows <span id="flowsRoundLabel" style="font-size:12px;color:var(--text-muted)"></span></h2>
-            <table id="flowsTable">
-                <thead>
-                    <tr>
-                        <th>Input</th>
-                        <th>Output</th>
-                        <th>Change</th>
-                        <th>Fee</th>
-                        <th>Reissuances</th>
-                        <th>Depth</th>
-                    </tr>
-                </thead>
-                <tbody id="flowsBody">
-                </tbody>
-            </table>
-        </section>
+            <section>
+                <h2>Address Book</h2>
+                <ul class="address-book-list" id="addressBookList">
+                    <li class="empty">Loading...</li>
+                </ul>
+                <div class="ab-add-form">
+                    <input type="text" id="abLabel" placeholder="Label" style="width:120px">
+                    <input type="text" id="abAddress" placeholder="bc1q..." style="width:280px;font-family:'SFMono-Regular',Consolas,monospace">
+                    <button class="label-add-btn" onclick="addAddressBookEntry()">Add</button>
+                </div>
+            </section>
+        </div>
+
+        <!-- TAB: UTXOs -->
+        <div class="tab-panel" data-tab="utxos">
+            <section>
+                <h2>Wallet UTXOs</h2>
+                <div class="batch-bar" id="batchBar">
+                    <span id="batchCount">0 selected</span>
+                    <button onclick="batchFreeze(true)">Freeze Selected</button>
+                    <button onclick="batchFreeze(false)">Unfreeze Selected</button>
+                    <button onclick="clearSelection()">Clear</button>
+                </div>
+                <table id="utxosTable">
+                    <thead>
+                        <tr>
+                            <th style="width:30px"><input type="checkbox" id="selectAll" onchange="toggleSelectAll(this)"></th>
+                            <th>Outpoint</th>
+                            <th>Amount</th>
+                            <th>Anon Set</th>
+                            <th>Score</th>
+                            <th>CoinJoins</th>
+                            <th>Labels</th>
+                            <th>Status</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="utxosBody">
+                        <tr><td colspan="9" class="empty">Loading...</td></tr>
+                    </tbody>
+                </table>
+                <div class="detail-panel" id="utxoDetail"></div>
+            </section>
+        </div>
+
+        <!-- TAB: CoinJoins -->
+        <div class="tab-panel" data-tab="coinjoins">
+            <section>
+                <h2>CoinJoin History</h2>
+                <table id="coinjoinsTable">
+                    <thead>
+                        <tr>
+                            <th>Round</th>
+                            <th>Transaction</th>
+                            <th>Status</th>
+                            <th>Our In/Out</th>
+                            <th>Total In/Out</th>
+                            <th>Participants</th>
+                            <th>Date</th>
+                        </tr>
+                    </thead>
+                    <tbody id="coinjoinsBody">
+                        <tr><td colspan="7" class="empty">Loading...</td></tr>
+                    </tbody>
+                </table>
+            </section>
+
+            <section id="flowsSection" style="display:none">
+                <h2>Credential Flows <span id="flowsRoundLabel" style="font-size:12px;color:var(--text-muted)"></span></h2>
+                <table id="flowsTable">
+                    <thead>
+                        <tr>
+                            <th>Input</th>
+                            <th>Output</th>
+                            <th>Change</th>
+                            <th>Fee</th>
+                            <th>Reissuances</th>
+                            <th>Depth</th>
+                        </tr>
+                    </thead>
+                    <tbody id="flowsBody">
+                    </tbody>
+                </table>
+            </section>
+        </div>
+
+        <!-- TAB: Settings -->
+        <div class="tab-panel" data-tab="settings">
+            <section>
+                <h2>Wallet Info</h2>
+                <div class="detail-grid" id="walletInfoGrid" style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:16px;font-size:13px">
+                    <span class="label">Name</span><span id="settWalletName">-</span>
+                    <span class="label">Network</span><span id="settWalletNetwork">-</span>
+                    <span class="label">Created</span><span id="settWalletCreated">-</span>
+                    <span class="label">Accounts</span><span id="settWalletAccounts">-</span>
+                    <span class="label">Addresses</span><span id="settWalletAddresses">-</span>
+                </div>
+            </section>
+
+            <section>
+                <h2>Backup</h2>
+                <div style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:16px">
+                    <p style="color:var(--text-muted);font-size:13px;margin-bottom:12px">Export your recovery phrase. You will need your passphrase to decrypt it.</p>
+                    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                        <input type="password" id="backupPass" placeholder="Passphrase" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:4px;font-size:13px;width:200px">
+                        <button class="send-btn" onclick="exportMnemonic()">Show Recovery Phrase</button>
+                        <span id="backupStatus" style="font-size:12px"></span>
+                    </div>
+                    <div id="backupResult" style="display:none;margin-top:12px">
+                        <div class="mnemonic-display" id="backupWords"></div>
+                        <p style="color:var(--yellow);font-size:12px">Write these words down and store them safely. Do not share them with anyone.</p>
+                    </div>
+                </div>
+            </section>
+
+            <section>
+                <h2>Blockchain</h2>
+                <div class="detail-grid" id="blockchainGrid" style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:16px;font-size:13px">
+                    <span class="label">Connection</span><span id="settChainConn">-</span>
+                    <span class="label">Block Height</span><span id="settBlockHeight">-</span>
+                    <span class="label">Network</span><span id="settChainNetwork">-</span>
+                </div>
+            </section>
+
+            <section>
+                <h2>Sync Status</h2>
+                <div class="detail-grid" id="syncDetailGrid" style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:16px;font-size:13px">
+                    <span class="label">Status</span><span id="settSyncStatus">-</span>
+                    <span class="label">Last Sync</span><span id="settLastSync">-</span>
+                    <span class="label">UTXOs Found</span><span id="settSyncUtxos">-</span>
+                </div>
+            </section>
+        </div>
 
         </div><!-- end mainDashboard -->
     </div>
@@ -1585,7 +1681,7 @@
 
         async function refreshAll() {
             document.getElementById('lastUpdate').textContent = 'Refreshing...';
-            await Promise.all([loadSummary(), loadPrivacySummary(), loadPrivacyDistribution(), loadPrivacyRecommendations(), loadRounds(), loadUtxos(), loadCoinjoins(), loadTransactions(), loadMixingStatus(), loadSyncStatus(), loadAddressBook(), loadFeeEstimates()]);
+            await Promise.all([loadSummary(), loadPrivacySummary(), loadPrivacyDistribution(), loadPrivacyRecommendations(), loadRounds(), loadUtxos(), loadCoinjoins(), loadTransactions(), loadMixingStatus(), loadSyncStatus(), loadAddressBook(), loadFeeEstimates(), loadSettingsInfo()]);
             updateConnectionStatus(sseConnected ? 'live' : 'polling');
         }
 
@@ -1648,17 +1744,104 @@
             statusEl.innerHTML = prefix + ' &middot; ' + new Date().toLocaleTimeString();
         }
 
+        // Tab navigation
+        function switchTab(tabName) {
+            document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+            document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+            const panel = document.querySelector(`.tab-panel[data-tab="${tabName}"]`);
+            if (panel) panel.classList.add('active');
+            const btn = [...document.querySelectorAll('.tab-btn')].find(b => b.onclick?.toString().includes(`'${tabName}'`));
+            if (btn) btn.classList.add('active');
+            // Update URL hash for bookmarkable tabs
+            history.replaceState(null, '', '#' + tabName);
+        }
+
+        // Restore tab from URL hash on load
+        function restoreTab() {
+            const hash = location.hash.replace('#', '');
+            if (hash && document.querySelector(`.tab-panel[data-tab="${hash}"]`)) {
+                switchTab(hash);
+            }
+        }
+
+        // Settings: export mnemonic
+        async function exportMnemonic() {
+            const pass = document.getElementById('backupPass').value;
+            const status = document.getElementById('backupStatus');
+            const result = document.getElementById('backupResult');
+            if (!pass) { status.innerHTML = '<span style="color:var(--red)">Enter passphrase</span>'; return; }
+
+            status.innerHTML = '<span style="color:var(--yellow)">Decrypting...</span>';
+            try {
+                const res = await fetch('/api/wallet/export-mnemonic', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ passphrase: pass })
+                });
+                const data = await res.json();
+                if (!res.ok) {
+                    status.innerHTML = `<span style="color:var(--red)">${esc(typeof data === 'string' ? data : data.detail || JSON.stringify(data))}</span>`;
+                    result.style.display = 'none';
+                    return;
+                }
+                document.getElementById('backupWords').textContent = data.mnemonic;
+                result.style.display = '';
+                status.innerHTML = `<span style="color:var(--green)">${data.wordCount} words</span>`;
+                document.getElementById('backupPass').value = '';
+            } catch (err) {
+                status.innerHTML = `<span style="color:var(--red)">Failed: ${esc(err.message)}</span>`;
+            }
+        }
+
+        // Settings: load wallet info
+        async function loadSettingsInfo() {
+            const [info, sync, chain] = await Promise.all([
+                fetchJson('/api/wallet/info'),
+                fetchJson('/api/wallet/sync-status'),
+                fetchJson('/api/blockchain/info')
+            ]);
+
+            if (info && info.exists) {
+                document.getElementById('settWalletName').textContent = info.name;
+                document.getElementById('settWalletNetwork').textContent = info.network;
+                document.getElementById('settWalletCreated').textContent = formatDate(info.createdAt);
+                document.getElementById('settWalletAccounts').textContent = info.accountCount;
+                document.getElementById('settWalletAddresses').textContent = info.addressCount;
+            }
+
+            if (sync) {
+                document.getElementById('settSyncStatus').innerHTML = sync.syncing
+                    ? '<span style="color:var(--yellow)">Syncing</span>'
+                    : sync.monitoring ? '<span style="color:var(--green)">Monitoring</span>'
+                    : 'Idle';
+                document.getElementById('settLastSync').textContent = sync.lastSyncTime ? formatDate(sync.lastSyncTime) : 'Never';
+                document.getElementById('settSyncUtxos').textContent = sync.lastSyncUtxoCount ?? '-';
+            }
+
+            if (chain) {
+                document.getElementById('settChainConn').innerHTML = chain.connected
+                    ? '<span style="color:var(--green)">Connected</span>'
+                    : '<span style="color:var(--red)">Disconnected</span>';
+                document.getElementById('settBlockHeight').textContent = chain.blockHeight?.toLocaleString() ?? '-';
+                document.getElementById('settChainNetwork').textContent = chain.network;
+            }
+        }
+
         // Keyboard shortcuts
         document.addEventListener('keydown', (e) => {
             // Ignore when typing in inputs
             if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
             if (e.key === 'r' || e.key === 'R') { e.preventDefault(); refreshAll(); }
+            // Number keys 1-5 switch tabs
+            const tabKeys = { '1': 'overview', '2': 'send-receive', '3': 'utxos', '4': 'coinjoins', '5': 'settings' };
+            if (tabKeys[e.key]) { e.preventDefault(); switchTab(tabKeys[e.key]); }
         });
 
         // Initialize: check wallet, then start updates
         (async () => {
             const hasWallet = await checkWallet();
             if (hasWallet) {
+                restoreTab();
                 await refreshAll();
                 connectSSE();
                 // Start polling as immediate fallback; SSE will stop it when connected

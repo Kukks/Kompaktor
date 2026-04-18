@@ -1058,6 +1058,21 @@ app.MapGet("/api/dashboard/fee-estimates", async (IBlockchainBackend chain) =>
     return Results.Ok(estimates);
 }).WithTags("Dashboard");
 
+// Blockchain info
+app.MapGet("/api/blockchain/info", async (IBlockchainBackend chain) =>
+{
+    int? height = null;
+    try { height = await chain.GetBlockHeightAsync(); }
+    catch { /* backend may be disconnected */ }
+
+    return Results.Ok(new
+    {
+        connected = chain.IsConnected,
+        blockHeight = height,
+        network = network.Name
+    });
+}).WithTags("Blockchain");
+
 // Wallet sync status
 app.MapGet("/api/wallet/sync-status", (WalletSyncBackgroundService sync) =>
 {
