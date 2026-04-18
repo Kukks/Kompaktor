@@ -83,6 +83,11 @@
         }
         th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--border); }
         th { font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; }
+        th.sortable { cursor: pointer; user-select: none; }
+        th.sortable:hover { color: var(--accent); }
+        th.sortable::after { content: ' \2195'; font-size: 10px; opacity: 0.4; }
+        th.sortable.sort-asc::after { content: ' \2191'; opacity: 1; color: var(--accent); }
+        th.sortable.sort-desc::after { content: ' \2193'; opacity: 1; color: var(--accent); }
         td { font-size: 13px; font-family: 'SFMono-Regular', Consolas, monospace; }
         tr:last-child td { border-bottom: none; }
         tr:hover { background: rgba(88, 166, 255, 0.04); }
@@ -955,9 +960,9 @@
 
             <section>
                 <h2>Payment Queue</h2>
-                <div style="display:flex;gap:8px;margin-bottom:12px;align-items:center">
+                <div style="display:flex;gap:8px;margin-bottom:12px;align-items:center;flex-wrap:wrap">
                     <button class="refresh-btn" onclick="loadPayments()" style="font-size:12px">Refresh</button>
-                    <select id="payFilter" onchange="loadPayments()" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:4px;font-size:12px">
+                    <select id="payFilter" onchange="renderPayments()" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:4px;font-size:12px">
                         <option value="all">All</option>
                         <option value="Pending">Pending</option>
                         <option value="Reserved">Reserved</option>
@@ -965,19 +970,20 @@
                         <option value="Completed">Completed</option>
                         <option value="Failed">Failed</option>
                     </select>
+                    <input id="paySearch" type="text" placeholder="Search destination, label, tx..." oninput="renderPayments()" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:4px;font-size:12px;width:220px">
                     <a href="/api/payments/export" download="kompaktor-payments.csv" class="refresh-btn" style="font-size:12px;text-decoration:none;color:var(--text)">Export CSV</a>
                 </div>
                 <table id="paymentsTable">
                     <thead>
                         <tr>
-                            <th>Direction</th>
-                            <th>Amount</th>
+                            <th class="sortable" data-sort="direction" onclick="sortPayments('direction')">Direction</th>
+                            <th class="sortable" data-sort="amountSat" onclick="sortPayments('amountSat')">Amount</th>
                             <th>Destination</th>
-                            <th>Status</th>
+                            <th class="sortable" data-sort="status" onclick="sortPayments('status')">Status</th>
                             <th>Type</th>
                             <th>Label</th>
                             <th>TX</th>
-                            <th>Created</th>
+                            <th class="sortable sort-desc" data-sort="createdAt" onclick="sortPayments('createdAt')">Created</th>
                             <th>Actions</th>
                         </tr>
                     </thead>
@@ -2180,43 +2186,50 @@
 
         // Payments
         let paymentsCache = [];
+        let paymentSort = { field: 'createdAt', dir: 'desc' };
 
-        async function loadPayments() {
-            const payments = await fetchJson('/api/payments');
+        function sortPayments(field) {
+            if (paymentSort.field === field) {
+                paymentSort.dir = paymentSort.dir === 'asc' ? 'desc' : 'asc';
+            } else {
+                paymentSort = { field, dir: field === 'amountSat' ? 'desc' : 'asc' };
+            }
+            document.querySelectorAll('#paymentsTable th.sortable').forEach(th => {
+                th.classList.remove('sort-asc', 'sort-desc');
+                if (th.dataset.sort === field) th.classList.add(paymentSort.dir === 'asc' ? 'sort-asc' : 'sort-desc');
+            });
+            renderPayments();
+        }
+
+        function renderPayments() {
             const body = document.getElementById('paymentsBody');
+            const payments = paymentsCache;
             if (!payments || payments.length === 0) {
                 body.innerHTML = '<tr><td colspan="9" class="empty">No payments yet</td></tr>';
-                paymentsCache = [];
-                document.getElementById('pendingPayments').textContent = '0';
-                document.getElementById('paymentVolume').textContent = '0';
                 return;
             }
-            // Detect newly completed payments for notifications
-            if (paymentsCache.length > 0) {
-                for (const p of payments) {
-                    if (p.status === 'Completed') {
-                        const prev = paymentsCache.find(c => c.id === p.id);
-                        if (prev && prev.status !== 'Completed') {
-                            const dir = p.direction === 'Outbound' ? 'sent' : 'received';
-                            const amt = p.amountSat.toLocaleString();
-                            showToast(`Payment ${dir}: ${amt} sats`, 'success');
-                            sendBrowserNotification('Kompaktor Payment', `${amt} sats ${dir} via CoinJoin`);
-                        }
-                    }
-                }
-            }
-            paymentsCache = payments;
-            const pendingCount = payments.filter(p => p.status === 'Pending' || p.status === 'Reserved' || p.status === 'Committed').length;
-            document.getElementById('pendingPayments').textContent = pendingCount;
-            const completedVolume = payments.filter(p => p.status === 'Completed').reduce((sum, p) => sum + p.amountSat, 0);
-            document.getElementById('paymentVolume').textContent = completedVolume.toLocaleString();
-            document.getElementById('paymentVolumeUnit').textContent = completedVolume >= 100_000_000 ? 'BTC' : 'sats';
-            if (completedVolume >= 100_000_000)
-                document.getElementById('paymentVolume').textContent = (completedVolume / 100_000_000).toFixed(4);
             const filter = document.getElementById('payFilter')?.value || 'all';
-            const filtered = filter === 'all' ? payments : payments.filter(p => p.status === filter);
+            const search = (document.getElementById('paySearch')?.value || '').toLowerCase();
+            let filtered = filter === 'all' ? [...payments] : payments.filter(p => p.status === filter);
+            if (search) {
+                filtered = filtered.filter(p =>
+                    (p.destination && p.destination.toLowerCase().includes(search)) ||
+                    (p.label && p.label.toLowerCase().includes(search)) ||
+                    (p.completedTxId && p.completedTxId.toLowerCase().includes(search))
+                );
+            }
+            // Sort
+            const { field, dir } = paymentSort;
+            filtered.sort((a, b) => {
+                let va = a[field], vb = b[field];
+                if (field === 'createdAt') { va = new Date(va || 0); vb = new Date(vb || 0); }
+                if (typeof va === 'string') { va = va.toLowerCase(); vb = (vb || '').toLowerCase(); }
+                if (va < vb) return dir === 'asc' ? -1 : 1;
+                if (va > vb) return dir === 'asc' ? 1 : -1;
+                return 0;
+            });
             if (filtered.length === 0) {
-                body.innerHTML = `<tr><td colspan="9" class="empty">No ${esc(filter.toLowerCase())} payments</td></tr>`;
+                body.innerHTML = `<tr><td colspan="9" class="empty">No ${search ? 'matching' : esc(filter.toLowerCase())} payments</td></tr>`;
                 return;
             }
             body.innerHTML = filtered.map(p => {
@@ -2252,6 +2265,40 @@
                     <td>${canCancel ? `<button class="freeze-btn" onclick="cancelPayment('${esc(p.id)}')" title="Cancel this payment">Cancel</button>` : ''}</td>
                 </tr>`;
             }).join('');
+        }
+
+        async function loadPayments() {
+            const payments = await fetchJson('/api/payments');
+            if (!payments || payments.length === 0) {
+                paymentsCache = [];
+                document.getElementById('pendingPayments').textContent = '0';
+                document.getElementById('paymentVolume').textContent = '0';
+                renderPayments();
+                return;
+            }
+            // Detect newly completed payments for notifications
+            if (paymentsCache.length > 0) {
+                for (const p of payments) {
+                    if (p.status === 'Completed') {
+                        const prev = paymentsCache.find(c => c.id === p.id);
+                        if (prev && prev.status !== 'Completed') {
+                            const dir = p.direction === 'Outbound' ? 'sent' : 'received';
+                            const amt = p.amountSat.toLocaleString();
+                            showToast(`Payment ${dir}: ${amt} sats`, 'success');
+                            sendBrowserNotification('Kompaktor Payment', `${amt} sats ${dir} via CoinJoin`);
+                        }
+                    }
+                }
+            }
+            paymentsCache = payments;
+            const pendingCount = payments.filter(p => p.status === 'Pending' || p.status === 'Reserved' || p.status === 'Committed').length;
+            document.getElementById('pendingPayments').textContent = pendingCount;
+            const completedVolume = payments.filter(p => p.status === 'Completed').reduce((sum, p) => sum + p.amountSat, 0);
+            document.getElementById('paymentVolume').textContent = completedVolume.toLocaleString();
+            document.getElementById('paymentVolumeUnit').textContent = completedVolume >= 100_000_000 ? 'BTC' : 'sats';
+            if (completedVolume >= 100_000_000)
+                document.getElementById('paymentVolume').textContent = (completedVolume / 100_000_000).toFixed(4);
+            renderPayments();
         }
 
         async function createSendPayment() {
