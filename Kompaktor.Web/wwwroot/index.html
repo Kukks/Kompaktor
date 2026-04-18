@@ -811,6 +811,7 @@
                         <div class="address-display">
                             <span class="addr" id="receiveAddr">Loading...</span>
                             <button class="copy-btn" onclick="copyAddress()">Copy</button>
+                            <button class="copy-btn" onclick="copyBip21()" title="Copy as bitcoin: payment URI" style="background:var(--bg)">URI</button>
                         </div>
                         <div class="addr-meta" id="receiveAddrMeta"></div>
                     </div>
@@ -822,7 +823,8 @@
                 <div class="send-form">
                     <div class="field">
                         <label>Destination Address</label>
-                        <input type="text" id="sendDest" class="wide" placeholder="bc1q...">
+                        <input type="text" id="sendDest" class="wide" placeholder="bc1q... or bitcoin: URI" oninput="parseBip21(this.value)">
+                        <span id="bip21Label" style="font-size:11px;color:var(--text-muted);display:none"></span>
                     </div>
                     <div class="field">
                         <label>Amount (sats) <button onclick="sendMax()" style="background:none;border:none;color:var(--accent);cursor:pointer;font-size:10px;text-transform:uppercase;padding:0">Max</button></label>
@@ -880,13 +882,14 @@
                             <th>Anon Set</th>
                             <th>Score</th>
                             <th>CoinJoins</th>
+                            <th>Age</th>
                             <th>Labels</th>
                             <th>Status</th>
                             <th>Actions</th>
                         </tr>
                     </thead>
                     <tbody id="utxosBody">
-                        <tr><td colspan="9" class="empty">Loading...</td></tr>
+                        <tr><td colspan="10" class="empty">Loading...</td></tr>
                     </tbody>
                 </table>
                 <div class="detail-panel" id="utxoDetail"></div>
@@ -1129,12 +1132,34 @@
             setTimeout(() => toast.remove(), 5000);
         }
 
+        function sendBrowserNotification(title, body) {
+            if (!('Notification' in window)) return;
+            if (document.hasFocus()) return; // Only notify when tab is in background
+            if (Notification.permission === 'granted') {
+                new Notification(title, { body, icon: '/favicon.ico' });
+            } else if (Notification.permission !== 'denied') {
+                Notification.requestPermission();
+            }
+        }
+
         function truncate(str, len = 12) {
             if (!str || str.length <= len) return esc(str || '');
             return esc(str.substring(0, len)) + '...';
         }
 
         let currentNetwork = 'RegTest';
+        let currentBlockHeight = 0;
+
+        function formatAge(confirmedHeight) {
+            if (!confirmedHeight || !currentBlockHeight) return '-';
+            const blocks = currentBlockHeight - confirmedHeight;
+            if (blocks < 0) return 'pending';
+            if (blocks < 6) return `${blocks} blk`;
+            if (blocks < 144) return `${blocks} blk (~${Math.round(blocks * 10 / 60)}h)`;
+            const days = Math.round(blocks / 144);
+            if (days < 30) return `${days}d`;
+            return `${Math.round(days / 30)}mo`;
+        }
         function txLink(txId, display) {
             if (!txId) return esc(display || '');
             const text = display || truncate(txId);
@@ -1207,7 +1232,7 @@
             const utxos = await fetchJson('/api/dashboard/utxos');
             const body = document.getElementById('utxosBody');
             if (!utxos || utxos.length === 0) {
-                body.innerHTML = '<tr><td colspan="9" class="empty">No UTXOs in wallet</td></tr>';
+                body.innerHTML = '<tr><td colspan="10" class="empty">No UTXOs in wallet</td></tr>';
                 utxoCache.clear();
                 return;
             }
@@ -1228,6 +1253,7 @@
                 <td>${u.rawAnonSet}</td>
                 <td><span class="score-badge ${scoreClass(u.effectiveScore)}" title="${scoreTooltip(u)}" style="cursor:help">${u.effectiveScore}</span></td>
                 <td>${u.coinJoinCount}</td>
+                <td title="${u.confirmedHeight ? 'Block ' + u.confirmedHeight : 'Unconfirmed'}">${formatAge(u.confirmedHeight)}</td>
                 <td>
                     ${u.labels.map(l => `<span class="label-tag">${esc(l)}</span>`).join('')}
                     <input class="label-input" placeholder="+label" onkeydown="if(event.key==='Enter')addLabel(${u.id},this.value,this)">
@@ -1492,6 +1518,14 @@
             }
         }
 
+        function copyBip21() {
+            const addr = document.getElementById('receiveAddr').textContent;
+            if (addr && addr !== 'Loading...' && addr !== 'No addresses available') {
+                navigator.clipboard.writeText('bitcoin:' + addr);
+                showToast('BIP-21 URI copied to clipboard', 'success');
+            }
+        }
+
         // Address book
         async function loadAddressBook() {
             const entries = await fetchJson('/api/address-book');
@@ -1549,6 +1583,43 @@
                 el.textContent = (sats / 100000000).toFixed(8) + ' BTC';
             } else {
                 el.textContent = '';
+            }
+        }
+
+        function parseBip21(value) {
+            const labelEl = document.getElementById('bip21Label');
+            if (!value.toLowerCase().startsWith('bitcoin:')) {
+                labelEl.style.display = 'none';
+                return;
+            }
+            try {
+                // Parse BIP-21: bitcoin:<address>?amount=<btc>&label=<text>&message=<text>
+                const withoutScheme = value.substring(8);
+                const qIdx = withoutScheme.indexOf('?');
+                const address = qIdx >= 0 ? withoutScheme.substring(0, qIdx) : withoutScheme;
+                document.getElementById('sendDest').value = address;
+
+                if (qIdx >= 0) {
+                    const params = new URLSearchParams(withoutScheme.substring(qIdx + 1));
+                    if (params.has('amount')) {
+                        const btc = parseFloat(params.get('amount'));
+                        if (!isNaN(btc) && btc > 0) {
+                            document.getElementById('sendAmount').value = Math.round(btc * 100000000);
+                            updateBtcEquiv();
+                        }
+                    }
+                    const parts = [];
+                    if (params.has('label')) parts.push(params.get('label'));
+                    if (params.has('message')) parts.push(params.get('message'));
+                    if (parts.length > 0) {
+                        labelEl.textContent = parts.join(' — ');
+                        labelEl.style.display = '';
+                    } else {
+                        labelEl.style.display = 'none';
+                    }
+                }
+            } catch {
+                labelEl.style.display = 'none';
             }
         }
 
@@ -1941,6 +2012,10 @@
             document.getElementById('mixingPass').value = '';
             document.getElementById('mixingCoordUrl').style.display = 'none';
             document.getElementById('mixingTorHost').style.display = 'none';
+            // Request notification permission so we can alert on round completion
+            if ('Notification' in window && Notification.permission === 'default') {
+                Notification.requestPermission();
+            }
             await loadMixingStatus();
         }
 
@@ -2053,6 +2128,7 @@
                 logEvent('mixing');
                 notifyTab('coinjoins');
                 showToast('Mixing round completed', 'success');
+                sendBrowserNotification('Kompaktor', 'CoinJoin round completed — your privacy has improved');
             });
 
             source.onerror = () => {
@@ -2246,6 +2322,7 @@
                     : '<span style="color:var(--red)">Disconnected</span>';
                 document.getElementById('settBlockHeight').textContent = chain.blockHeight?.toLocaleString() ?? '-';
                 document.getElementById('settChainNetwork').textContent = chain.network;
+                if (chain.blockHeight) currentBlockHeight = chain.blockHeight;
             }
         }
 
