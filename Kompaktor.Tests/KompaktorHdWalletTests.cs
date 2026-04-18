@@ -261,4 +261,56 @@ public class KompaktorHdWalletTests : IDisposable
         await Assert.ThrowsAnyAsync<Exception>(
             () => KompaktorHdWallet.RestoreAsync(_db, _network, "Bad", "not a valid mnemonic", Passphrase));
     }
+
+    [Fact]
+    public async Task Create_StoresAccountXPub()
+    {
+        await KompaktorHdWallet.CreateAsync(_db, _network, "Test", Passphrase);
+
+        var accounts = _db.Accounts.ToList();
+        Assert.All(accounts, a => Assert.NotNull(a.AccountXPub));
+        Assert.All(accounts, a => Assert.True(a.AccountXPub!.Length > 0));
+    }
+
+    [Fact]
+    public async Task DeriveAddressesFromXPub_MatchesOriginalDerivation()
+    {
+        var wallet = await KompaktorHdWallet.CreateAsync(_db, _network, "Test", Passphrase);
+
+        var account = _db.Accounts.Include(a => a.Addresses)
+            .First(a => a.Purpose == 86);
+
+        // Derive address at index 0 from xpub
+        var derived = KompaktorHdWallet.DeriveAddressesFromXPub(
+            account.AccountXPub!, _network, 86, 0, 0, 1);
+
+        Assert.Single(derived);
+        // Should match the original address at 0/0
+        var original = account.Addresses.First(a => a.KeyPath == "0/0");
+        Assert.Equal(original.ScriptPubKey, derived[0].ScriptPubKey);
+    }
+
+    [Fact]
+    public async Task GetFreshAddress_AutoExtendsGap_WhenExhausted()
+    {
+        var wallet = await KompaktorHdWallet.CreateAsync(_db, _network, "Test", Passphrase);
+
+        // Mark ALL external (non-change) addresses as used
+        var externalAddrs = _db.Addresses
+            .Include(a => a.Account)
+            .Where(a => a.Account.WalletId == wallet.WalletId && !a.IsChange)
+            .ToList();
+        foreach (var addr in externalAddrs)
+            addr.IsUsed = true;
+        _db.SaveChanges();
+
+        var countBefore = _db.Addresses.Count(a => a.Account.WalletId == wallet.WalletId && !a.IsChange);
+
+        // This should auto-extend the gap rather than throwing
+        var script = await wallet.GetFreshAddressAsync();
+        Assert.NotNull(script);
+
+        var countAfter = _db.Addresses.Count(a => a.Account.WalletId == wallet.WalletId && !a.IsChange);
+        Assert.True(countAfter > countBefore, "Gap extension should have added new addresses");
+    }
 }

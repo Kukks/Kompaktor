@@ -48,8 +48,12 @@ public class KompaktorHdWallet : IKompaktorWalletInterface
         // Create P2WPKH account (purpose 84) and P2TR account (purpose 86)
         foreach (var purpose in new[] { 84, 86 })
         {
-            var account = new AccountEntity { Purpose = purpose, AccountIndex = 0 };
             var accountKey = masterKey.Derive(new KeyPath($"m/{purpose}'/{coinType}'/0'"));
+            var account = new AccountEntity
+            {
+                Purpose = purpose, AccountIndex = 0,
+                AccountXPub = accountKey.Neuter().GetWif(network).ToString()
+            };
 
             // Generate gap limit addresses for external (0) and internal/change (1) chains
             foreach (var chain in new[] { 0, 1 })
@@ -115,8 +119,12 @@ public class KompaktorHdWallet : IKompaktorWalletInterface
 
         foreach (var purpose in new[] { 84, 86 })
         {
-            var account = new AccountEntity { Purpose = purpose, AccountIndex = 0 };
             var accountKey = masterKey.Derive(new KeyPath($"m/{purpose}'/{coinType}'/0'"));
+            var account = new AccountEntity
+            {
+                Purpose = purpose, AccountIndex = 0,
+                AccountXPub = accountKey.Neuter().GetWif(network).ToString()
+            };
 
             foreach (var chain in new[] { 0, 1 })
             {
@@ -176,10 +184,64 @@ public class KompaktorHdWallet : IKompaktorWalletInterface
             .FirstOrDefaultAsync();
 
         if (address is null)
-            throw new InvalidOperationException(
-                "No fresh addresses available. Gap limit may need extension.");
+        {
+            // Auto-extend gap: derive more addresses from xpub
+            var extended = await ExtendGapForChainAsync(isChange ? 1 : 0);
+            if (!extended)
+                throw new InvalidOperationException(
+                    "No fresh addresses available and gap limit cannot be extended (xpub not stored).");
+
+            address = await _db.Addresses
+                .Include(a => a.Account)
+                .Where(a => a.Account.WalletId == WalletId)
+                .Where(a => !a.IsUsed && !a.IsExposed)
+                .Where(a => a.IsChange == isChange)
+                .OrderByDescending(a => a.Account.Purpose)
+                .ThenBy(a => a.Id)
+                .FirstOrDefaultAsync();
+
+            if (address is null)
+                throw new InvalidOperationException("No fresh addresses available after gap extension.");
+        }
 
         return new Script(address.ScriptPubKey);
+    }
+
+    /// <summary>
+    /// Extends the address gap for a specific chain (0=receive, 1=change) across all accounts.
+    /// Uses stored xpub for watch-only derivation. Returns true if any addresses were added.
+    /// </summary>
+    private async Task<bool> ExtendGapForChainAsync(int chain)
+    {
+        var accounts = await _db.Accounts
+            .Include(a => a.Addresses)
+            .Where(a => a.WalletId == WalletId && a.AccountXPub != null)
+            .ToListAsync();
+
+        var added = false;
+        foreach (var account in accounts)
+        {
+            var chainAddresses = account.Addresses
+                .Where(a => a.KeyPath.StartsWith($"{chain}/"))
+                .ToList();
+            var maxIndex = chainAddresses.Count > 0
+                ? chainAddresses.Max(a => int.Parse(a.KeyPath.Split('/')[1]))
+                : -1;
+
+            var newAddresses = DeriveAddressesFromXPub(
+                account.AccountXPub!, _network, account.Purpose, chain,
+                maxIndex + 1, GapLimit);
+
+            foreach (var addr in newAddresses)
+            {
+                addr.AccountId = account.Id;
+                _db.Addresses.Add(addr);
+            }
+            added = true;
+        }
+
+        if (added) await _db.SaveChangesAsync();
+        return added;
     }
 
     /// <summary>
@@ -282,6 +344,31 @@ public class KompaktorHdWallet : IKompaktorWalletInterface
         }
 
         await _db.SaveChangesAsync();
+    }
+
+    /// <summary>
+    /// Derives additional addresses from the account's extended public key.
+    /// Can be called without the master private key (watch-only gap extension).
+    /// </summary>
+    public static List<AddressEntity> DeriveAddressesFromXPub(
+        string accountXPubStr, Network network, int purpose, int chain, int startIndex, int count)
+    {
+        var xpub = ExtPubKey.Parse(accountXPubStr, network);
+        var addresses = new List<AddressEntity>();
+        for (var i = startIndex; i < startIndex + count; i++)
+        {
+            var childPubKey = xpub.Derive(new KeyPath($"{chain}/{i}")).PubKey;
+            var script = purpose == 84
+                ? childPubKey.GetScriptPubKey(ScriptPubKeyType.Segwit)
+                : childPubKey.GetScriptPubKey(ScriptPubKeyType.TaprootBIP86);
+            addresses.Add(new AddressEntity
+            {
+                KeyPath = $"{chain}/{i}",
+                ScriptPubKey = script.ToBytes(),
+                IsChange = chain == 1
+            });
+        }
+        return addresses;
     }
 
     private async Task<Key> DeriveKeyForScriptAsync(Script scriptPubKey)

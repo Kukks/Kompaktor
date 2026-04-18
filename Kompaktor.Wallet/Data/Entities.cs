@@ -18,6 +18,12 @@ public class AccountEntity
     public string WalletId { get; set; } = "";
     public int Purpose { get; set; } // 84 = P2WPKH, 86 = P2TR
     public int AccountIndex { get; set; }
+    /// <summary>
+    /// BIP-32 account-level extended public key (base58 string, e.g. xpub/tpub).
+    /// Enables watch-only address derivation for gap limit extension
+    /// without requiring the master private key.
+    /// </summary>
+    public string? AccountXPub { get; set; }
 
     public WalletEntity Wallet { get; set; } = null!;
     public List<AddressEntity> Addresses { get; set; } = [];
@@ -170,6 +176,25 @@ public class PendingPaymentEntity
     public int RetryCount { get; set; }
     /// <summary>Optional expiration time — expired pending payments are auto-cancelled</summary>
     public DateTimeOffset? ExpiresAt { get; set; }
+}
+
+/// <summary>
+/// Point-in-time snapshot of wallet privacy metrics.
+/// Recorded after each completed coinjoin round to track anonymity improvement over time.
+/// </summary>
+public class PrivacySnapshotEntity
+{
+    public int Id { get; set; }
+    public string WalletId { get; set; } = "";
+    public int TotalUtxos { get; set; }
+    public long TotalAmountSat { get; set; }
+    public double AverageAnonScore { get; set; }
+    public double MinAnonScore { get; set; }
+    public double MaxAnonScore { get; set; }
+    public int MixedUtxoCount { get; set; }
+    public int UnmixedUtxoCount { get; set; }
+    public int CoinJoinRoundNumber { get; set; }
+    public DateTimeOffset Timestamp { get; set; } = DateTimeOffset.UtcNow;
 }
 
 /// <summary>

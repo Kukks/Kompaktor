@@ -286,8 +286,9 @@ public class WalletSyncService : IAsyncDisposable
             .Include(a => a.Addresses)
             .FirstOrDefaultAsync(a => a.Id == accountId && a.WalletId == walletId, ct);
 
-        if (account is null) return;
+        if (account?.AccountXPub is null) return;
 
+        var needsSave = false;
         foreach (var chain in new[] { 0, 1 })
         {
             var chainAddresses = account.Addresses
@@ -305,10 +306,26 @@ public class WalletSyncService : IAsyncDisposable
 
             if (unusedTail >= GapLimit) continue;
 
-            // Need to derive more addresses
-            // We don't have the master key here, so we record a flag for the wallet to handle
-            // TODO: Consider injecting key derivation function or storing xpub for watch-only gap extension
+            // Derive enough addresses to restore the gap
+            var maxIndex = chainAddresses.Count > 0
+                ? chainAddresses.Max(a => int.Parse(a.KeyPath.Split('/')[1]))
+                : -1;
+            var toDerive = GapLimit - unusedTail;
+
+            var newAddresses = KompaktorHdWallet.DeriveAddressesFromXPub(
+                account.AccountXPub, _network, account.Purpose, chain,
+                maxIndex + 1, toDerive);
+
+            foreach (var addr in newAddresses)
+            {
+                addr.AccountId = account.Id;
+                _db.Addresses.Add(addr);
+                account.Addresses.Add(addr);
+            }
+            needsSave = true;
         }
+
+        if (needsSave) await _db.SaveChangesAsync(ct);
     }
 
     /// <summary>
