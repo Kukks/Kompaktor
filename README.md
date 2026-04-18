@@ -98,8 +98,10 @@ Kompaktor.sln
 │   ├── RemoteKompaktorRound.cs        # Event-polling round state with exponential backoff
 │   └── KompaktorService.cs           # High-level orchestrator for continuous coinjoin participation
 ├── Kompaktor.Web/          # Combined coordinator + wallet dashboard
-│   ├── Program.cs                     # ASP.NET Core host with coordinator, dashboard, and coin control APIs
-│   └── wwwroot/index.html             # Dark-themed dashboard with coin control UI
+│   ├── Program.cs                     # ASP.NET Core host with coordinator, dashboard, coin control, and mixing APIs
+│   ├── DashboardEventBus.cs           # SSE broadcast bus for real-time dashboard updates
+│   ├── MixingManager.cs               # Auto-mixing lifecycle management (start/stop KompaktorService)
+│   └── wwwroot/index.html             # Dark-themed dashboard with SSE, coin control, and auto-mixing UI
 └── Kompaktor.Tests/        # Integration tests against regtest bitcoind
 ```
 
@@ -172,7 +174,7 @@ Network identity isolation abstraction. `TorCircuitFactory` routes each identity
 
 ### `Kompaktor.Web`
 
-Combined coordinator and wallet dashboard in a single ASP.NET Core process. Runs the full coordinator (round management, scheduling) alongside wallet management and dashboard APIs. Features include: wallet creation with mnemonic backup display, wallet restore from BIP-39 mnemonic, mnemonic export for backup, receive address generation (P2TR preferred), privacy summary with anonymity scoring, scored UTXOs with privacy badges, coin control (freeze/unfreeze, labels, batch operations), send transaction preview with post-mix spending warnings, coinjoin history with credential flow analysis, coordinator stats with round fill rates and demand metrics, and transaction history. Supports both Bitcoin Core RPC and Electrum backends via configuration. The frontend is a vanilla JS single-page dashboard with dark theme, auto-refresh, wallet setup wizard, receive address with copy-to-clipboard, interactive UTXO table with batch freeze operations, inline label editing, and a detail panel for individual coin inspection.
+Combined coordinator and wallet dashboard in a single ASP.NET Core process. Runs the full coordinator (round management, scheduling) alongside wallet management and dashboard APIs. Features include: wallet creation with mnemonic backup display, wallet restore from BIP-39 mnemonic, mnemonic export for backup, receive address generation (P2TR preferred), privacy summary with anonymity scoring, scored UTXOs with privacy badges, coin control (freeze/unfreeze, labels, batch operations), send transaction preview with post-mix spending warnings, coinjoin history with credential flow analysis, coordinator stats with round fill rates and demand metrics, transaction history, **real-time SSE (Server-Sent Events) push updates** replacing polling for instant dashboard refresh, and an **auto-mixing toggle** that starts/stops the KompaktorService directly from the dashboard with passphrase authentication. The SSE event bus broadcasts state changes from coin control, wallet, and round lifecycle operations, with automatic fallback to 10-second polling when the SSE connection drops. The auto-mixing service connects to the local coordinator, uses `ScoringWalletAdapter` for privacy-aware coin selection, and records completed rounds via `CoinJoinRecorder`. Supports both Bitcoin Core RPC and Electrum backends via configuration.
 
 ### Error Handling
 
@@ -442,7 +444,7 @@ cd Kompaktor.Web
 dotnet run
 ```
 
-This starts a combined coordinator and wallet dashboard. The web UI at the root URL shows wallet balance, anonymity-scored UTXOs, active rounds, and coinjoin history. The `/api/dashboard/credential-flows/{roundId}` endpoint exposes per-payment credential flow analysis. Supports Electrum as an alternative backend:
+This starts a combined coordinator and wallet dashboard. The web UI at the root URL shows wallet balance, anonymity-scored UTXOs, active rounds, and coinjoin history. The dashboard uses **Server-Sent Events** for real-time updates — state changes push instantly without polling. Use the **Auto-Mix toggle** to start continuous coinjoin participation directly from the UI (requires wallet passphrase). The `/api/dashboard/credential-flows/{roundId}` endpoint exposes per-payment credential flow analysis. Supports Electrum as an alternative backend:
 
 ```json
 {
