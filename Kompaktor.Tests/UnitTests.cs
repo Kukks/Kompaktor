@@ -1,3 +1,4 @@
+using System.Net;
 using Kompaktor.Contracts;
 using Kompaktor.Credentials;
 using Kompaktor.Errors;
@@ -415,6 +416,81 @@ public class CircuitTests
         var circuit = factory.Create("disposable");
 
         // Should not throw
+        await circuit.DisposeAsync();
+    }
+}
+
+#endregion
+
+#region Tor Circuit Tests
+
+public class TorCircuitTests
+{
+    [Fact]
+    public void TorCircuitFactory_CreatesCircuitWithCorrectId()
+    {
+        var factory = new TorCircuitFactory();
+        var circuit = factory.Create("input-registration-0");
+
+        Assert.Equal("input-registration-0", circuit.Id);
+    }
+
+    [Fact]
+    public void TorCircuit_CreateHandler_ReturnsSocksProxyHandler()
+    {
+        var factory = new TorCircuitFactory();
+        var circuit = factory.Create("test-identity");
+
+        using var handler = circuit.CreateHandler();
+        var socketsHandler = Assert.IsType<SocketsHttpHandler>(handler);
+        Assert.True(socketsHandler.UseProxy);
+        Assert.NotNull(socketsHandler.Proxy);
+    }
+
+    [Fact]
+    public void DifferentIdentities_ProduceDifferentProxyCredentials()
+    {
+        var factory = new TorCircuitFactory();
+        var c1 = factory.Create("alice");
+        var c2 = factory.Create("bob");
+
+        using var h1 = c1.CreateHandler() as SocketsHttpHandler;
+        using var h2 = c2.CreateHandler() as SocketsHttpHandler;
+
+        var cred1 = (h1!.Proxy as WebProxy)!.Credentials as NetworkCredential;
+        var cred2 = (h2!.Proxy as WebProxy)!.Credentials as NetworkCredential;
+
+        // Different identities must produce different SOCKS5 credentials for stream isolation
+        Assert.NotEqual(cred1!.UserName, cred2!.UserName);
+    }
+
+    [Fact]
+    public void TorOptions_DefaultsToStandardDaemonPort()
+    {
+        var options = new TorOptions();
+        Assert.Equal("127.0.0.1", options.SocksHost);
+        Assert.Equal(9050, options.SocksPort);
+    }
+
+    [Fact]
+    public void TorCircuitFactory_UsesCustomOptions()
+    {
+        var options = new TorOptions { SocksHost = "10.0.0.1", SocksPort = 9150 };
+        var factory = new TorCircuitFactory(options);
+        var circuit = factory.Create("custom");
+
+        using var handler = circuit.CreateHandler() as SocketsHttpHandler;
+        var proxy = handler!.Proxy as WebProxy;
+
+        Assert.Contains("10.0.0.1", proxy!.Address!.ToString());
+        Assert.Contains("9150", proxy.Address.ToString());
+    }
+
+    [Fact]
+    public async Task TorCircuit_DisposeAsync_Completes()
+    {
+        var factory = new TorCircuitFactory();
+        var circuit = factory.Create("disposable");
         await circuit.DisposeAsync();
     }
 }

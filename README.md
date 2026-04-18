@@ -40,6 +40,7 @@ Kompaktor includes multiple layers of defense against malicious coordinators and
 | **Coin selection shuffle** | Fisher-Yates shuffle of coin candidates prevents deterministic selection profiling |
 | **UTXO verification** | Clients with full-node access verify other participants' inputs exist in the UTXO set |
 | **Timing randomization** | Pre-registration delays and randomized task scheduling prevent client fingerprinting |
+| **Tor stream isolation** | `TorCircuitFactory` routes each identity through a separate Tor circuit via SOCKS5 credential-based stream isolation |
 | **NativeAOT compatibility** | Full ahead-of-time compilation support for deployment without .NET runtime |
 
 ### Credential System
