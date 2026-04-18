@@ -227,6 +227,13 @@
         .fee-preset.active { border-color: var(--accent); color: var(--accent); background: rgba(88,166,255,0.1); }
         .fee-preset .rate { font-weight: 600; color: var(--text); display: block; }
         .fee-preset.active .rate { color: var(--accent); }
+        .rec-card { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 12px; margin-bottom: 8px; border-left: 3px solid var(--text-muted); }
+        .rec-card.high { border-left-color: var(--red); }
+        .rec-card.medium { border-left-color: var(--yellow); }
+        .rec-card.success { border-left-color: var(--green); }
+        .rec-card.info { border-left-color: var(--accent); }
+        .rec-card .rec-title { font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+        .rec-card .rec-msg { font-size: 12px; color: var(--text-muted); }
         .plan-result {
             background: var(--bg);
             border: 1px solid var(--border);
@@ -617,6 +624,9 @@
             <div class="meter-bar" id="meterBar"></div>
             <div class="tier-legend" id="tierLegend"></div>
         </div>
+
+        <!-- Privacy Recommendations -->
+        <div id="privacyRecommendations" style="margin-bottom:24px"></div>
 
         <section>
             <h2>Coordinator</h2>
@@ -1538,9 +1548,25 @@
             await loadMixingStatus();
         }
 
+        async function loadPrivacyRecommendations() {
+            const data = await fetchJson('/api/dashboard/privacy-recommendations');
+            const container = document.getElementById('privacyRecommendations');
+            if (!data || !data.recommendations || data.recommendations.length === 0) {
+                container.innerHTML = '';
+                return;
+            }
+            container.innerHTML = '<h2 style="margin-bottom:12px">Privacy Recommendations</h2>' +
+                data.recommendations.map(r =>
+                    `<div class="rec-card ${esc(r.priority)}">
+                        <div class="rec-title">${esc(r.title)}</div>
+                        <div class="rec-msg">${esc(r.message)}</div>
+                    </div>`
+                ).join('');
+        }
+
         async function refreshAll() {
             document.getElementById('lastUpdate').textContent = 'Refreshing...';
-            await Promise.all([loadSummary(), loadPrivacySummary(), loadPrivacyDistribution(), loadRounds(), loadUtxos(), loadCoinjoins(), loadTransactions(), loadMixingStatus(), loadSyncStatus(), loadAddressBook(), loadFeeEstimates()]);
+            await Promise.all([loadSummary(), loadPrivacySummary(), loadPrivacyDistribution(), loadPrivacyRecommendations(), loadRounds(), loadUtxos(), loadCoinjoins(), loadTransactions(), loadMixingStatus(), loadSyncStatus(), loadAddressBook(), loadFeeEstimates()]);
             updateConnectionStatus(sseConnected ? 'live' : 'polling');
         }
 

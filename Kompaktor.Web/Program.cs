@@ -719,6 +719,99 @@ app.MapGet("/api/dashboard/privacy-distribution", async (WalletDbContext db) =>
     });
 }).WithTags("Dashboard");
 
+// Privacy recommendations
+app.MapGet("/api/dashboard/privacy-recommendations", async (WalletDbContext db, MixingManager mixer) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.Ok(new { recommendations = Array.Empty<object>() });
+
+    var selector = new WalletCoinSelector(db);
+    var scored = await selector.GetScoredUtxosAsync(wallet.Id);
+
+    var recommendations = new List<object>();
+
+    if (scored.Count == 0)
+    {
+        recommendations.Add(new { priority = "info", title = "No UTXOs", message = "Fund your wallet to get started with privacy mixing." });
+        return Results.Ok(new { recommendations });
+    }
+
+    // Check unmixed UTXOs
+    var unmixed = scored.Count(s => s.Score.CoinJoinCount == 0);
+    if (unmixed > 0)
+    {
+        var pct = (int)(100.0 * unmixed / scored.Count);
+        recommendations.Add(new
+        {
+            priority = unmixed > scored.Count / 2 ? "high" : "medium",
+            title = $"{unmixed} Unmixed UTXOs ({pct}%)",
+            message = "These UTXOs have never participated in a CoinJoin. Enable auto-mixing to improve their anonymity set."
+        });
+    }
+
+    // Check low-score UTXOs
+    var lowScore = scored.Count(s => s.Score.EffectiveScore < 3 && s.Score.CoinJoinCount > 0);
+    if (lowScore > 0)
+    {
+        recommendations.Add(new
+        {
+            priority = "medium",
+            title = $"{lowScore} Low-Privacy UTXOs",
+            message = "These UTXOs have been mixed but still have a low anonymity score. Additional mixing rounds would improve privacy."
+        });
+    }
+
+    // Check for large value concentration
+    var totalSat = scored.Sum(s => s.Utxo.AmountSat);
+    var largestUtxo = scored.Max(s => s.Utxo.AmountSat);
+    if (totalSat > 0 && (double)largestUtxo / totalSat > 0.5)
+    {
+        recommendations.Add(new
+        {
+            priority = "medium",
+            title = "High Value Concentration",
+            message = $"One UTXO holds {(double)largestUtxo / totalSat * 100:F0}% of your total balance. Consider splitting through CoinJoin rounds to reduce amount-based fingerprinting."
+        });
+    }
+
+    // Check frozen UTXOs
+    var frozenCount = scored.Count(s => s.Utxo.IsFrozen);
+    if (frozenCount > 0)
+    {
+        recommendations.Add(new
+        {
+            priority = "info",
+            title = $"{frozenCount} Frozen UTXOs",
+            message = "Frozen UTXOs are excluded from coin selection. Review your frozen coins periodically."
+        });
+    }
+
+    // Check mixing status
+    if (!mixer.IsRunning && unmixed > 0)
+    {
+        recommendations.Add(new
+        {
+            priority = "high",
+            title = "Auto-Mix Not Running",
+            message = "Enable auto-mixing to continuously improve your wallet's privacy. Unmixed UTXOs are vulnerable to chain analysis."
+        });
+    }
+
+    // Good privacy
+    var excellentCount = scored.Count(s => s.Score.EffectiveScore >= 50);
+    if (excellentCount > 0)
+    {
+        recommendations.Add(new
+        {
+            priority = "success",
+            title = $"{excellentCount} Excellent Privacy UTXOs",
+            message = "These UTXOs have strong anonymity sets. They're ready for privacy-preserving spending."
+        });
+    }
+
+    return Results.Ok(new { recommendations });
+}).WithTags("Dashboard");
+
 // Address book CRUD
 app.MapGet("/api/address-book", async (WalletDbContext db) =>
 {
