@@ -182,6 +182,45 @@
             font-size: 12px;
         }
         .batch-bar button:hover { border-color: var(--accent); }
+        .send-form { display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; margin-bottom: 12px; }
+        .send-form .field { display: flex; flex-direction: column; gap: 4px; }
+        .send-form .field label { font-size: 11px; color: var(--text-muted); text-transform: uppercase; }
+        .send-form input, .send-form select {
+            background: var(--bg);
+            border: 1px solid var(--border);
+            color: var(--text);
+            padding: 6px 10px;
+            border-radius: 4px;
+            font-size: 13px;
+            font-family: 'SFMono-Regular', Consolas, monospace;
+        }
+        .send-form input:focus, .send-form select:focus { border-color: var(--accent); outline: none; }
+        .send-form input.wide { width: 320px; }
+        .send-form input.narrow { width: 120px; }
+        .send-btn {
+            background: var(--accent);
+            border: none;
+            color: #000;
+            padding: 6px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 600;
+        }
+        .send-btn:hover { opacity: 0.9; }
+        .send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+        .plan-result {
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            padding: 12px;
+            font-size: 13px;
+            display: none;
+        }
+        .plan-result .plan-grid { display: grid; grid-template-columns: 140px 1fr; gap: 4px 12px; }
+        .plan-result .plan-label { color: var(--text-muted); }
+        .plan-warning { color: var(--yellow); padding: 4px 0; font-size: 12px; }
+        .plan-utxo-list { margin-top: 8px; }
     </style>
 </head>
 <body>
@@ -338,6 +377,34 @@
                     <tr><td colspan="5" class="empty">Loading...</td></tr>
                 </tbody>
             </table>
+        </section>
+
+        <section>
+            <h2>Send</h2>
+            <div class="send-form">
+                <div class="field">
+                    <label>Destination Address</label>
+                    <input type="text" id="sendDest" class="wide" placeholder="bc1q...">
+                </div>
+                <div class="field">
+                    <label>Amount (sats)</label>
+                    <input type="number" id="sendAmount" class="narrow" placeholder="100000">
+                </div>
+                <div class="field">
+                    <label>Fee Rate (sat/vB)</label>
+                    <input type="number" id="sendFeeRate" class="narrow" value="2">
+                </div>
+                <div class="field">
+                    <label>Strategy</label>
+                    <select id="sendStrategy">
+                        <option value="PrivacyFirst">Privacy First</option>
+                        <option value="FeeSaver">Fee Saver</option>
+                        <option value="Consolidation">Consolidation</option>
+                    </select>
+                </div>
+                <button class="send-btn" id="planBtn" onclick="planSend()">Preview Transaction</button>
+            </div>
+            <div class="plan-result" id="planResult"></div>
         </section>
 
         <section id="flowsSection" style="display:none">
@@ -618,6 +685,72 @@
                 <td>${f.reissuanceSteps}</td>
                 <td>${f.graphDepth}</td>
             </tr>`).join('');
+        }
+
+        async function planSend() {
+            const dest = document.getElementById('sendDest').value.trim();
+            const amount = parseInt(document.getElementById('sendAmount').value);
+            const feeRate = parseInt(document.getElementById('sendFeeRate').value) || 2;
+            const strategy = document.getElementById('sendStrategy').value;
+            const panel = document.getElementById('planResult');
+            const btn = document.getElementById('planBtn');
+
+            if (!dest || !amount || amount <= 0) {
+                panel.style.display = 'block';
+                panel.innerHTML = '<span style="color:var(--red)">Please enter a destination address and amount.</span>';
+                return;
+            }
+
+            btn.disabled = true;
+            btn.textContent = 'Planning...';
+            panel.style.display = 'block';
+            panel.innerHTML = '<span style="color:var(--text-muted)">Building transaction plan...</span>';
+
+            try {
+                const res = await fetch('/api/dashboard/plan-send', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ destination: dest, amountSat: amount, feeRateSatPerVb: feeRate, strategy })
+                });
+                const data = await res.json();
+
+                if (!res.ok) {
+                    panel.innerHTML = `<span style="color:var(--red)">Error: ${esc(typeof data === 'string' ? data : data.detail || data.title || JSON.stringify(data))}</span>`;
+                    return;
+                }
+
+                let warningsHtml = '';
+                if (data.warnings && data.warnings.length > 0) {
+                    warningsHtml = data.warnings.map(w => `<div class="plan-warning">${esc(w)}</div>`).join('');
+                }
+
+                let utxoHtml = '';
+                if (data.selectedUtxos) {
+                    utxoHtml = `<div class="plan-utxo-list"><strong style="font-size:12px;color:var(--text-muted)">Selected UTXOs:</strong><table style="margin-top:4px;width:100%">
+                        <tr><th>Outpoint</th><th>Amount</th><th>Score</th></tr>
+                        ${data.selectedUtxos.map(u => `<tr>
+                            <td class="truncate" title="${esc(u.txId)}:${u.outputIndex}">${truncate(u.txId)}:${u.outputIndex}</td>
+                            <td>${(u.amountSat / 100000000).toFixed(8)}</td>
+                            <td><span class="score-badge ${scoreClass(u.effectiveScore)}">${u.effectiveScore}</span></td>
+                        </tr>`).join('')}
+                    </table></div>`;
+                }
+
+                panel.innerHTML = `
+                    <div class="plan-grid">
+                        <span class="plan-label">Inputs</span><span>${data.inputCount}</span>
+                        <span class="plan-label">Outputs</span><span>${data.outputCount}</span>
+                        <span class="plan-label">Estimated Fee</span><span>${data.estimatedFeeSat} sat (${data.estimatedFeeBtc.toFixed(8)} BTC)</span>
+                    </div>
+                    ${warningsHtml}
+                    ${utxoHtml}
+                `;
+            } catch (err) {
+                panel.innerHTML = `<span style="color:var(--red)">Request failed: ${esc(err.message)}</span>`;
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Preview Transaction';
+            }
         }
 
         async function refreshAll() {
