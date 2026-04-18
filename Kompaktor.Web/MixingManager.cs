@@ -161,6 +161,7 @@ public class MixingManager : IAsyncDisposable
 
             _eventBus.Publish("mixing");
             _eventBus.Publish("utxos");
+            _eventBus.Publish("payments");
         };
 
         await service.StartAsync();

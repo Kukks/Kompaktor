@@ -109,6 +109,7 @@ public class WalletPaymentManager : IOutboundPaymentManager, IInboundPaymentMana
 
             // Reset to pending so it can be retried in the next round
             entity.Status = "Pending";
+            entity.RetryCount++;
             await _db.SaveChangesAsync();
         }
         finally

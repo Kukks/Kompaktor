@@ -167,6 +167,27 @@ public class WalletPaymentManagerTests : IDisposable
     }
 
     [Fact]
+    public async Task BreakCommitment_IncrementsRetryCount()
+    {
+        var addr = new Key().PubKey.GetAddress(ScriptPubKeyType.TaprootBIP86, _network).ToString();
+        var entity = await _manager.CreateOutboundPaymentAsync(addr, 50_000);
+        Assert.Equal(0, entity.RetryCount);
+
+        await _manager.Commit(entity.Id);
+        await _manager.BreakCommitment(entity.Id);
+
+        var updated = await _db.PendingPayments.FindAsync(entity.Id);
+        Assert.Equal(1, updated!.RetryCount);
+
+        // Second retry
+        await _manager.Commit(entity.Id);
+        await _manager.BreakCommitment(entity.Id);
+
+        updated = await _db.PendingPayments.FindAsync(entity.Id);
+        Assert.Equal(2, updated!.RetryCount);
+    }
+
+    [Fact]
     public async Task CancelPayment_SetsFailed_ForPendingPayment()
     {
         var addr = new Key().PubKey.GetAddress(ScriptPubKeyType.TaprootBIP86, _network).ToString();

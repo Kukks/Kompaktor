@@ -166,6 +166,8 @@ public class PendingPaymentEntity
     public string? CompletedTxId { get; set; }
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset? CompletedAt { get; set; }
+    /// <summary>Number of times this payment has been retried after round failures</summary>
+    public int RetryCount { get; set; }
     /// <summary>Optional expiration time — expired pending payments are auto-cancelled</summary>
     public DateTimeOffset? ExpiresAt { get; set; }
 }

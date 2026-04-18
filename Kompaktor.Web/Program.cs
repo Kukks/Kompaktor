@@ -860,14 +860,15 @@ app.MapGet("/api/payments", async (WalletDbContext db) =>
             p.Id, p.Direction, p.AmountSat,
             amountBtc = p.AmountSat / 100_000_000.0,
             p.Destination, p.Status, p.IsInteractive, p.IsUrgent,
-            p.Label, p.CompletedTxId, p.ProofJson, p.CreatedAt, p.CompletedAt, p.ExpiresAt
+            p.Label, p.CompletedTxId, p.ProofJson, p.RetryCount,
+            p.CreatedAt, p.CompletedAt, p.ExpiresAt
         })
         .ToListAsync();
 
     return Results.Ok(payments);
 }).WithTags("Payments");
 
-app.MapPost("/api/payments/send", async (WalletDbContext db, HttpContext ctx) =>
+app.MapPost("/api/payments/send", async (WalletDbContext db, HttpContext ctx, DashboardEventBus bus) =>
 {
     var wallet = await db.Wallets.FirstOrDefaultAsync();
     if (wallet is null) return Results.BadRequest("No wallet found");
@@ -890,6 +891,7 @@ app.MapPost("/api/payments/send", async (WalletDbContext db, HttpContext ctx) =>
     var entity = await manager.CreateOutboundPaymentAsync(
         body.Destination, body.AmountSat, body.Interactive, body.Urgent, body.Label, expiry);
 
+    bus.Publish("payments");
     return Results.Ok(new
     {
         entity.Id, entity.Direction, entity.AmountSat,
@@ -900,7 +902,7 @@ app.MapPost("/api/payments/send", async (WalletDbContext db, HttpContext ctx) =>
     });
 }).WithTags("Payments");
 
-app.MapPost("/api/payments/receive", async (WalletDbContext db, HttpContext ctx) =>
+app.MapPost("/api/payments/receive", async (WalletDbContext db, HttpContext ctx, DashboardEventBus bus) =>
 {
     var wallet = await db.Wallets.FirstOrDefaultAsync();
     if (wallet is null) return Results.BadRequest("No wallet found");
@@ -918,6 +920,7 @@ app.MapPost("/api/payments/receive", async (WalletDbContext db, HttpContext ctx)
     if (entity.KompaktorKeyHex is not null)
         bip21 += $"&kompaktor={entity.KompaktorKeyHex.ToLower()}";
 
+    bus.Publish("payments");
     return Results.Ok(new
     {
         entity.Id, entity.Direction, entity.AmountSat,
@@ -929,13 +932,14 @@ app.MapPost("/api/payments/receive", async (WalletDbContext db, HttpContext ctx)
     });
 }).WithTags("Payments");
 
-app.MapDelete("/api/payments/{paymentId}", async (string paymentId, WalletDbContext db) =>
+app.MapDelete("/api/payments/{paymentId}", async (string paymentId, WalletDbContext db, DashboardEventBus bus) =>
 {
     var wallet = await db.Wallets.FirstOrDefaultAsync();
     if (wallet is null) return Results.BadRequest("No wallet found");
 
     var manager = new WalletPaymentManager(db, wallet.Id, network);
     var cancelled = await manager.CancelPaymentAsync(paymentId);
+    if (cancelled) bus.Publish("payments");
     return cancelled ? Results.Ok(new { paymentId, status = "cancelled" }) : Results.NotFound();
 }).WithTags("Payments");
 
