@@ -101,6 +101,22 @@ else
 
 wallet.SetBlockchainBackend(blockchain);
 
+// --- Sync wallet UTXOs from blockchain ---
+logger.LogInformation("Syncing wallet UTXOs...");
+var syncService = new WalletSyncService(db, blockchain, network);
+syncService.UtxosReceived += utxos =>
+    logger.LogInformation("Discovered {Count} new UTXOs", utxos.Length);
+syncService.UtxosSpent += utxos =>
+    logger.LogInformation("Detected {Count} spent UTXOs", utxos.Length);
+
+await syncService.FullSyncAsync(wallet.WalletId);
+var (confirmed, unconfirmed) = await syncService.GetBalanceAsync(wallet.WalletId);
+logger.LogInformation("Balance: {Confirmed} sat confirmed, {Unconfirmed} sat unconfirmed",
+    confirmed, unconfirmed);
+
+// Start real-time monitoring for new transactions
+await syncService.StartMonitoringAsync(wallet.WalletId);
+
 // --- Start coordinator ---
 var coordinatorOptions = new KompaktorCoordinatorOptions();
 var prison = new KompaktorPrison();
@@ -122,17 +138,10 @@ if (coins.Length == 0)
 {
     logger.LogWarning("No confirmed coins in wallet. Fund the wallet first, then re-run.");
 
-    // Show a receive address for convenience
-    var firstAddr = await db.Addresses
-        .Include(a => a.Account)
-        .Where(a => a.Account.Wallet.Id == wallet.WalletId && !a.IsChange && !a.IsUsed && !a.IsExposed)
-        .FirstOrDefaultAsync();
-    if (firstAddr is not null)
-    {
-        var script = new Script(firstAddr.ScriptPubKey);
-        var addr = script.GetDestinationAddress(network);
-        logger.LogInformation("Send funds to: {Address}", addr);
-    }
+    // Show a receive address using the new fresh address API
+    var receiveScript = await wallet.GetFreshAddressAsync();
+    var receiveAddr = receiveScript.GetDestinationAddress(network);
+    logger.LogInformation("Send funds to: {Address}", receiveAddr);
 }
 else
 {
@@ -140,6 +149,7 @@ else
 }
 
 // --- Cleanup ---
+await syncService.DisposeAsync();
 wallet.Close();
 await blockchain.DisposeAsync();
 logger.LogInformation("Done.");
