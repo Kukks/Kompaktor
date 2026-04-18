@@ -13,7 +13,8 @@ public static class KompaktorEndpoints
     public static void MapKompaktorEndpoints(this WebApplication app)
     {
         var group = app.MapGroup("/api/round/{roundId}")
-            .WithTags("Kompaktor Round");
+            .WithTags("Kompaktor Round")
+            .RequireRateLimiting("protocol");
 
         group.MapPost("/pre-register-input", async (string roundId, RegisterInputQuoteRequest request, KompaktorRoundManager manager) =>
         {
@@ -160,11 +161,11 @@ public static class KompaktorEndpoints
             }
         });
 
-        // Round management endpoints
+        // Round management / discovery endpoints — lower rate limit
         app.MapGet("/api/rounds", (KompaktorRoundManager manager) =>
         {
             return Results.Ok(manager.GetActiveRounds());
-        }).WithTags("Round Management");
+        }).WithTags("Round Management").RequireRateLimiting("discovery");
 
         app.MapGet("/api/round/{roundId}/info", (string roundId, KompaktorRoundManager manager) =>
         {
@@ -172,7 +173,7 @@ public static class KompaktorEndpoints
             if (op is null) return Results.NotFound(new { error = "Round not found" });
 
             return Results.Ok(RoundInfoResponse.FromCreatedEvent(op.RoundEventCreated));
-        }).WithTags("Round Management");
+        }).WithTags("Round Management").RequireRateLimiting("discovery");
 
         app.MapGet("/api/round/{roundId}/status", (string roundId, string? checkpoint, KompaktorRoundManager manager) =>
         {
@@ -191,6 +192,6 @@ public static class KompaktorEndpoints
                 isBlameRound = op.RoundEventCreated.IsBlameRound,
                 blameOf = op.RoundEventCreated.BlameOf
             });
-        }).WithTags("Round Management");
+        }).WithTags("Round Management").RequireRateLimiting("discovery");
     }
 }
