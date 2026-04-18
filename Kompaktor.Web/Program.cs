@@ -937,6 +937,23 @@ app.MapDelete("/api/payments/{paymentId}", async (string paymentId, WalletDbCont
     return cancelled ? Results.Ok(new { paymentId, status = "cancelled" }) : Results.NotFound();
 }).WithTags("Payments");
 
+app.MapGet("/api/payments/{paymentId}/qr", async (string paymentId, WalletDbContext db) =>
+{
+    var entity = await db.PendingPayments.FindAsync(paymentId);
+    if (entity is null) return Results.NotFound();
+
+    var bip21 = $"bitcoin:{entity.Destination}?amount={entity.AmountSat / 100_000_000.0:F8}";
+    if (entity.IsInteractive && entity.KompaktorKeyHex is not null)
+        bip21 += $"&kompaktor={entity.KompaktorKeyHex.ToLower()}";
+
+    using var qrGenerator = new QRCodeGenerator();
+    var qrData = qrGenerator.CreateQrCode(bip21, QRCodeGenerator.ECCLevel.M);
+    var svgQr = new SvgQRCode(qrData);
+    var svg = svgQr.GetGraphic(4, "#e6edf3", "#0d1117", false);
+
+    return Results.Content(svg, "image/svg+xml");
+}).WithTags("Payments");
+
 // Address book CRUD
 app.MapGet("/api/address-book", async (WalletDbContext db) =>
 {

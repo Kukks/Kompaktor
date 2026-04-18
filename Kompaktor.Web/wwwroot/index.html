@@ -922,9 +922,17 @@
                         <span id="recvStatus" style="font-size:12px;margin-left:8px"></span>
                         <div id="recvResult" style="display:none;margin-top:12px;padding:12px;background:var(--bg);border:1px solid var(--border);border-radius:6px">
                             <div style="font-size:11px;color:var(--text-muted);text-transform:uppercase;margin-bottom:4px">Share this URI with the sender</div>
-                            <div class="address-display">
-                                <span class="addr" id="recvBip21" style="font-size:12px;word-break:break-all"></span>
-                                <button class="copy-btn" onclick="copyPaymentUri()">Copy</button>
+                            <div style="display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap">
+                                <div id="recvQr" style="width:140px;height:140px;background:var(--surface);border:1px solid var(--border);border-radius:6px;display:flex;align-items:center;justify-content:center;overflow:hidden;flex-shrink:0">
+                                    <span style="color:var(--text-muted);font-size:11px">QR</span>
+                                </div>
+                                <div style="flex:1;min-width:200px">
+                                    <div class="address-display">
+                                        <span class="addr" id="recvBip21" style="font-size:12px;word-break:break-all"></span>
+                                        <button class="copy-btn" onclick="copyPaymentUri()">Copy</button>
+                                    </div>
+                                    <div style="font-size:11px;color:var(--text-muted);margin-top:6px">The sender pastes this URI to initiate an interactive payment through CoinJoin.</div>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -2265,6 +2273,16 @@
                 status.innerHTML = '<span style="color:var(--green)">Created</span>';
                 document.getElementById('recvBip21').textContent = data.bip21Uri;
                 document.getElementById('recvResult').style.display = '';
+                // Load QR code for the payment URI
+                try {
+                    const qrRes = await fetch(`/api/payments/${encodeURIComponent(data.id)}/qr`);
+                    if (qrRes.ok) {
+                        const qrEl = document.getElementById('recvQr');
+                        qrEl.innerHTML = await qrRes.text();
+                        const svg = qrEl.querySelector('svg');
+                        if (svg) { svg.style.width = '100%'; svg.style.height = '100%'; }
+                    }
+                } catch { /* QR optional */ }
                 document.getElementById('recvAmount').value = '';
                 document.getElementById('recvLabel').value = '';
                 showToast(`Receive invoice for ${amount.toLocaleString()} sats created`, 'success');
@@ -2460,7 +2478,8 @@
             rounds: 'overview',
             utxos: 'utxos',
             wallet: 'overview',
-            mixing: 'coinjoins'
+            mixing: 'coinjoins',
+            payments: 'payments'
         };
 
         function notifyTab(tabName) {
