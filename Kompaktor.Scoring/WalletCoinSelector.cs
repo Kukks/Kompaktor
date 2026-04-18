@@ -47,10 +47,12 @@ public class WalletCoinSelector
             .ToListAsync(ct);
 
         // Load labels for these UTXOs and their addresses
+        var utxoIdStrings = utxoIds.Select(id => id.ToString()).ToHashSet();
+        var addressIdStrings = addressIds.Select(id => id.ToString()).ToHashSet();
         var labels = await _db.Labels
             .Where(l =>
-                (l.EntityType == "Utxo" && utxoIds.Select(id => id.ToString()).Contains(l.EntityId)) ||
-                (l.EntityType == "Address" && addressIds.Select(id => id.ToString()).Contains(l.EntityId)))
+                (l.EntityType == "Utxo" && utxoIdStrings.Contains(l.EntityId)) ||
+                (l.EntityType == "Address" && addressIdStrings.Contains(l.EntityId)))
             .ToListAsync(ct);
 
         var result = new List<ScoredUtxo>(utxos.Count);
