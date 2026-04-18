@@ -17,6 +17,18 @@
             --red: #f85149;
             --orange: #db6d28;
         }
+        [data-theme="light"] {
+            --bg: #ffffff;
+            --surface: #f6f8fa;
+            --border: #d0d7de;
+            --text: #1f2328;
+            --text-muted: #656d76;
+            --accent: #0969da;
+            --green: #1a7f37;
+            --yellow: #9a6700;
+            --red: #cf222e;
+            --orange: #bc4c00;
+        }
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
@@ -572,6 +584,7 @@
             <div class="status">
                 <span class="sync-indicator" id="syncStatus"></span>
                 <span id="lastUpdate"></span>
+                <button class="refresh-btn" onclick="toggleTheme()" id="themeBtn" title="Toggle dark/light theme">Light</button>
                 <button class="refresh-btn" onclick="refreshAll()">Refresh</button>
             </div>
         </header>
@@ -948,6 +961,26 @@
     <div class="toast-container" id="toastContainer"></div>
 
     <script>
+        // Theme toggle
+        function toggleTheme() {
+            const current = document.documentElement.getAttribute('data-theme');
+            const next = current === 'light' ? 'dark' : 'light';
+            document.documentElement.setAttribute('data-theme', next);
+            localStorage.setItem('kompaktor-theme', next);
+            document.getElementById('themeBtn').textContent = next === 'light' ? 'Dark' : 'Light';
+        }
+
+        // Apply saved theme on load
+        (function() {
+            const saved = localStorage.getItem('kompaktor-theme');
+            if (saved === 'light') {
+                document.documentElement.setAttribute('data-theme', 'light');
+                document.addEventListener('DOMContentLoaded', () => {
+                    document.getElementById('themeBtn').textContent = 'Dark';
+                });
+            }
+        })();
+
         async function fetchJson(url) {
             try {
                 const res = await fetch(url);
@@ -1975,6 +2008,7 @@
             // Ignore when typing in inputs
             if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
             if (e.key === 'r' || e.key === 'R') { e.preventDefault(); refreshAll(); }
+            if (e.key === 't' || e.key === 'T') { e.preventDefault(); toggleTheme(); }
             // Number keys 1-5 switch tabs
             const tabKeys = { '1': 'overview', '2': 'send-receive', '3': 'utxos', '4': 'coinjoins', '5': 'settings' };
             if (tabKeys[e.key]) { e.preventDefault(); switchTab(tabKeys[e.key]); }
