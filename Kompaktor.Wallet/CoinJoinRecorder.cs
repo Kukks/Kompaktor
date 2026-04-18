@@ -112,7 +112,8 @@ public class CoinJoinRecorder
                 OutputIndex = i,
                 AddressId = matchingAddr.Id,
                 AmountSat = output.Value.Satoshi,
-                ScriptPubKey = scriptBytes
+                ScriptPubKey = scriptBytes,
+                IsCoinJoinOutput = true
                 // ConfirmedHeight will be set when the tx confirms
             };
             _db.Utxos.Add(newUtxo);

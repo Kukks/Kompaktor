@@ -50,6 +50,11 @@ public class UtxoEntity
     public string? SpentByTxId { get; set; }
     public bool IsCoinBase { get; set; }
     public bool IsFrozen { get; set; }
+    /// <summary>
+    /// True if this UTXO was created as an output of a completed coinjoin round.
+    /// Used to allow unconfirmed coinjoin output reuse for faster re-mixing.
+    /// </summary>
+    public bool IsCoinJoinOutput { get; set; }
 
     public AddressEntity Address { get; set; } = null!;
 }

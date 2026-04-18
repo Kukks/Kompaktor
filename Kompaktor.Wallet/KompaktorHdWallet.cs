@@ -192,14 +192,32 @@ public class KompaktorHdWallet : IKompaktorWalletInterface
         return GetFreshAddressAsync(isChange: true).GetAwaiter().GetResult();
     }
 
+    /// <summary>
+    /// Whether to include unconfirmed coinjoin outputs as coin candidates.
+    /// Enables faster re-mixing by not waiting for on-chain confirmation between rounds.
+    /// Safe because coinjoin outputs from successful rounds are fully signed and broadcast.
+    /// </summary>
+    public bool AllowUnconfirmedCoinjoinReuse { get; set; }
+
     public async Task<Coin[]> GetCoins(CancellationToken ct = default)
     {
-        var utxos = await _db.Utxos
+        var query = _db.Utxos
             .Include(u => u.Address)
             .ThenInclude(a => a.Account)
-            .Where(u => u.SpentByTxId == null && u.ConfirmedHeight != null)
-            .Where(u => u.Address.Account.Wallet.Id == WalletId)
-            .ToListAsync(ct);
+            .Where(u => u.SpentByTxId == null)
+            .Where(u => u.Address.Account.Wallet.Id == WalletId);
+
+        if (AllowUnconfirmedCoinjoinReuse)
+        {
+            // Include confirmed UTXOs + unconfirmed coinjoin outputs (from our own completed rounds)
+            query = query.Where(u => u.ConfirmedHeight != null || u.IsCoinJoinOutput);
+        }
+        else
+        {
+            query = query.Where(u => u.ConfirmedHeight != null);
+        }
+
+        var utxos = await query.ToListAsync(ct);
 
         return utxos.Select(u => new Coin(
             new OutPoint(uint256.Parse(u.TxId), u.OutputIndex),
