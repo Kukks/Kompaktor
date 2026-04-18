@@ -12,6 +12,12 @@ public class InteractivePaymentSenderBehaviorTrait : KompaktorClientBaseBehavior
     private readonly IOutboundPaymentManager _outboundPaymentManager;
     private readonly IKompaktorPeerCommunicationApi _communicationApi;
 
+    /// <summary>
+    /// Timeout for waiting for the receiver's intent-pay acknowledgement.
+    /// Higher values improve reliability over Tor but delay round progress.
+    /// </summary>
+    public TimeSpan IntentPayTimeout { get; init; } = TimeSpan.FromSeconds(10);
+
     public InteractivePaymentSenderBehaviorTrait( IOutboundPaymentManager outboundPaymentManager,
         IKompaktorPeerCommunicationApi communicationApi)
     {
@@ -71,7 +77,7 @@ public class InteractivePaymentSenderBehaviorTrait : KompaktorClientBaseBehavior
                      new InteractivePendingPaymentSenderFlow(Logger, payment, _communicationApi)))
         {
             flows.Add(flow);
-            tasks.Add(flow.SignalIntentPay(new CancellationTokenSource(TimeSpan.FromSeconds(10)).Token));
+            tasks.Add(flow.SignalIntentPay(new CancellationTokenSource(IntentPayTimeout).Token));
         }
 
         await Task.WhenAll(tasks);
