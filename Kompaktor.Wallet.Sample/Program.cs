@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using Kompaktor.Blockchain;
 using Kompaktor.Models;
 using Kompaktor.Prison;
+using Kompaktor.Scoring;
 using Kompaktor.Server;
 using Kompaktor.Wallet;
 using Kompaktor.Wallet.Data;
@@ -117,8 +118,18 @@ logger.LogInformation("Balance: {Confirmed} sat confirmed, {Unconfirmed} sat unc
 // Start real-time monitoring for new transactions
 await syncService.StartMonitoringAsync(wallet.WalletId);
 
-// --- Setup CoinJoin recorder ---
+// --- Setup CoinJoin recorder and privacy scoring ---
 var recorder = new CoinJoinRecorder(db, wallet.WalletId);
+var coinSelector = new WalletCoinSelector(db);
+
+// Display wallet privacy summary
+var privacySummary = await coinSelector.GetPrivacySummaryAsync(wallet.WalletId);
+if (privacySummary.TotalUtxos > 0)
+{
+    logger.LogInformation("Privacy summary: {Total} UTXOs, avg score {Avg:F1}, {Mixed} mixed, {NeedsMix} need mixing",
+        privacySummary.TotalUtxos, privacySummary.AverageEffectiveScore,
+        privacySummary.MixedUtxoCount, privacySummary.NeedsMixingCount);
+}
 
 // --- Start coordinator ---
 var coordinatorOptions = new KompaktorCoordinatorOptions();
@@ -132,16 +143,28 @@ var roundManager = new KompaktorRoundManager(
 var roundId = await roundManager.CreateRound();
 logger.LogInformation("Round created: {RoundId}", roundId);
 
-// --- Get coins ---
+// --- Get coins with privacy scoring ---
 var coins = await wallet.GetCoins();
 logger.LogInformation("Wallet has {Count} confirmed coins, total {Amount} BTC",
     coins.Length, coins.Sum(c => c.Amount.ToUnit(MoneyUnit.BTC)));
+
+// Show scored coins
+var scoredCoins = await coinSelector.GetScoredUtxosAsync(wallet.WalletId);
+foreach (var sc in scoredCoins.Take(5))
+{
+    logger.LogInformation("  UTXO {TxId}:{Index} — {Amount} sat, anon score: {Score:F1} ({Mixes} mixes)",
+        sc.Utxo.TxId[..8], sc.Utxo.OutputIndex, sc.Utxo.AmountSat,
+        sc.Score.EffectiveScore, sc.Score.CoinJoinCount);
+}
+
+// Identify coins needing more mixing
+var candidates = await coinSelector.GetCoinjoinCandidatesAsync(wallet.WalletId);
+logger.LogInformation("{Count} coins need more mixing", candidates.Count);
 
 if (coins.Length == 0)
 {
     logger.LogWarning("No confirmed coins in wallet. Fund the wallet first, then re-run.");
 
-    // Show a receive address using the new fresh address API
     var receiveScript = await wallet.GetFreshAddressAsync();
     var receiveAddr = receiveScript.GetDestinationAddress(network);
     logger.LogInformation("Send funds to: {Address}", receiveAddr);
@@ -150,21 +173,20 @@ else
 {
     logger.LogInformation("Ready for coinjoin with {Count} coins", coins.Length);
 
-    // Example: when integrating with KompaktorService, wire the recorder to RoundCompleted:
+    // For auto-mixing, wrap the wallet with ScoringWalletAdapter:
+    // var scoringWallet = new ScoringWalletAdapter(wallet, coinSelector, wallet.WalletId);
+    // Pass scoringWallet to KompaktorService instead of wallet directly.
+    // This ensures only coins needing privacy improvement are registered as inputs.
+    //
+    // Wire the recorder to RoundCompleted for the full feedback loop:
     // service.RoundCompleted += async result =>
     // {
     //     if (result.Success && result.Transaction is not null)
-    //     {
-    //         await recorder.RecordRoundAsync(
-    //             result.RoundId, result.Transaction,
+    //         await recorder.RecordRoundAsync(result.RoundId, result.Transaction,
     //             result.OurInputOutpoints!, result.OurOutputScripts!,
     //             result.TotalParticipantInputs);
-    //         logger.LogInformation("Recorded coinjoin round {RoundId}", result.RoundId);
-    //     }
     //     else if (!result.Success && result.OurInputOutpoints is not null)
-    //     {
     //         await recorder.RecordFailedRoundAsync(result.RoundId, result.OurInputOutpoints);
-    //     }
     // };
 }
 
