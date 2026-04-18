@@ -905,10 +905,12 @@ app.MapPost("/api/mixing/start", async (MixingManager mixer, HttpContext ctx) =>
 
     try
     {
-        // Connect to ourselves as the coordinator
-        var coordinatorUri = new Uri($"{ctx.Request.Scheme}://localhost:{ctx.Connection.LocalPort}");
+        // Use custom coordinator URL if provided, otherwise connect to ourselves
+        var coordinatorUri = !string.IsNullOrWhiteSpace(body.CoordinatorUrl)
+            ? new Uri(body.CoordinatorUrl)
+            : new Uri($"{ctx.Request.Scheme}://localhost:{ctx.Connection.LocalPort}");
         var result = await mixer.StartAsync(body.Passphrase, coordinatorUri);
-        return Results.Ok(new { status = result });
+        return Results.Ok(new { status = result, coordinator = coordinatorUri.ToString() });
     }
     catch (Exception ex)
     {
@@ -1005,6 +1007,6 @@ record LabelRequest(string Text);
 record PassphraseRequest(string Passphrase);
 record RestoreRequest(string Mnemonic, string Passphrase, string? Name = null);
 record CreateWalletRequest(string Passphrase, string? Name = null, int? WordCount = null);
-record MixingStartRequest(string Passphrase);
+record MixingStartRequest(string Passphrase, string? CoordinatorUrl = null);
 record AddressBookRequest(string Label, string Address);
 record SendRequest(string Destination, long AmountSat, long FeeRateSatPerVb = 2, string Strategy = "PrivacyFirst", string Passphrase = "");

@@ -568,7 +568,8 @@
                 <h2>Auto-Mix</h2>
                 <div class="mixing-toggle" id="mixingToggle" onclick="toggleMixing()"></div>
                 <span id="mixingLabel" style="font-size:13px;color:var(--text-muted)">Off</span>
-                <input type="password" class="mixing-pass-input" id="mixingPass" placeholder="Passphrase" onkeydown="if(event.key==='Enter')confirmStartMixing()">
+                <input type="text" class="mixing-pass-input" id="mixingCoordUrl" placeholder="Coordinator URL (leave blank for local)" style="display:none;width:250px">
+                <input type="password" class="mixing-pass-input" id="mixingPass" placeholder="Passphrase" onkeydown="if(event.key==='Enter')confirmStartMixing()" style="display:none">
             </div>
             <div class="mixing-stats">
                 <span><span style="color:var(--green)">&#10003;</span> <span id="mixCompleted">0</span> completed</span>
@@ -1415,10 +1416,13 @@
             if (mixingRunning) {
                 stopMixing();
             } else {
-                // Show passphrase input
-                const input = document.getElementById('mixingPass');
-                input.style.display = input.style.display === 'none' ? '' : 'none';
-                if (input.style.display !== 'none') input.focus();
+                // Show coordinator URL and passphrase inputs
+                const urlInput = document.getElementById('mixingCoordUrl');
+                const passInput = document.getElementById('mixingPass');
+                const showing = passInput.style.display !== 'none';
+                urlInput.style.display = showing ? 'none' : '';
+                passInput.style.display = showing ? 'none' : '';
+                if (!showing) passInput.focus();
             }
         }
 
@@ -1426,11 +1430,15 @@
             const pass = document.getElementById('mixingPass').value;
             if (!pass) return;
 
+            const coordUrl = document.getElementById('mixingCoordUrl').value.trim();
+
             try {
+                const body = { passphrase: pass };
+                if (coordUrl) body.coordinatorUrl = coordUrl;
                 const res = await fetch('/api/mixing/start', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ passphrase: pass })
+                    body: JSON.stringify(body)
                 });
                 const data = await res.json();
                 if (!res.ok) {
@@ -1444,6 +1452,7 @@
 
             document.getElementById('mixingPass').style.display = 'none';
             document.getElementById('mixingPass').value = '';
+            document.getElementById('mixingCoordUrl').style.display = 'none';
             await loadMixingStatus();
         }
 
