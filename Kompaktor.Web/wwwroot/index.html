@@ -390,6 +390,41 @@
             display: none;
         }
         .mixing-pass-input:focus { border-color: var(--accent); outline: none; }
+        .address-book-list { list-style: none; margin: 0; padding: 0; }
+        .address-book-list li {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 8px 0;
+            border-bottom: 1px solid var(--border);
+            font-size: 13px;
+        }
+        .address-book-list li:last-child { border-bottom: none; }
+        .ab-label { font-weight: 600; margin-right: 8px; }
+        .ab-addr { font-family: 'SFMono-Regular', Consolas, monospace; color: var(--text-muted); word-break: break-all; }
+        .ab-actions { display: flex; gap: 6px; flex-shrink: 0; margin-left: 8px; }
+        .ab-use-btn, .ab-del-btn {
+            background: none;
+            border: 1px solid var(--border);
+            padding: 2px 8px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 11px;
+        }
+        .ab-use-btn { color: var(--accent); }
+        .ab-use-btn:hover { border-color: var(--accent); }
+        .ab-del-btn { color: var(--red); }
+        .ab-del-btn:hover { border-color: var(--red); }
+        .ab-add-form { display: flex; gap: 8px; margin-top: 8px; align-items: center; }
+        .ab-add-form input {
+            background: var(--bg);
+            border: 1px solid var(--border);
+            color: var(--text);
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 13px;
+        }
+        .ab-add-form input:focus { border-color: var(--accent); outline: none; }
     </style>
 </head>
 <body>
@@ -618,6 +653,18 @@
                     <tr><td colspan="5" class="empty">Loading...</td></tr>
                 </tbody>
             </table>
+        </section>
+
+        <section>
+            <h2>Address Book</h2>
+            <ul class="address-book-list" id="addressBookList">
+                <li class="empty">Loading...</li>
+            </ul>
+            <div class="ab-add-form">
+                <input type="text" id="abLabel" placeholder="Label" style="width:120px">
+                <input type="text" id="abAddress" placeholder="bc1q..." style="width:280px;font-family:'SFMono-Regular',Consolas,monospace">
+                <button class="label-add-btn" onclick="addAddressBookEntry()">Add</button>
+            </div>
         </section>
 
         <section>
@@ -1010,6 +1057,56 @@
             }
         }
 
+        // Address book
+        async function loadAddressBook() {
+            const entries = await fetchJson('/api/address-book');
+            const list = document.getElementById('addressBookList');
+            if (!entries || entries.length === 0) {
+                list.innerHTML = '<li class="empty">No saved addresses</li>';
+                return;
+            }
+            list.innerHTML = entries.map(e => `<li>
+                <div>
+                    <span class="ab-label">${esc(e.label)}</span>
+                    <span class="ab-addr">${esc(e.address)}</span>
+                </div>
+                <div class="ab-actions">
+                    <button class="ab-use-btn" onclick="useAddress('${esc(e.address)}')">Use</button>
+                    <button class="ab-del-btn" onclick="deleteAddressBookEntry(${e.id})">Remove</button>
+                </div>
+            </li>`).join('');
+        }
+
+        async function addAddressBookEntry() {
+            const label = document.getElementById('abLabel').value.trim();
+            const address = document.getElementById('abAddress').value.trim();
+            if (!label || !address) return;
+
+            const res = await fetch('/api/address-book', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ label, address })
+            });
+            if (!res.ok) {
+                const data = await res.json();
+                alert(typeof data === 'string' ? data : data.detail || JSON.stringify(data));
+                return;
+            }
+            document.getElementById('abLabel').value = '';
+            document.getElementById('abAddress').value = '';
+            await loadAddressBook();
+        }
+
+        async function deleteAddressBookEntry(id) {
+            await fetch(`/api/address-book/${id}`, { method: 'DELETE' });
+            await loadAddressBook();
+        }
+
+        function useAddress(addr) {
+            document.getElementById('sendDest').value = addr;
+            document.getElementById('sendDest').focus();
+        }
+
         async function planSend() {
             const dest = document.getElementById('sendDest').value.trim();
             const amount = parseInt(document.getElementById('sendAmount').value);
@@ -1181,7 +1278,7 @@
 
         async function refreshAll() {
             document.getElementById('lastUpdate').textContent = 'Refreshing...';
-            await Promise.all([loadSummary(), loadPrivacySummary(), loadPrivacyDistribution(), loadRounds(), loadUtxos(), loadCoinjoins(), loadTransactions(), loadMixingStatus(), loadSyncStatus()]);
+            await Promise.all([loadSummary(), loadPrivacySummary(), loadPrivacyDistribution(), loadRounds(), loadUtxos(), loadCoinjoins(), loadTransactions(), loadMixingStatus(), loadSyncStatus(), loadAddressBook()]);
             updateConnectionStatus(sseConnected ? 'live' : 'polling');
         }
 

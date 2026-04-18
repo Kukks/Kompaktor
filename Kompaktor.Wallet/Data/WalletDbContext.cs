@@ -15,6 +15,7 @@ public class WalletDbContext : DbContext
     public DbSet<CoinJoinParticipationEntity> CoinJoinParticipations => Set<CoinJoinParticipationEntity>();
     public DbSet<CredentialEventEntity> CredentialEvents => Set<CredentialEventEntity>();
     public DbSet<LabelEntity> Labels => Set<LabelEntity>();
+    public DbSet<AddressBookEntry> AddressBook => Set<AddressBookEntry>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -79,6 +80,12 @@ public class WalletDbContext : DbContext
         {
             e.HasKey(l => l.Id);
             e.HasIndex(l => new { l.EntityType, l.EntityId });
+        });
+
+        modelBuilder.Entity<AddressBookEntry>(e =>
+        {
+            e.HasKey(a => a.Id);
+            e.HasOne(a => a.Wallet).WithMany().HasForeignKey(a => a.WalletId);
         });
     }
 }

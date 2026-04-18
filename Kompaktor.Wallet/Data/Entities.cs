@@ -108,6 +108,17 @@ public class CredentialEventEntity
     public UtxoEntity? OutputUtxo { get; set; }
 }
 
+public class AddressBookEntry
+{
+    public int Id { get; set; }
+    public string WalletId { get; set; } = "";
+    public string Label { get; set; } = "";
+    public string Address { get; set; } = ""; // Bitcoin address string (e.g. bc1q...)
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    public WalletEntity Wallet { get; set; } = null!;
+}
+
 public class LabelEntity
 {
     public int Id { get; set; }

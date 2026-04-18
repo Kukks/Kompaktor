@@ -690,6 +690,61 @@ app.MapGet("/api/dashboard/privacy-distribution", async (WalletDbContext db) =>
     });
 }).WithTags("Dashboard");
 
+// Address book CRUD
+app.MapGet("/api/address-book", async (WalletDbContext db) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.Ok(Array.Empty<object>());
+
+    var entries = await db.AddressBook
+        .Where(a => a.WalletId == wallet.Id)
+        .OrderByDescending(a => a.CreatedAt)
+        .Select(a => new { a.Id, a.Label, a.Address, a.CreatedAt })
+        .ToListAsync();
+
+    return Results.Ok(entries);
+}).WithTags("AddressBook");
+
+app.MapPost("/api/address-book", async (WalletDbContext db, HttpContext ctx) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.BadRequest("No wallet found");
+
+    var body = await ctx.Request.ReadFromJsonAsync<AddressBookRequest>();
+    if (body is null || string.IsNullOrWhiteSpace(body.Address) || string.IsNullOrWhiteSpace(body.Label))
+        return Results.BadRequest("Label and address required");
+
+    // Validate address
+    try { BitcoinAddress.Create(body.Address.Trim(), network); }
+    catch { return Results.BadRequest("Invalid Bitcoin address"); }
+
+    // Prevent duplicates
+    var exists = await db.AddressBook.AnyAsync(a =>
+        a.WalletId == wallet.Id && a.Address == body.Address.Trim());
+    if (exists) return Results.BadRequest("Address already in address book");
+
+    var entry = new AddressBookEntry
+    {
+        WalletId = wallet.Id,
+        Label = body.Label.Trim(),
+        Address = body.Address.Trim()
+    };
+    db.AddressBook.Add(entry);
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new { entry.Id, entry.Label, entry.Address });
+}).WithTags("AddressBook");
+
+app.MapDelete("/api/address-book/{entryId}", async (int entryId, WalletDbContext db) =>
+{
+    var entry = await db.AddressBook.FindAsync(entryId);
+    if (entry is null) return Results.NotFound();
+
+    db.AddressBook.Remove(entry);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = entryId });
+}).WithTags("AddressBook");
+
 // Wallet sync status
 app.MapGet("/api/wallet/sync-status", (WalletSyncBackgroundService sync) =>
 {
@@ -822,3 +877,4 @@ record PassphraseRequest(string Passphrase);
 record RestoreRequest(string Mnemonic, string Passphrase, string? Name = null);
 record CreateWalletRequest(string Passphrase, string? Name = null, int? WordCount = null);
 record MixingStartRequest(string Passphrase);
+record AddressBookRequest(string Label, string Address);
