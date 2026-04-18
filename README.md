@@ -98,11 +98,11 @@ Kompaktor.sln
 │   ├── RemoteKompaktorRound.cs        # Event-polling round state with exponential backoff
 │   └── KompaktorService.cs           # High-level orchestrator for continuous coinjoin participation
 ├── Kompaktor.Web/          # Combined coordinator + wallet dashboard
-│   ├── Program.cs                     # ASP.NET Core host with coordinator, dashboard, coin control, mixing, and address book APIs
+│   ├── Program.cs                     # ASP.NET Core host with coordinator, dashboard, coin control, mixing, send, and address book APIs
 │   ├── DashboardEventBus.cs           # SSE broadcast bus for real-time dashboard updates
 │   ├── MixingManager.cs               # Auto-mixing lifecycle management (start/stop KompaktorService)
 │   ├── WalletSyncBackgroundService.cs # Background UTXO sync + real-time blockchain monitoring
-│   └── wwwroot/index.html             # Dark-themed dashboard with SSE, coin control, auto-mixing, and privacy meter UI
+│   └── wwwroot/index.html             # Dark-themed dashboard with SSE, coin control, auto-mixing, fee estimation, send, and privacy meter UI
 └── Kompaktor.Tests/        # Integration tests against regtest bitcoind
 ```
 
@@ -175,7 +175,7 @@ Network identity isolation abstraction. `TorCircuitFactory` routes each identity
 
 ### `Kompaktor.Web`
 
-Combined coordinator and wallet dashboard in a single ASP.NET Core process. Runs the full coordinator (round management, scheduling) alongside wallet management and dashboard APIs. Features include: wallet creation with mnemonic backup display, wallet restore from BIP-39 mnemonic, mnemonic export for backup, receive address generation (P2TR preferred), privacy summary with anonymity scoring, scored UTXOs with privacy badges, coin control (freeze/unfreeze, labels, batch operations), send transaction preview with post-mix spending warnings, coinjoin history with credential flow analysis, coordinator stats with round fill rates and demand metrics, transaction history, **real-time SSE (Server-Sent Events) push updates** replacing polling for instant dashboard refresh, and an **auto-mixing toggle** that starts/stops the KompaktorService directly from the dashboard with passphrase authentication. The SSE event bus broadcasts state changes from coin control, wallet, and round lifecycle operations, with automatic fallback to 10-second polling when the SSE connection drops. The auto-mixing service connects to the local coordinator, uses `ScoringWalletAdapter` for privacy-aware coin selection, and records completed rounds via `CoinJoinRecorder`. Supports both Bitcoin Core RPC and Electrum backends via configuration.
+Combined coordinator and wallet dashboard in a single ASP.NET Core process. Runs the full coordinator (round management, scheduling) alongside wallet management and dashboard APIs. Features include: wallet creation with mnemonic backup display, wallet restore from BIP-39 mnemonic, mnemonic export for backup, receive address generation (P2TR preferred), privacy summary with anonymity scoring, scored UTXOs with privacy badges, coin control (freeze/unfreeze, labels, batch operations), **full send flow** with transaction preview, passphrase-authenticated signing, and blockchain broadcast, **fee estimation** with clickable presets for 1/3/6/25 block confirmation targets, coinjoin history with credential flow analysis, coordinator stats with round fill rates and demand metrics, transaction history, **real-time SSE (Server-Sent Events) push updates** replacing polling for instant dashboard refresh, **auto-mixing toggle** that starts/stops the KompaktorService directly from the dashboard, **privacy health meter** showing 5-tier UTXO distribution, **address book** for saved payment destinations, **toast notifications** for real-time events, and **mobile-responsive layout** with 768px/480px breakpoints. The SSE event bus broadcasts state changes from coin control, wallet, and round lifecycle operations, with automatic fallback to 10-second polling when the SSE connection drops. Supports both Bitcoin Core RPC and Electrum backends via configuration.
 
 ### Error Handling
 
