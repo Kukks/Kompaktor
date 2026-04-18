@@ -1,4 +1,5 @@
 using System.Net;
+using Kompaktor.Client;
 using Kompaktor.Contracts;
 using Kompaktor.Credentials;
 using Kompaktor.Errors;
@@ -1596,6 +1597,47 @@ public class EventSerializationTests
 
         Assert.NotNull(deserialized);
         Assert.IsType<KompaktorRoundEventMessage>(deserialized);
+    }
+}
+
+public class RemoteKompaktorRoundResilienceTests
+{
+    [Fact]
+    public void ConsecutiveFailures_StartsAtZero()
+    {
+        using var handler = new FakeHttpHandler(_ => throw new HttpRequestException("boom"));
+        var httpClient = new HttpClient(handler) { BaseAddress = new Uri("http://localhost") };
+        var api = new HttpKompaktorRoundApi(httpClient, "round1");
+        var round = new RemoteKompaktorRound(api);
+
+        Assert.Equal(0, round.ConsecutiveFailures);
+    }
+
+    [Fact]
+    public async Task StartPolling_InitialFetchFailure_ThrowsBeforePolling()
+    {
+        using var handler = new FakeHttpHandler(_ => throw new HttpRequestException("offline"));
+        var httpClient = new HttpClient(handler) { BaseAddress = new Uri("http://localhost") };
+        var api = new HttpKompaktorRoundApi(httpClient, "round1");
+        var round = new RemoteKompaktorRound(api);
+
+        await Assert.ThrowsAsync<HttpRequestException>(() => round.StartPollingAsync());
+    }
+
+    private class FakeHttpHandler : HttpMessageHandler
+    {
+        private readonly Func<HttpRequestMessage, HttpResponseMessage> _handler;
+
+        public FakeHttpHandler(Func<HttpRequestMessage, HttpResponseMessage> handler)
+        {
+            _handler = handler;
+        }
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            return Task.FromResult(_handler(request));
+        }
     }
 }
 

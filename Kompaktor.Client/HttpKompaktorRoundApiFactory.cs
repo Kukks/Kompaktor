@@ -11,13 +11,19 @@ public class HttpKompaktorRoundApiFactory : IKompaktorRoundApiFactory
     private readonly Uri _baseUri;
     private readonly string _roundId;
     private readonly ICircuitFactory _circuitFactory;
+    private readonly TimeSpan _requestTimeout;
     private int _identityCounter;
 
-    public HttpKompaktorRoundApiFactory(Uri baseUri, string roundId, ICircuitFactory? circuitFactory = null)
+    public HttpKompaktorRoundApiFactory(
+        Uri baseUri,
+        string roundId,
+        ICircuitFactory? circuitFactory = null,
+        TimeSpan? requestTimeout = null)
     {
         _baseUri = baseUri;
         _roundId = roundId;
         _circuitFactory = circuitFactory ?? new DefaultCircuitFactory();
+        _requestTimeout = requestTimeout ?? TimeSpan.FromSeconds(30);
     }
 
     public IKompaktorRoundApi Create()
@@ -25,7 +31,11 @@ public class HttpKompaktorRoundApiFactory : IKompaktorRoundApiFactory
         var identity = $"kompaktor-{_roundId}-{Interlocked.Increment(ref _identityCounter)}";
         var circuit = _circuitFactory.Create(identity);
         var handler = circuit.CreateHandler();
-        var httpClient = new HttpClient(handler) { BaseAddress = _baseUri };
+        var httpClient = new HttpClient(handler)
+        {
+            BaseAddress = _baseUri,
+            Timeout = _requestTimeout
+        };
         return new HttpKompaktorRoundApi(httpClient, _roundId);
     }
 }
