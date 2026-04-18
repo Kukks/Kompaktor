@@ -316,4 +316,55 @@ public class WalletPaymentManagerTests : IDisposable
         await Assert.ThrowsAsync<ArgumentException>(
             () => _manager.CreateInboundPaymentAsync(500));
     }
+
+    [Fact]
+    public async Task ExpireStalePayments_FiresWebhookForExpiredPayments()
+    {
+        // Create a webhook for this wallet
+        _db.PaymentWebhooks.Add(new PaymentWebhookEntity
+        {
+            WalletId = _wallet.Id,
+            Url = "http://localhost:9999/hook", // Will fail to connect
+            Secret = "s",
+            IsActive = true,
+            EventFilter = "*"
+        });
+
+        var addr = new Key().PubKey.GetAddress(ScriptPubKeyType.TaprootBIP86, _network).ToString();
+        var entity = await _manager.CreateOutboundPaymentAsync(addr, 50_000, expiry: TimeSpan.FromMilliseconds(1));
+
+        // Wait for expiry
+        await Task.Delay(50);
+
+        // Trigger expiry by fetching payments (which calls ExpireStalePaymentsAsync internally)
+        var payments = await _manager.GetOutboundPendingPayments(false);
+
+        // The payment should now be Failed
+        var updated = await _db.PendingPayments.FindAsync(entity.Id);
+        Assert.Equal("Failed", updated!.Status);
+
+        // A webhook delivery should have been attempted for the "Expired" event
+        var deliveries = await _db.WebhookDeliveries.ToListAsync();
+        Assert.Single(deliveries);
+        Assert.Equal("Expired", deliveries[0].EventType);
+    }
+
+    [Fact]
+    public async Task MultipleOutboundPayments_AllQueuedAsPending()
+    {
+        var addr1 = new Key().PubKey.GetAddress(ScriptPubKeyType.TaprootBIP86, _network).ToString();
+        var addr2 = new Key().PubKey.GetAddress(ScriptPubKeyType.TaprootBIP86, _network).ToString();
+        var addr3 = new Key().PubKey.GetAddress(ScriptPubKeyType.TaprootBIP86, _network).ToString();
+
+        var e1 = await _manager.CreateOutboundPaymentAsync(addr1, 10_000, label: "First");
+        var e2 = await _manager.CreateOutboundPaymentAsync(addr2, 20_000, label: "Second");
+        var e3 = await _manager.CreateOutboundPaymentAsync(addr3, 30_000, label: "Third");
+
+        var pending = await _manager.GetOutboundPendingPayments(false);
+        Assert.Equal(3, pending.Length);
+
+        Assert.Equal("Pending", e1.Status);
+        Assert.Equal("Pending", e2.Status);
+        Assert.Equal("Pending", e3.Status);
+    }
 }

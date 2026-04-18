@@ -254,6 +254,18 @@ public class WalletPaymentManager : IOutboundPaymentManager, IInboundPaymentMana
             foreach (var p in expired)
                 p.Status = "Failed";
             await _db.SaveChangesAsync();
+
+            // Fire webhooks for expired payments (outside main flow, best-effort)
+            try
+            {
+                var webhookSvc = new PaymentWebhookService(_db, _walletId);
+                foreach (var p in expired)
+                    await webhookSvc.DeliverAsync(p, "Expired");
+            }
+            catch
+            {
+                // Webhook delivery failure should never block payment processing
+            }
         }
     }
 

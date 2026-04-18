@@ -549,7 +549,8 @@ app.MapGet("/api/wallet/info", async (WalletDbContext db) =>
         addressCount,
         freshReceiveAddresses = freshReceive,
         freshChangeAddresses = freshChange,
-        gapExtensionEnabled = hasXPub
+        gapExtensionEnabled = hasXPub,
+        isBackupVerified = wallet.IsBackupVerified
     });
 }).WithTags("Wallet");
 
@@ -625,6 +626,72 @@ app.MapPost("/api/wallet/export-mnemonic", async (WalletDbContext db, HttpContex
     {
         var mnemonic = MnemonicEncryption.Decrypt(wallet.EncryptedMnemonic, wallet.MnemonicSalt, body.Passphrase);
         return Results.Ok(new { mnemonic, wordCount = mnemonic.Split(' ').Length });
+    }
+    catch (System.Security.Cryptography.CryptographicException)
+    {
+        return Results.BadRequest("Wrong passphrase");
+    }
+}).WithTags("Wallet");
+
+// Backup verification: generate challenge (3 random word positions)
+app.MapPost("/api/wallet/backup-challenge", async (WalletDbContext db, HttpContext ctx) =>
+{
+    var body = await ctx.Request.ReadFromJsonAsync<PassphraseRequest>();
+    if (body is null || string.IsNullOrWhiteSpace(body.Passphrase))
+        return Results.BadRequest("Passphrase required");
+
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.BadRequest("No wallet found");
+    if (wallet.IsBackupVerified) return Results.Ok(new { verified = true, message = "Backup already verified" });
+
+    try
+    {
+        var mnemonic = MnemonicEncryption.Decrypt(wallet.EncryptedMnemonic, wallet.MnemonicSalt, body.Passphrase);
+        var words = mnemonic.Split(' ');
+        // Pick 3 random positions (1-indexed for user display)
+        var rng = new Random();
+        var positions = Enumerable.Range(0, words.Length).OrderBy(_ => rng.Next()).Take(3).OrderBy(x => x).ToArray();
+        return Results.Ok(new
+        {
+            verified = false,
+            positions = positions.Select(p => p + 1).ToArray(), // 1-indexed
+            wordCount = words.Length
+        });
+    }
+    catch (System.Security.Cryptography.CryptographicException)
+    {
+        return Results.BadRequest("Wrong passphrase");
+    }
+}).WithTags("Wallet");
+
+// Backup verification: verify user's answers
+app.MapPost("/api/wallet/verify-backup", async (WalletDbContext db, HttpContext ctx) =>
+{
+    var body = await ctx.Request.ReadFromJsonAsync<VerifyBackupRequest>();
+    if (body is null || string.IsNullOrWhiteSpace(body.Passphrase) || body.Answers is null || body.Answers.Length == 0)
+        return Results.BadRequest("Passphrase and answers required");
+
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.BadRequest("No wallet found");
+    if (wallet.IsBackupVerified) return Results.Ok(new { verified = true, message = "Backup already verified" });
+
+    try
+    {
+        var mnemonic = MnemonicEncryption.Decrypt(wallet.EncryptedMnemonic, wallet.MnemonicSalt, body.Passphrase);
+        var words = mnemonic.Split(' ');
+
+        foreach (var answer in body.Answers)
+        {
+            var idx = answer.Position - 1; // Convert from 1-indexed
+            if (idx < 0 || idx >= words.Length)
+                return Results.BadRequest($"Invalid position: {answer.Position}");
+            if (!string.Equals(words[idx], answer.Word?.Trim(), StringComparison.OrdinalIgnoreCase))
+                return Results.Ok(new { verified = false, message = $"Word at position {answer.Position} is incorrect. Please try again." });
+        }
+
+        wallet.IsBackupVerified = true;
+        await db.SaveChangesAsync();
+        return Results.Ok(new { verified = true, message = "Backup verified successfully! Your recovery phrase is confirmed." });
     }
     catch (System.Security.Cryptography.CryptographicException)
     {
@@ -948,6 +1015,52 @@ app.MapPost("/api/payments/send", async (WalletDbContext db, HttpContext ctx, Da
     {
         return Results.BadRequest(ex.Message);
     }
+}).WithTags("Payments");
+
+app.MapPost("/api/payments/batch-send", async (WalletDbContext db, HttpContext ctx, DashboardEventBus bus) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.BadRequest("No wallet found");
+
+    var items = await ctx.Request.ReadFromJsonAsync<BatchSendRequest[]>();
+    if (items is null || items.Length == 0)
+        return Results.BadRequest("At least one payment required");
+    if (items.Length > 50)
+        return Results.BadRequest("Maximum 50 payments per batch");
+
+    // Validate all addresses up front before creating any
+    foreach (var item in items)
+    {
+        if (string.IsNullOrWhiteSpace(item.Destination) || item.AmountSat <= 0)
+            return Results.BadRequest($"Invalid entry: destination and amount required for all items");
+        try { BitcoinAddress.Create(item.Destination, network); }
+        catch { return Results.BadRequest($"Invalid Bitcoin address: {item.Destination}"); }
+    }
+
+    var manager = new WalletPaymentManager(db, wallet.Id, network);
+    var created = new List<object>();
+    try
+    {
+        foreach (var item in items)
+        {
+            var expiry = item.ExpiryMinutes.HasValue ? TimeSpan.FromMinutes(item.ExpiryMinutes.Value) : (TimeSpan?)null;
+            var entity = await manager.CreateOutboundPaymentAsync(
+                item.Destination, item.AmountSat, item.Interactive, item.Urgent, item.Label, expiry);
+            created.Add(new
+            {
+                entity.Id, entity.Direction, entity.AmountSat,
+                amountBtc = entity.AmountSat / 100_000_000.0,
+                entity.Destination, entity.Status, entity.Label
+            });
+        }
+    }
+    catch (ArgumentException ex)
+    {
+        return Results.BadRequest(ex.Message);
+    }
+
+    bus.Publish("payments");
+    return Results.Ok(new { count = created.Count, payments = created });
 }).WithTags("Payments");
 
 app.MapPost("/api/payments/receive", async (WalletDbContext db, HttpContext ctx, DashboardEventBus bus) =>
@@ -1727,5 +1840,8 @@ record AddressBookRequest(string Label, string Address);
 record SendRequest(string Destination, long AmountSat, long FeeRateSatPerVb = 2, string Strategy = "PrivacyFirst", string Passphrase = "");
 record BroadcastPsbtRequest(string SignedPsbt);
 record CreatePaymentRequest(string Destination, long AmountSat, bool Interactive = true, bool Urgent = false, string? Label = null, int? ExpiryMinutes = null);
+record BatchSendRequest(string Destination, long AmountSat, bool Interactive = true, bool Urgent = false, string? Label = null, int? ExpiryMinutes = null);
 record CreateReceiveRequest(long AmountSat, string? Label = null, int? ExpiryMinutes = null);
 record WebhookCreateRequest(string Url, string? EventFilter = null);
+record VerifyBackupRequest(string Passphrase, VerifyBackupAnswer[] Answers);
+record VerifyBackupAnswer(int Position, string Word);

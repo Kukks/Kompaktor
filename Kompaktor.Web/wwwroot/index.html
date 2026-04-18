@@ -692,6 +692,13 @@
             <div class="mixing-activity-feed" id="mixingFeed"></div>
         </div>
 
+        <!-- Backup Warning Banner -->
+        <div id="backupWarning" style="display:none;background:var(--yellow);color:#000;padding:10px 16px;border-radius:6px;margin-bottom:12px;font-size:13px;display:flex;align-items:center;gap:10px">
+            <span style="font-size:18px">&#9888;</span>
+            <span><strong>Backup not verified.</strong> Your recovery phrase has not been confirmed. If you lose access to this device, your funds will be permanently lost.</span>
+            <button onclick="switchTab('settings');document.getElementById('backupVerifySection').scrollIntoView({behavior:'smooth'})" style="background:#000;color:var(--yellow);border:none;padding:4px 12px;border-radius:4px;cursor:pointer;font-size:12px;white-space:nowrap">Verify Now</button>
+        </div>
+
         <!-- Tab Navigation -->
         <div class="tab-bar" id="tabBar">
             <button class="tab-btn active" onclick="switchTab('overview')">Overview</button>
@@ -945,6 +952,7 @@
                     <!-- Receive Payment Form -->
                     <div style="flex:1;min-width:280px;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:16px">
                         <h3 style="font-size:14px;margin-bottom:12px">Receive Payment</h3>
+
                         <div style="display:flex;gap:8px;margin-bottom:8px">
                             <div class="field" style="flex:1">
                                 <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;display:block;margin-bottom:4px">Amount (sats)</label>
@@ -974,6 +982,21 @@
                         </div>
                     </div>
                 </div>
+
+                <!-- Batch Send (Send to Many) -->
+                <details style="margin-top:12px">
+                    <summary style="cursor:pointer;font-size:13px;color:var(--text-muted);padding:8px 0;user-select:none">Send to Many (batch payments)</summary>
+                    <div style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:16px;margin-top:8px">
+                        <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px">One recipient per line: <code>address,amount_sats,label</code> (label is optional)</div>
+                        <textarea id="batchInput" rows="6" placeholder="bc1q...address1,100000,Payment 1&#10;bc1q...address2,200000,Payment 2&#10;bc1q...address3,50000" style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:8px 10px;border-radius:4px;font-size:12px;font-family:'SFMono-Regular',Consolas,monospace;resize:vertical"></textarea>
+                        <div style="display:flex;gap:12px;align-items:center;margin-top:8px">
+                            <label style="font-size:12px;color:var(--text-muted);cursor:pointer"><input type="checkbox" id="batchInteractive" checked> Interactive</label>
+                            <button class="send-btn" onclick="submitBatchSend()">Queue All</button>
+                            <span id="batchStatus" style="font-size:12px"></span>
+                            <span id="batchSummary" style="font-size:12px;color:var(--text-muted);margin-left:auto"></span>
+                        </div>
+                    </div>
+                </details>
             </section>
 
             <section>
@@ -1137,6 +1160,27 @@
                     <div id="backupResult" style="display:none;margin-top:12px">
                         <div class="mnemonic-display" id="backupWords"></div>
                         <p style="color:var(--yellow);font-size:12px">Write these words down and store them safely. Do not share them with anyone.</p>
+                    </div>
+                </div>
+            </section>
+
+            <section id="backupVerifySection">
+                <h2>Verify Backup <span id="backupVerifiedBadge" style="display:none;font-size:12px;background:var(--green);color:#000;padding:2px 8px;border-radius:10px;margin-left:8px">Verified</span></h2>
+                <div style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:16px">
+                    <div id="backupVerifyNotDone">
+                        <p style="color:var(--text-muted);font-size:13px;margin-bottom:12px">Confirm you've saved your recovery phrase by entering words at specific positions. This proves you have a working backup.</p>
+                        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
+                            <input type="password" id="verifyBackupPass" placeholder="Passphrase" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:4px;font-size:13px;width:200px">
+                            <button class="send-btn" onclick="startBackupChallenge()">Start Verification</button>
+                        </div>
+                        <div id="backupChallengeArea" style="display:none">
+                            <div id="backupChallengeInputs" style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px"></div>
+                            <button class="send-btn" onclick="submitBackupVerification()">Verify</button>
+                            <span id="verifyStatus" style="font-size:12px;margin-left:8px"></span>
+                        </div>
+                    </div>
+                    <div id="backupVerifyDone" style="display:none">
+                        <p style="color:var(--green);font-size:13px">Your recovery phrase backup has been verified. Your funds are protected.</p>
                     </div>
                 </div>
             </section>
@@ -2537,6 +2581,58 @@
             }
         }
 
+        // Update batch line count/total as user types
+        document.addEventListener('DOMContentLoaded', () => {
+            const bi = document.getElementById('batchInput');
+            if (bi) bi.addEventListener('input', () => {
+                const lines = bi.value.trim().split('\n').filter(l => l.trim());
+                const parsed = lines.map(l => { const p = l.split(','); return { amt: parseInt(p[1]) || 0 }; });
+                const total = parsed.reduce((s, p) => s + p.amt, 0);
+                const el = document.getElementById('batchSummary');
+                if (el) el.textContent = lines.length > 0 ? `${lines.length} recipients, ${total.toLocaleString()} sats total` : '';
+            });
+        });
+
+        async function submitBatchSend() {
+            const raw = document.getElementById('batchInput').value.trim();
+            const interactive = document.getElementById('batchInteractive').checked;
+            const status = document.getElementById('batchStatus');
+
+            if (!raw) { status.innerHTML = '<span style="color:var(--red)">Enter at least one recipient</span>'; return; }
+
+            const lines = raw.split('\n').filter(l => l.trim());
+            const items = [];
+            for (let i = 0; i < lines.length; i++) {
+                const parts = lines[i].split(',').map(s => s.trim());
+                if (parts.length < 2) { status.innerHTML = `<span style="color:var(--red)">Line ${i+1}: need address,amount</span>`; return; }
+                const amt = parseInt(parts[1]);
+                if (!parts[0] || !amt || amt <= 0) { status.innerHTML = `<span style="color:var(--red)">Line ${i+1}: invalid address or amount</span>`; return; }
+                items.push({ destination: parts[0], amountSat: amt, interactive, label: parts[2] || null });
+            }
+
+            status.innerHTML = `<span style="color:var(--yellow)">Queuing ${items.length} payments...</span>`;
+            try {
+                const res = await fetch('/api/payments/batch-send', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(items)
+                });
+                const data = await res.json();
+                if (!res.ok) {
+                    status.innerHTML = `<span style="color:var(--red)">${esc(typeof data === 'string' ? data : data.detail || JSON.stringify(data))}</span>`;
+                    return;
+                }
+                status.innerHTML = `<span style="color:var(--green)">${data.count} payments queued</span>`;
+                document.getElementById('batchInput').value = '';
+                document.getElementById('batchSummary').textContent = '';
+                showToast(`Batch: ${data.count} payments queued`, 'success');
+                await loadPayments();
+                setTimeout(() => { status.innerHTML = ''; }, 4000);
+            } catch (err) {
+                status.innerHTML = `<span style="color:var(--red)">Failed: ${esc(err.message)}</span>`;
+            }
+        }
+
         async function createReceivePayment() {
             const amount = parseInt(document.getElementById('recvAmount').value);
             const label = document.getElementById('recvLabel').value.trim();
@@ -2947,6 +3043,7 @@
                 document.getElementById('settGapExtension').innerHTML = info.gapExtensionEnabled
                     ? '<span style="color:var(--green)">Enabled</span>'
                     : '<span style="color:var(--yellow)">Disabled (legacy wallet)</span>';
+                updateBackupWarning(info.isBackupVerified);
             }
 
             if (sync) {

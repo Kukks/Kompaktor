@@ -239,6 +239,42 @@ public class PaymentWebhookServiceTests : IDisposable
         Assert.Equal("Completed", eventHeader);
     }
 
+    [Fact]
+    public async Task DeliverAsync_ExpiredEventType_Delivered()
+    {
+        _db.PaymentWebhooks.Add(new PaymentWebhookEntity
+        {
+            WalletId = _walletId,
+            Url = "http://test/hook",
+            Secret = "s",
+            IsActive = true,
+            EventFilter = "*"
+        });
+        await _db.SaveChangesAsync();
+
+        var payment = new PendingPaymentEntity
+        {
+            WalletId = _walletId,
+            Direction = "Outbound",
+            AmountSat = 50000,
+            Destination = "bcrt1test",
+            Status = "Failed" // Already marked failed by expiry
+        };
+
+        var handler = new MockHttpHandler(HttpStatusCode.OK);
+        var http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(5) };
+
+        var svc = new PaymentWebhookService(_db, _walletId, http);
+        await svc.DeliverAsync(payment, "Expired");
+
+        var delivery = await _db.WebhookDeliveries.SingleAsync();
+        Assert.True(delivery.Success);
+        Assert.Equal("Expired", delivery.EventType);
+
+        var eventHeader = handler.LastRequest!.Headers.GetValues("X-Kompaktor-Event").First();
+        Assert.Equal("Expired", eventHeader);
+    }
+
     private class MockHttpHandler : HttpMessageHandler
     {
         private readonly HttpStatusCode _statusCode;
