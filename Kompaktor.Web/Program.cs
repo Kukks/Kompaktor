@@ -998,7 +998,16 @@ app.MapDelete("/api/payments/{paymentId}", async (string paymentId, WalletDbCont
 
     var manager = new WalletPaymentManager(db, wallet.Id, network);
     var cancelled = await manager.CancelPaymentAsync(paymentId);
-    if (cancelled) bus.Publish("payments");
+    if (cancelled)
+    {
+        bus.Publish("payments");
+        var entity = await db.PendingPayments.FindAsync(paymentId);
+        if (entity is not null)
+        {
+            var webhookSvc = new PaymentWebhookService(db, wallet.Id);
+            _ = webhookSvc.DeliverAsync(entity, "Failed");
+        }
+    }
     return cancelled ? Results.Ok(new { paymentId, status = "cancelled" }) : Results.NotFound();
 }).WithTags("Payments");
 
@@ -1082,6 +1091,105 @@ app.MapGet("/api/payments/export", async (WalletDbContext db) =>
 
     return Results.Text(csv.ToString(), "text/csv", System.Text.Encoding.UTF8);
 }).WithTags("Payments");
+
+// Payment webhooks
+app.MapGet("/api/webhooks", async (WalletDbContext db) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.Ok(Array.Empty<object>());
+
+    var webhooks = await db.PaymentWebhooks
+        .Where(w => w.WalletId == wallet.Id)
+        .OrderByDescending(w => w.CreatedAt)
+        .Select(w => new
+        {
+            id = w.Id,
+            url = w.Url,
+            isActive = w.IsActive,
+            eventFilter = w.EventFilter,
+            createdAt = w.CreatedAt
+        })
+        .ToListAsync();
+
+    return Results.Ok(webhooks);
+}).WithTags("Webhooks");
+
+app.MapPost("/api/webhooks", async (WalletDbContext db, HttpContext ctx) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.BadRequest("No wallet found");
+
+    var body = await ctx.Request.ReadFromJsonAsync<WebhookCreateRequest>();
+    if (body is null || string.IsNullOrWhiteSpace(body.Url))
+        return Results.BadRequest("URL is required");
+
+    if (!Uri.TryCreate(body.Url, UriKind.Absolute, out var uri) ||
+        (uri.Scheme != "http" && uri.Scheme != "https"))
+        return Results.BadRequest("Invalid URL — must be http or https");
+
+    var secret = Convert.ToHexString(
+        System.Security.Cryptography.RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
+
+    var entity = new PaymentWebhookEntity
+    {
+        WalletId = wallet.Id,
+        Url = body.Url,
+        Secret = secret,
+        EventFilter = body.EventFilter ?? "*"
+    };
+
+    db.PaymentWebhooks.Add(entity);
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        id = entity.Id,
+        url = entity.Url,
+        secret,
+        eventFilter = entity.EventFilter,
+        message = "Store the secret — it won't be shown again. Use it to verify HMAC-SHA256 signatures in X-Kompaktor-Signature header."
+    });
+}).WithTags("Webhooks");
+
+app.MapDelete("/api/webhooks/{webhookId}", async (int webhookId, WalletDbContext db) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.BadRequest("No wallet found");
+
+    var webhook = await db.PaymentWebhooks.FindAsync(webhookId);
+    if (webhook is null || webhook.WalletId != wallet.Id) return Results.NotFound();
+
+    db.PaymentWebhooks.Remove(webhook);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = true });
+}).WithTags("Webhooks");
+
+app.MapGet("/api/webhooks/{webhookId}/deliveries", async (int webhookId, WalletDbContext db) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.Ok(Array.Empty<object>());
+
+    var webhook = await db.PaymentWebhooks.FindAsync(webhookId);
+    if (webhook is null || webhook.WalletId != wallet.Id) return Results.NotFound();
+
+    var deliveries = await db.WebhookDeliveries
+        .Where(d => d.WebhookId == webhookId)
+        .OrderByDescending(d => d.Timestamp)
+        .Take(50)
+        .Select(d => new
+        {
+            id = d.Id,
+            paymentId = d.PaymentId,
+            eventType = d.EventType,
+            httpStatusCode = d.HttpStatusCode,
+            success = d.Success,
+            errorMessage = d.ErrorMessage,
+            timestamp = d.Timestamp
+        })
+        .ToListAsync();
+
+    return Results.Ok(deliveries);
+}).WithTags("Webhooks");
 
 // Address book CRUD
 app.MapGet("/api/address-book", async (WalletDbContext db) =>
@@ -1620,3 +1728,4 @@ record SendRequest(string Destination, long AmountSat, long FeeRateSatPerVb = 2,
 record BroadcastPsbtRequest(string SignedPsbt);
 record CreatePaymentRequest(string Destination, long AmountSat, bool Interactive = true, bool Urgent = false, string? Label = null, int? ExpiryMinutes = null);
 record CreateReceiveRequest(long AmountSat, string? Label = null, int? ExpiryMinutes = null);
+record WebhookCreateRequest(string Url, string? EventFilter = null);

@@ -1,0 +1,111 @@
+using System.Net.Http.Json;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+using Kompaktor.Wallet.Data;
+using Microsoft.EntityFrameworkCore;
+
+namespace Kompaktor.Wallet;
+
+/// <summary>
+/// Delivers webhook notifications when payment status changes.
+/// Computes HMAC-SHA256 signatures so receivers can verify authenticity.
+/// </summary>
+public class PaymentWebhookService
+{
+    private readonly WalletDbContext _db;
+    private readonly HttpClient _http;
+    private readonly string _walletId;
+
+    public PaymentWebhookService(WalletDbContext db, string walletId, HttpClient? http = null)
+    {
+        _db = db;
+        _walletId = walletId;
+        _http = http ?? new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+    }
+
+    /// <summary>
+    /// Delivers webhooks for a payment status change. Called after AddProof, CancelPayment, etc.
+    /// </summary>
+    public async Task DeliverAsync(PendingPaymentEntity payment, string eventType)
+    {
+        var webhooks = await _db.PaymentWebhooks
+            .Where(w => w.WalletId == _walletId && w.IsActive)
+            .ToListAsync();
+
+        foreach (var webhook in webhooks)
+        {
+            if (!MatchesFilter(webhook.EventFilter, eventType))
+                continue;
+
+            await DeliverToWebhookAsync(webhook, payment, eventType);
+        }
+    }
+
+    private async Task DeliverToWebhookAsync(
+        PaymentWebhookEntity webhook, PendingPaymentEntity payment, string eventType)
+    {
+        var payload = new
+        {
+            eventType,
+            paymentId = payment.Id,
+            direction = payment.Direction,
+            amountSat = payment.AmountSat,
+            destination = payment.Destination,
+            status = payment.Status,
+            label = payment.Label,
+            completedTxId = payment.CompletedTxId,
+            createdAt = payment.CreatedAt,
+            completedAt = payment.CompletedAt,
+            timestamp = DateTimeOffset.UtcNow
+        };
+
+        var json = JsonSerializer.Serialize(payload);
+        var signature = ComputeSignature(json, webhook.Secret);
+
+        var delivery = new WebhookDeliveryEntity
+        {
+            WebhookId = webhook.Id,
+            PaymentId = payment.Id,
+            EventType = eventType
+        };
+
+        try
+        {
+            var request = new HttpRequestMessage(HttpMethod.Post, webhook.Url)
+            {
+                Content = new StringContent(json, Encoding.UTF8, "application/json")
+            };
+            request.Headers.Add("X-Kompaktor-Signature", signature);
+            request.Headers.Add("X-Kompaktor-Event", eventType);
+
+            var response = await _http.SendAsync(request);
+            delivery.HttpStatusCode = (int)response.StatusCode;
+            delivery.Success = response.IsSuccessStatusCode;
+        }
+        catch (Exception ex)
+        {
+            delivery.HttpStatusCode = 0;
+            delivery.Success = false;
+            delivery.ErrorMessage = ex.Message;
+        }
+
+        _db.WebhookDeliveries.Add(delivery);
+        await _db.SaveChangesAsync();
+    }
+
+    private static bool MatchesFilter(string filter, string eventType)
+    {
+        if (filter == "*") return true;
+        return filter.Split(',', StringSplitOptions.TrimEntries)
+            .Any(f => f.Equals(eventType, StringComparison.OrdinalIgnoreCase));
+    }
+
+    public static string ComputeSignature(string payload, string secret)
+    {
+        var key = Encoding.UTF8.GetBytes(secret);
+        var data = Encoding.UTF8.GetBytes(payload);
+        var hash = HMACSHA256.HashData(key, data);
+        return $"sha256={Convert.ToHexString(hash).ToLowerInvariant()}";
+    }
+}

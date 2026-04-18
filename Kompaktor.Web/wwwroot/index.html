@@ -1157,6 +1157,30 @@
             </section>
 
             <section>
+                <h2>Payment Webhooks</h2>
+                <div style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:16px">
+                    <p style="color:var(--text-muted);font-size:13px;margin-bottom:12px">Receive HTTP POST notifications when payments complete or fail. Payloads are signed with HMAC-SHA256.</p>
+                    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
+                        <input type="url" id="webhookUrl" placeholder="https://example.com/webhook" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:4px;font-size:13px;flex:1;min-width:250px">
+                        <select id="webhookFilter" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:4px;font-size:13px">
+                            <option value="*">All events</option>
+                            <option value="Completed">Completed only</option>
+                            <option value="Failed">Failed only</option>
+                        </select>
+                        <button class="send-btn" onclick="createWebhook()">Add Webhook</button>
+                    </div>
+                    <div id="webhookSecret" style="display:none;background:var(--bg);border:1px solid var(--yellow);border-radius:4px;padding:10px;margin-bottom:12px;font-size:12px">
+                        <strong style="color:var(--yellow)">Secret (save now — shown only once):</strong>
+                        <code id="webhookSecretValue" style="display:block;margin-top:4px;word-break:break-all;color:var(--accent)"></code>
+                    </div>
+                    <table id="webhooksTable" style="width:100%">
+                        <thead><tr><th>URL</th><th>Filter</th><th>Created</th><th>Deliveries</th><th></th></tr></thead>
+                        <tbody id="webhooksBody"><tr><td colspan="5" style="text-align:center;color:var(--text-muted)">No webhooks configured</td></tr></tbody>
+                    </table>
+                </div>
+            </section>
+
+            <section>
                 <h2>Blockchain</h2>
                 <div class="detail-grid" id="blockchainGrid" style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:16px;font-size:13px">
                     <span class="label">Connection</span><span id="settChainConn">-</span>
@@ -2616,7 +2640,7 @@
 
         async function refreshAll() {
             document.getElementById('lastUpdate').textContent = 'Refreshing...';
-            await Promise.all([loadSummary(), loadPrivacySummary(), loadPrivacyDistribution(), loadPrivacyRecommendations(), loadPrivacyHistory(), loadRounds(), loadUtxos(), loadCoinjoins(), loadTransactions(), loadMixingStatus(), loadMixingStats(), loadSyncStatus(), loadAddressBook(), loadFeeEstimates(), loadSettingsInfo(), loadPayments(), loadPaymentStats()]);
+            await Promise.all([loadSummary(), loadPrivacySummary(), loadPrivacyDistribution(), loadPrivacyRecommendations(), loadPrivacyHistory(), loadRounds(), loadUtxos(), loadCoinjoins(), loadTransactions(), loadMixingStatus(), loadMixingStats(), loadSyncStatus(), loadAddressBook(), loadFeeEstimates(), loadSettingsInfo(), loadPayments(), loadPaymentStats(), loadWebhooks()]);
             updateConnectionStatus(sseConnected ? 'live' : 'polling');
         }
 
@@ -2942,6 +2966,75 @@
                 document.getElementById('settChainNetwork').textContent = chain.network;
                 if (chain.blockHeight) currentBlockHeight = chain.blockHeight;
             }
+        }
+
+        // Webhook management
+        async function loadWebhooks() {
+            const webhooks = await fetchJson('/api/webhooks');
+            const body = document.getElementById('webhooksBody');
+            if (!webhooks || webhooks.length === 0) {
+                body.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text-muted)">No webhooks configured</td></tr>';
+                return;
+            }
+            body.innerHTML = webhooks.map(w => `<tr>
+                <td style="max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${w.url}">${w.url}</td>
+                <td>${w.eventFilter === '*' ? 'All' : w.eventFilter}</td>
+                <td>${formatDate(w.createdAt)}</td>
+                <td><button class="refresh-btn" onclick="showDeliveries(${w.id})" style="font-size:11px;padding:2px 8px">History</button></td>
+                <td><button class="refresh-btn" onclick="deleteWebhook(${w.id})" style="font-size:11px;padding:2px 8px;color:var(--red)">Delete</button></td>
+            </tr>`).join('');
+        }
+
+        async function createWebhook() {
+            const url = document.getElementById('webhookUrl').value.trim();
+            const filter = document.getElementById('webhookFilter').value;
+            if (!url) { showToast('Enter a webhook URL', 'warning'); return; }
+            try {
+                const res = await fetch('/api/webhooks', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url, eventFilter: filter })
+                });
+                const data = await res.json();
+                if (!res.ok) { showToast(data || 'Failed to create webhook', 'warning'); return; }
+                document.getElementById('webhookUrl').value = '';
+                document.getElementById('webhookSecretValue').textContent = data.secret;
+                document.getElementById('webhookSecret').style.display = 'block';
+                showToast('Webhook created', 'success');
+                loadWebhooks();
+            } catch (err) { showToast('Failed: ' + err.message, 'warning'); }
+        }
+
+        async function deleteWebhook(id) {
+            if (!confirm('Delete this webhook?')) return;
+            try {
+                await fetch(`/api/webhooks/${id}`, { method: 'DELETE' });
+                showToast('Webhook deleted', 'success');
+                loadWebhooks();
+            } catch (err) { showToast('Failed: ' + err.message, 'warning'); }
+        }
+
+        async function showDeliveries(webhookId) {
+            const deliveries = await fetchJson(`/api/webhooks/${webhookId}/deliveries`);
+            if (!deliveries || deliveries.length === 0) { showToast('No delivery history', 'info'); return; }
+            const body = document.getElementById('webhooksBody');
+            const existing = document.getElementById('deliveryRow');
+            if (existing) existing.remove();
+            const row = document.createElement('tr');
+            row.id = 'deliveryRow';
+            row.innerHTML = `<td colspan="5" style="padding:8px">
+                <div style="max-height:200px;overflow-y:auto;font-size:12px">
+                    <table style="width:100%"><thead><tr><th>Event</th><th>Status</th><th>Time</th><th>Error</th></tr></thead>
+                    <tbody>${deliveries.map(d => `<tr>
+                        <td>${d.eventType}</td>
+                        <td style="color:${d.success ? 'var(--green)' : 'var(--red)'}">${d.success ? d.httpStatusCode : 'Failed'}</td>
+                        <td>${formatDate(d.timestamp)}</td>
+                        <td style="max-width:150px;overflow:hidden;text-overflow:ellipsis" title="${d.errorMessage || ''}">${d.errorMessage || '-'}</td>
+                    </tr>`).join('')}</tbody></table>
+                </div>
+                <button class="refresh-btn" onclick="this.closest('tr').remove()" style="font-size:11px;padding:2px 8px;margin-top:4px">Close</button>
+            </td>`;
+            body.appendChild(row);
         }
 
         // Keyboard shortcuts

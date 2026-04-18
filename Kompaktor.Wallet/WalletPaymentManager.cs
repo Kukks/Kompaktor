@@ -124,9 +124,10 @@ public class WalletPaymentManager : IOutboundPaymentManager, IInboundPaymentMana
     public async Task AddProof(string pendingPaymentId, KompaktorOffchainPaymentProof proof)
     {
         await _lock.WaitAsync();
+        PendingPaymentEntity? entity;
         try
         {
-            var entity = await _db.PendingPayments.FindAsync(pendingPaymentId);
+            entity = await _db.PendingPayments.FindAsync(pendingPaymentId);
             if (entity is null || entity.WalletId != _walletId) return;
 
             entity.Status = "Completed";
@@ -144,6 +145,17 @@ public class WalletPaymentManager : IOutboundPaymentManager, IInboundPaymentMana
         finally
         {
             _lock.Release();
+        }
+
+        // Fire webhook for completed payment (outside lock to avoid blocking)
+        try
+        {
+            var webhookSvc = new PaymentWebhookService(_db, _walletId);
+            await webhookSvc.DeliverAsync(entity, "Completed");
+        }
+        catch
+        {
+            // Webhook delivery failure should never block payment completion
         }
     }
 

@@ -102,6 +102,19 @@ public class WalletDbContext : DbContext
             e.HasIndex(s => new { s.WalletId, s.Timestamp });
         });
 
+        modelBuilder.Entity<PaymentWebhookEntity>(e =>
+        {
+            e.HasKey(w => w.Id);
+            e.HasIndex(w => w.WalletId);
+        });
+
+        modelBuilder.Entity<WebhookDeliveryEntity>(e =>
+        {
+            e.HasKey(d => d.Id);
+            e.HasOne(d => d.Webhook).WithMany().HasForeignKey(d => d.WebhookId);
+            e.HasIndex(d => d.WebhookId);
+        });
+
         modelBuilder.Entity<FailedRoundInputEntity>(e =>
         {
             e.HasKey(f => f.Id);
@@ -111,4 +124,6 @@ public class WalletDbContext : DbContext
     }
 
     public DbSet<FailedRoundInputEntity> FailedRoundInputs => Set<FailedRoundInputEntity>();
+    public DbSet<PaymentWebhookEntity> PaymentWebhooks => Set<PaymentWebhookEntity>();
+    public DbSet<WebhookDeliveryEntity> WebhookDeliveries => Set<WebhookDeliveryEntity>();
 }

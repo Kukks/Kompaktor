@@ -211,3 +211,36 @@ public class FailedRoundInputEntity
     public int OutputIndex { get; set; }
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
 }
+
+/// <summary>
+/// Registered webhook endpoint for payment event notifications.
+/// Fires HTTP POST with JSON payload when a payment changes status.
+/// </summary>
+public class PaymentWebhookEntity
+{
+    public int Id { get; set; }
+    public string WalletId { get; set; } = "";
+    public string Url { get; set; } = "";
+    public string Secret { get; set; } = "";
+    public bool IsActive { get; set; } = true;
+    /// <summary>Comma-separated event types: "Completed", "Failed", or "*" for all</summary>
+    public string EventFilter { get; set; } = "*";
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+}
+
+/// <summary>
+/// Record of a webhook delivery attempt.
+/// </summary>
+public class WebhookDeliveryEntity
+{
+    public int Id { get; set; }
+    public int WebhookId { get; set; }
+    public string PaymentId { get; set; } = "";
+    public string EventType { get; set; } = "";
+    public int HttpStatusCode { get; set; }
+    public bool Success { get; set; }
+    public string? ErrorMessage { get; set; }
+    public DateTimeOffset Timestamp { get; set; } = DateTimeOffset.UtcNow;
+
+    public PaymentWebhookEntity Webhook { get; set; } = null!;
+}
