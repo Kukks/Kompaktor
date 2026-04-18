@@ -424,6 +424,35 @@
             display: none;
         }
         .mixing-pass-input:focus { border-color: var(--accent); outline: none; }
+        .mixing-activity {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 12px 16px;
+            margin-top: -16px;
+            margin-bottom: 24px;
+            border-top: none;
+            border-top-left-radius: 0;
+            border-top-right-radius: 0;
+        }
+        .mixing-activity-feed {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            max-height: 120px;
+            overflow-y: auto;
+            font-size: 12px;
+            font-family: 'SFMono-Regular', Consolas, monospace;
+        }
+        .mix-event {
+            display: flex;
+            gap: 8px;
+            align-items: baseline;
+            padding: 2px 0;
+        }
+        .mix-event-time { color: var(--text-muted); min-width: 55px; }
+        .mix-event-icon { min-width: 16px; text-align: center; }
+        .mix-event-msg { color: var(--text); }
         .address-book-list { list-style: none; margin: 0; padding: 0; }
         .address-book-list li {
             display: flex;
@@ -644,6 +673,9 @@
                 <span><span style="color:var(--red)">&#10007;</span> <span id="mixFailed">0</span> failed</span>
                 <span id="mixPhase" style="font-size:11px;color:var(--text-muted)"></span>
             </div>
+        </div>
+        <div class="mixing-activity" id="mixingActivity" style="display:none">
+            <div class="mixing-activity-feed" id="mixingFeed"></div>
         </div>
 
         <!-- Tab Navigation -->
@@ -1779,10 +1811,37 @@
 
         // Auto-mixing control
         let mixingRunning = false;
+        let lastMixPhase = '';
+        let lastMixCompleted = 0;
+        let lastMixFailed = 0;
+        const mixEvents = [];
+        const MAX_MIX_EVENTS = 20;
+
+        function addMixEvent(icon, msg) {
+            const now = new Date();
+            const time = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+            mixEvents.unshift({ time, icon, msg });
+            if (mixEvents.length > MAX_MIX_EVENTS) mixEvents.length = MAX_MIX_EVENTS;
+            renderMixFeed();
+        }
+
+        function renderMixFeed() {
+            const feed = document.getElementById('mixingFeed');
+            const activity = document.getElementById('mixingActivity');
+            if (!mixingRunning || mixEvents.length === 0) {
+                activity.style.display = 'none';
+                return;
+            }
+            activity.style.display = '';
+            feed.innerHTML = mixEvents.map(e =>
+                `<div class="mix-event"><span class="mix-event-time">${e.time}</span><span class="mix-event-icon">${e.icon}</span><span class="mix-event-msg">${e.msg}</span></div>`
+            ).join('');
+        }
 
         async function loadMixingStatus() {
             const data = await fetchJson('/api/mixing/status');
             if (!data) return;
+            const wasRunning = mixingRunning;
             mixingRunning = data.running;
             // Track which outpoints are actively mixing
             mixingOutpoints = new Set(data.mixingOutpoints || []);
@@ -1794,6 +1853,30 @@
             document.getElementById('mixCompleted').textContent = data.completedRounds;
             document.getElementById('mixFailed').textContent = data.failedRounds;
             const phaseEl = document.getElementById('mixPhase');
+
+            // Track mixing events
+            if (!wasRunning && mixingRunning) {
+                addMixEvent('\u25B6', 'Auto-mixing started');
+            } else if (wasRunning && !mixingRunning) {
+                addMixEvent('\u23F9', 'Auto-mixing stopped');
+            }
+            if (data.completedRounds > lastMixCompleted) {
+                const diff = data.completedRounds - lastMixCompleted;
+                addMixEvent('\u2713', `${diff} round${diff > 1 ? 's' : ''} completed successfully`);
+            }
+            if (data.failedRounds > lastMixFailed) {
+                const diff = data.failedRounds - lastMixFailed;
+                addMixEvent('\u2717', `${diff} round${diff > 1 ? 's' : ''} failed`);
+            }
+            if (data.running && data.activeRoundPhase && data.activeRoundPhase !== lastMixPhase) {
+                const inputs = data.activeRoundInputs ? ` (${data.activeRoundInputs} inputs)` : '';
+                addMixEvent('\u25CB', `Phase: ${data.activeRoundPhase}${inputs}`);
+            }
+
+            lastMixPhase = data.activeRoundPhase || '';
+            lastMixCompleted = data.completedRounds || 0;
+            lastMixFailed = data.failedRounds || 0;
+
             if (data.running && data.activeRoundPhase) {
                 const inputs = data.activeRoundInputs ? ` (${data.activeRoundInputs} inputs)` : '';
                 const tor = data.torEnabled ? ' [Tor]' : '';
@@ -1803,6 +1886,7 @@
             } else {
                 phaseEl.textContent = '';
             }
+            renderMixFeed();
         }
 
         function toggleMixing() {
