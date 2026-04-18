@@ -48,11 +48,37 @@ public class CoinSelectionAdvisor
         if (total < targetAmountSat)
             warnings.Add("Insufficient funds: available coins do not cover target amount");
 
-        // Check for cluster mixing
+        // Check for cluster mixing (labeled + unlabeled = cluster leak)
         var hasLabeled = selected.Any(c => c.Labels.Length > 0);
         var hasUnlabeled = selected.Any(c => c.Labels.Length == 0 && c.Score.RawAnonSet > 1);
         if (hasLabeled && hasUnlabeled)
             warnings.Add("Warning: mixing labeled and unlabeled coins reduces cluster privacy");
+
+        // Check for wide anonymity spread (merging high + low anon coins)
+        if (selected.Count >= 2)
+        {
+            var maxScore = selected.Max(c => c.Score.EffectiveScore);
+            var minScore = selected.Min(c => c.Score.EffectiveScore);
+            if (maxScore > 1 && minScore > 0 && maxScore / minScore > 10)
+                warnings.Add($"Warning: wide anonymity spread ({minScore:F1} to {maxScore:F1}) — merging degrades the higher-scored coin's privacy");
+        }
+
+        // Check for same-round coins (spending outputs from same coinjoin = linkability)
+        var coinTxIds = selected
+            .Where(c => c.Score.CoinJoinCount > 0)
+            .Select(c => c.Utxo.TxId)
+            .ToList();
+        var duplicateTxIds = coinTxIds
+            .GroupBy(t => t)
+            .Where(g => g.Count() > 1)
+            .Select(g => g.Key)
+            .ToList();
+        if (duplicateTxIds.Count > 0)
+            warnings.Add($"Warning: spending {duplicateTxIds.Count} pair(s) of outputs from the same coinjoin reduces anonymity set");
+
+        // Check for address reuse risk (all unmixed coins = no privacy benefit)
+        if (selected.All(c => c.Score.CoinJoinCount == 0) && selected.Count > 1)
+            warnings.Add("Note: all selected coins are unmixed — consider mixing before spending for better privacy");
 
         return new CoinSelectionResult(selected, total, warnings.ToArray());
     }

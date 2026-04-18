@@ -127,16 +127,79 @@ public class CoinSelectionAdvisorTests
         Assert.Equal(3, result.Selected[1].Utxo.Id); // 200k
     }
 
+    [Fact]
+    public void WideAnonSpread_ProducesWarning()
+    {
+        var coins = new[]
+        {
+            MakeScoredUtxo(1, 100_000, rawAnon: 50, effective: 50.0),
+            MakeScoredUtxo(2, 100_000, rawAnon: 2, effective: 2.0),
+        };
+        var advisor = new CoinSelectionAdvisor(new ScoringOptions());
+
+        var result = advisor.SelectCoins(coins, 150_000, CoinSelectionStrategy.PrivacyFirst);
+
+        Assert.Contains(result.Warnings, w => w.Contains("anonymity spread", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void SameRoundOutputs_ProducesWarning()
+    {
+        // Two outputs from the same coinjoin tx
+        var coins = new[]
+        {
+            MakeScoredUtxo(1, 100_000, rawAnon: 10, effective: 10.0, coinJoinCount: 1, txId: "cjtx1"),
+            MakeScoredUtxo(2, 100_000, rawAnon: 10, effective: 10.0, coinJoinCount: 1, txId: "cjtx1"),
+        };
+        var advisor = new CoinSelectionAdvisor(new ScoringOptions());
+
+        var result = advisor.SelectCoins(coins, 150_000, CoinSelectionStrategy.PrivacyFirst);
+
+        Assert.Contains(result.Warnings, w => w.Contains("same coinjoin", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void AllUnmixedCoins_ProducesNote()
+    {
+        var coins = new[]
+        {
+            MakeScoredUtxo(1, 100_000, rawAnon: 1, effective: 1.0),
+            MakeScoredUtxo(2, 100_000, rawAnon: 1, effective: 1.0),
+        };
+        var advisor = new CoinSelectionAdvisor(new ScoringOptions());
+
+        var result = advisor.SelectCoins(coins, 150_000, CoinSelectionStrategy.PrivacyFirst);
+
+        Assert.Contains(result.Warnings, w => w.Contains("unmixed", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void SimilarAnonScores_NoSpreadWarning()
+    {
+        var coins = new[]
+        {
+            MakeScoredUtxo(1, 100_000, rawAnon: 8, effective: 8.0),
+            MakeScoredUtxo(2, 100_000, rawAnon: 10, effective: 10.0),
+        };
+        var advisor = new CoinSelectionAdvisor(new ScoringOptions());
+
+        var result = advisor.SelectCoins(coins, 150_000, CoinSelectionStrategy.PrivacyFirst);
+
+        Assert.DoesNotContain(result.Warnings, w => w.Contains("anonymity spread", StringComparison.OrdinalIgnoreCase));
+    }
+
     private static ScoredUtxo MakeScoredUtxo(
-        int id, long amountSat, int rawAnon, double effective, string[]? labels = null)
+        int id, long amountSat, int rawAnon, double effective,
+        string[]? labels = null, int coinJoinCount = -1, string? txId = null)
     {
         var addr = new AddressEntity { Id = id, ScriptPubKey = [(byte)id] };
         var utxo = new UtxoEntity
         {
-            Id = id, TxId = $"tx{id}", OutputIndex = 0, AmountSat = amountSat,
+            Id = id, TxId = txId ?? $"tx{id}", OutputIndex = 0, AmountSat = amountSat,
             ScriptPubKey = [(byte)id], AddressId = id, Address = addr
         };
-        var score = new AnonymityScore(rawAnon, effective, rawAnon > 1 ? 1 : 0, ConfidenceLevel.High);
+        var cjCount = coinJoinCount >= 0 ? coinJoinCount : (rawAnon > 1 ? 1 : 0);
+        var score = new AnonymityScore(rawAnon, effective, cjCount, ConfidenceLevel.High);
         return new ScoredUtxo(utxo, score, labels ?? []);
     }
 }
