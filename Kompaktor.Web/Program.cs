@@ -530,6 +530,13 @@ app.MapGet("/api/wallet/info", async (WalletDbContext db) =>
     var addressCount = await db.Addresses
         .Include(a => a.Account)
         .CountAsync(a => a.Account.WalletId == wallet.Id);
+    var freshReceive = await db.Addresses
+        .Include(a => a.Account)
+        .CountAsync(a => a.Account.WalletId == wallet.Id && !a.IsUsed && !a.IsExposed && !a.IsChange);
+    var freshChange = await db.Addresses
+        .Include(a => a.Account)
+        .CountAsync(a => a.Account.WalletId == wallet.Id && !a.IsUsed && !a.IsExposed && a.IsChange);
+    var hasXPub = await db.Accounts.AnyAsync(a => a.WalletId == wallet.Id && a.AccountXPub != null);
 
     return Results.Ok(new
     {
@@ -539,7 +546,10 @@ app.MapGet("/api/wallet/info", async (WalletDbContext db) =>
         network = wallet.Network,
         createdAt = wallet.CreatedAt,
         accountCount,
-        addressCount
+        addressCount,
+        freshReceiveAddresses = freshReceive,
+        freshChangeAddresses = freshChange,
+        gapExtensionEnabled = hasXPub
     });
 }).WithTags("Wallet");
 

@@ -1119,6 +1119,9 @@
                     <span class="label">Created</span><span id="settWalletCreated">-</span>
                     <span class="label">Accounts</span><span id="settWalletAccounts">-</span>
                     <span class="label">Addresses</span><span id="settWalletAddresses">-</span>
+                    <span class="label">Fresh Receive</span><span id="settFreshReceive">-</span>
+                    <span class="label">Fresh Change</span><span id="settFreshChange">-</span>
+                    <span class="label">Auto-Extend</span><span id="settGapExtension">-</span>
                 </div>
             </section>
 
@@ -2911,6 +2914,15 @@
                 document.getElementById('settWalletCreated').textContent = formatDate(info.createdAt);
                 document.getElementById('settWalletAccounts').textContent = info.accountCount;
                 document.getElementById('settWalletAddresses').textContent = info.addressCount;
+                const freshRecvEl = document.getElementById('settFreshReceive');
+                freshRecvEl.textContent = info.freshReceiveAddresses;
+                freshRecvEl.style.color = info.freshReceiveAddresses < 5 ? 'var(--red)' : info.freshReceiveAddresses < 10 ? 'var(--yellow)' : '';
+                const freshChgEl = document.getElementById('settFreshChange');
+                freshChgEl.textContent = info.freshChangeAddresses;
+                freshChgEl.style.color = info.freshChangeAddresses < 5 ? 'var(--red)' : info.freshChangeAddresses < 10 ? 'var(--yellow)' : '';
+                document.getElementById('settGapExtension').innerHTML = info.gapExtensionEnabled
+                    ? '<span style="color:var(--green)">Enabled</span>'
+                    : '<span style="color:var(--yellow)">Disabled (legacy wallet)</span>';
             }
 
             if (sync) {
