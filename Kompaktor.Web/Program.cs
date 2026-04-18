@@ -745,6 +745,37 @@ app.MapDelete("/api/address-book/{entryId}", async (int entryId, WalletDbContext
     return Results.Ok(new { deleted = entryId });
 }).WithTags("AddressBook");
 
+// Fee estimation for send form
+app.MapGet("/api/dashboard/fee-estimates", async (IBlockchainBackend chain) =>
+{
+    var targets = new[] { 1, 3, 6, 25 };
+    var estimates = new List<object>();
+
+    foreach (var target in targets)
+    {
+        try
+        {
+            var feeRate = await chain.EstimateFeeAsync(target);
+            var satPerVb = Math.Max(1, (long)Math.Ceiling(feeRate.SatoshiPerByte));
+            estimates.Add(new { confirmationTarget = target, satPerVb });
+        }
+        catch
+        {
+            // Backend may not support all targets; skip failures
+        }
+    }
+
+    // If no estimates available, return sensible defaults
+    if (estimates.Count == 0)
+    {
+        estimates.Add(new { confirmationTarget = 1, satPerVb = 10L });
+        estimates.Add(new { confirmationTarget = 6, satPerVb = 2L });
+        estimates.Add(new { confirmationTarget = 25, satPerVb = 1L });
+    }
+
+    return Results.Ok(estimates);
+}).WithTags("Dashboard");
+
 // Wallet sync status
 app.MapGet("/api/wallet/sync-status", (WalletSyncBackgroundService sync) =>
 {

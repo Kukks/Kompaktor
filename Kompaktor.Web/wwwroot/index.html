@@ -212,6 +212,21 @@
         }
         .send-btn:hover { opacity: 0.9; }
         .send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+        .fee-presets { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
+        .fee-preset {
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            padding: 4px 10px;
+            font-size: 11px;
+            color: var(--text-muted);
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .fee-preset:hover { border-color: var(--accent); color: var(--text); }
+        .fee-preset.active { border-color: var(--accent); color: var(--accent); background: rgba(88,166,255,0.1); }
+        .fee-preset .rate { font-weight: 600; color: var(--text); display: block; }
+        .fee-preset.active .rate { color: var(--accent); }
         .plan-result {
             background: var(--bg);
             border: 1px solid var(--border);
@@ -733,6 +748,7 @@
                 <div class="field">
                     <label>Fee Rate (sat/vB)</label>
                     <input type="number" id="sendFeeRate" class="narrow" value="2">
+                    <div class="fee-presets" id="feePresets"></div>
                 </div>
                 <div class="field">
                     <label>Strategy</label>
@@ -1170,6 +1186,25 @@
             document.getElementById('sendDest').focus();
         }
 
+        // Fee estimation
+        async function loadFeeEstimates() {
+            const data = await fetchJson('/api/dashboard/fee-estimates');
+            const container = document.getElementById('feePresets');
+            if (!data || !data.length) { container.innerHTML = ''; return; }
+
+            const labels = { 1: 'Next block', 3: '~30 min', 6: '~1 hr', 25: '~4 hr' };
+            container.innerHTML = data.map(e =>
+                `<div class="fee-preset" onclick="selectFeePreset(${e.satPerVb}, this)" title="${e.confirmationTarget} block target">` +
+                `<span class="rate">${e.satPerVb} sat/vB</span>${labels[e.confirmationTarget] || e.confirmationTarget + ' blocks'}</div>`
+            ).join('');
+        }
+
+        function selectFeePreset(rate, el) {
+            document.getElementById('sendFeeRate').value = rate;
+            document.querySelectorAll('.fee-preset').forEach(p => p.classList.remove('active'));
+            el.classList.add('active');
+        }
+
         async function planSend() {
             const dest = document.getElementById('sendDest').value.trim();
             const amount = parseInt(document.getElementById('sendAmount').value);
@@ -1341,7 +1376,7 @@
 
         async function refreshAll() {
             document.getElementById('lastUpdate').textContent = 'Refreshing...';
-            await Promise.all([loadSummary(), loadPrivacySummary(), loadPrivacyDistribution(), loadRounds(), loadUtxos(), loadCoinjoins(), loadTransactions(), loadMixingStatus(), loadSyncStatus(), loadAddressBook()]);
+            await Promise.all([loadSummary(), loadPrivacySummary(), loadPrivacyDistribution(), loadRounds(), loadUtxos(), loadCoinjoins(), loadTransactions(), loadMixingStatus(), loadSyncStatus(), loadAddressBook(), loadFeeEstimates()]);
             updateConnectionStatus(sseConnected ? 'live' : 'polling');
         }
 
