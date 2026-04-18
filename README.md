@@ -98,8 +98,8 @@ Kompaktor.sln
 │   ├── RemoteKompaktorRound.cs        # Event-polling round state with exponential backoff
 │   └── KompaktorService.cs           # High-level orchestrator for continuous coinjoin participation
 ├── Kompaktor.Web/          # Combined coordinator + wallet dashboard
-│   ├── Program.cs                     # ASP.NET Core host with coordinator + dashboard APIs
-│   └── wwwroot/index.html             # Dark-themed single-page dashboard
+│   ├── Program.cs                     # ASP.NET Core host with coordinator, dashboard, and coin control APIs
+│   └── wwwroot/index.html             # Dark-themed dashboard with coin control UI
 └── Kompaktor.Tests/        # Integration tests against regtest bitcoind
 ```
 
@@ -172,7 +172,7 @@ Network identity isolation abstraction. `TorCircuitFactory` routes each identity
 
 ### `Kompaktor.Web`
 
-Combined coordinator and wallet dashboard in a single ASP.NET Core process. Runs the full coordinator (round management, scheduling) alongside dashboard API endpoints that expose wallet balance, privacy summary (average score, needs-mixing count), scored UTXOs with anonymity badges, coinjoin history, transaction history, and a send planning endpoint for previewing privacy-aware spending transactions. Supports both Bitcoin Core RPC and Electrum backends via configuration. The frontend is a vanilla JS single-page dashboard with dark theme, auto-refresh, and color-coded anonymity score indicators.
+Combined coordinator and wallet dashboard in a single ASP.NET Core process. Runs the full coordinator (round management, scheduling) alongside dashboard API endpoints that expose wallet balance, privacy summary (average score, needs-mixing count), scored UTXOs with anonymity badges, coinjoin history, transaction history, and a send planning endpoint for previewing privacy-aware spending transactions. Includes coin control APIs for freezing/unfreezing UTXOs, managing labels, and viewing per-UTXO coinjoin history. Supports both Bitcoin Core RPC and Electrum backends via configuration. The frontend is a vanilla JS single-page dashboard with dark theme, auto-refresh, color-coded anonymity score indicators, interactive UTXO table with batch freeze operations, inline label editing, and a detail panel for individual coin inspection.
 
 ### Error Handling
 
@@ -402,6 +402,8 @@ The test suite includes 310+ tests covering:
 - WalletCoinSelector scored UTXO queries with privacy summary generation
 - ScoringWalletAdapter auto-mixing threshold filtering
 - WalletTransactionBuilder privacy-aware spending with strategy selection
+- Coin control: frozen UTXO exclusion from selection, candidates, summaries, and spend
+- Coin control: includeFrozen option for dashboard display queries
 - Multi-server Electrum routing with round-robin assignment and script pinning
 - Credential lifecycle flow analysis with merge tree depth and fee calculation
 
