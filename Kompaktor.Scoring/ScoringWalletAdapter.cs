@@ -41,7 +41,7 @@ public class ScoringWalletAdapter : IKompaktorWalletInterface
         try
         {
             var candidates = await _selector.GetCoinjoinCandidatesAsync(
-                _walletId, _minEffectiveScore);
+                _walletId, _minEffectiveScore, ct);
 
             if (candidates.Count == 0)
                 return [];
