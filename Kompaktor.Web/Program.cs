@@ -860,7 +860,7 @@ app.MapGet("/api/payments", async (WalletDbContext db) =>
             p.Id, p.Direction, p.AmountSat,
             amountBtc = p.AmountSat / 100_000_000.0,
             p.Destination, p.Status, p.IsInteractive, p.IsUrgent,
-            p.Label, p.CompletedTxId, p.CreatedAt, p.CompletedAt
+            p.Label, p.CompletedTxId, p.ProofJson, p.CreatedAt, p.CompletedAt
         })
         .ToListAsync();
 
