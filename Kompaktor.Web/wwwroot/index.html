@@ -495,6 +495,17 @@
         }
         .tab-btn:hover { color: var(--text); }
         .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+        .tab-btn .tab-badge {
+            display: inline-block;
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: var(--accent);
+            margin-left: 4px;
+            vertical-align: middle;
+            animation: pulse 1s ease-in-out 3;
+        }
+        @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
         .tab-panel { display: none; }
         .tab-panel.active { display: block; }
 
@@ -1786,6 +1797,7 @@
                 loadRounds();
                 loadSummary();
                 logEvent('rounds');
+                notifyTab('overview');
             });
 
             source.addEventListener('utxos', () => {
@@ -1794,12 +1806,15 @@
                 loadPrivacySummary();
                 loadPrivacyDistribution();
                 logEvent('utxos');
+                notifyTab('utxos');
+                notifyTab('overview');
                 showToast('UTXO state updated', 'info');
             });
 
             source.addEventListener('wallet', () => {
                 checkWallet();
                 logEvent('wallet');
+                notifyTab('overview');
                 showToast('Wallet state changed', 'info');
             });
 
@@ -1807,6 +1822,7 @@
                 loadMixingStatus();
                 loadCoinjoins();
                 logEvent('mixing');
+                notifyTab('coinjoins');
                 showToast('Mixing round completed', 'success');
             });
 
@@ -1832,15 +1848,41 @@
         }
 
         // Tab navigation
+        let activeTab = 'overview';
+
         function switchTab(tabName) {
+            activeTab = tabName;
             document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
             document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
             const panel = document.querySelector(`.tab-panel[data-tab="${tabName}"]`);
             if (panel) panel.classList.add('active');
             const btn = [...document.querySelectorAll('.tab-btn')].find(b => b.onclick?.toString().includes(`'${tabName}'`));
-            if (btn) btn.classList.add('active');
+            if (btn) {
+                btn.classList.add('active');
+                // Clear badge when switching to tab
+                const badge = btn.querySelector('.tab-badge');
+                if (badge) badge.remove();
+            }
             // Update URL hash for bookmarkable tabs
             history.replaceState(null, '', '#' + tabName);
+        }
+
+        // Map SSE event types to which tab they affect
+        const eventTabMap = {
+            rounds: 'overview',
+            utxos: 'utxos',
+            wallet: 'overview',
+            mixing: 'coinjoins'
+        };
+
+        function notifyTab(tabName) {
+            if (activeTab === tabName) return; // Already viewing this tab
+            const btn = [...document.querySelectorAll('.tab-btn')].find(b => b.onclick?.toString().includes(`'${tabName}'`));
+            if (btn && !btn.querySelector('.tab-badge')) {
+                const badge = document.createElement('span');
+                badge.className = 'tab-badge';
+                btn.appendChild(badge);
+            }
         }
 
         // Restore tab from URL hash on load
@@ -1848,6 +1890,8 @@
             const hash = location.hash.replace('#', '');
             if (hash && document.querySelector(`.tab-panel[data-tab="${hash}"]`)) {
                 switchTab(hash);
+            } else {
+                activeTab = 'overview';
             }
         }
 
