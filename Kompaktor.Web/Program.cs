@@ -38,8 +38,30 @@ var network = networkStr switch
 
 // Blockchain backend
 IBlockchainBackend blockchain;
+var electrumServers = builder.Configuration.GetSection("Electrum:Servers").Get<List<ElectrumServerConfig>>();
 var electrumHost = builder.Configuration["Electrum:Host"];
-if (electrumHost is not null)
+if (electrumServers is { Count: > 1 })
+{
+    // Multi-server mode: split-server routing for privacy
+    var strategyStr = builder.Configuration["Electrum:RoutingStrategy"] ?? "RoundRobin";
+    Enum.TryParse<RoutingStrategy>(strategyStr, true, out var strategy);
+    blockchain = new MultiServerBackend(new MultiServerOptions
+    {
+        Servers = electrumServers,
+        Strategy = strategy
+    });
+}
+else if (electrumServers is { Count: 1 })
+{
+    var server = electrumServers[0];
+    blockchain = new ElectrumBackend(new ElectrumOptions
+    {
+        Host = server.Host,
+        Port = server.Port,
+        UseSsl = server.UseSsl
+    });
+}
+else if (electrumHost is not null)
 {
     var electrumPort = int.Parse(builder.Configuration["Electrum:Port"] ?? "50001");
     var electrumSsl = bool.Parse(builder.Configuration["Electrum:UseSsl"] ?? "false");
@@ -186,6 +208,32 @@ app.MapGet("/api/dashboard/coinjoins", async (WalletDbContext db) =>
         .ToListAsync();
 
     return Results.Ok(records);
+}).WithTags("Dashboard");
+
+app.MapGet("/api/dashboard/credential-flows/{roundId}", async (int roundId, WalletDbContext db) =>
+{
+    var events = await db.CredentialEvents
+        .Where(e => e.CoinJoinRecordId == roundId)
+        .ToListAsync();
+
+    if (events.Count == 0)
+        return Results.Ok(Array.Empty<object>());
+
+    var tracker = new CredentialFlowTracker();
+    var flows = tracker.AnalyzeFlows(events);
+
+    return Results.Ok(flows.Select(f => new
+    {
+        inputAmountSat = f.InputAmountSat,
+        inputAmountBtc = f.InputAmountSat / 100_000_000.0,
+        outputAmountSat = f.OutputAmountSat,
+        outputAmountBtc = f.OutputAmountSat / 100_000_000.0,
+        changeAmountSat = f.ChangeAmountSat,
+        feeSat = f.FeeSat,
+        reissuanceSteps = f.ReissuanceSteps,
+        graphDepth = f.GraphDepth,
+        outputLabel = f.OutputLabel
+    }));
 }).WithTags("Dashboard");
 
 // Serve index.html as fallback
