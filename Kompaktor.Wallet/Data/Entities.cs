@@ -127,3 +127,18 @@ public class LabelEntity
     public string Text { get; set; } = "";
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
 }
+
+/// <summary>
+/// Records which inputs were co-registered in a failed round.
+/// Used by the intersection attack tracker to prevent the same wallet from
+/// re-disclosing coin pairings across rounds after service restarts.
+/// </summary>
+public class FailedRoundInputEntity
+{
+    public int Id { get; set; }
+    public string WalletId { get; set; } = "";
+    public string RoundGroupId { get; set; } = ""; // Groups inputs from the same failed round
+    public string TxId { get; set; } = "";
+    public int OutputIndex { get; set; }
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+}

@@ -87,5 +87,14 @@ public class WalletDbContext : DbContext
             e.HasKey(a => a.Id);
             e.HasOne(a => a.Wallet).WithMany().HasForeignKey(a => a.WalletId);
         });
+
+        modelBuilder.Entity<FailedRoundInputEntity>(e =>
+        {
+            e.HasKey(f => f.Id);
+            e.HasIndex(f => f.WalletId);
+            e.HasIndex(f => f.RoundGroupId);
+        });
     }
+
+    public DbSet<FailedRoundInputEntity> FailedRoundInputs => Set<FailedRoundInputEntity>();
 }

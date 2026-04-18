@@ -92,6 +92,10 @@ public class MixingManager : IAsyncDisposable
         var scoringWallet = new ScoringWalletAdapter(wallet, coinSelector, wallet.WalletId);
         var recorder = new CoinJoinRecorder(db, wallet.WalletId);
 
+        // Load persistent intersection attack tracking
+        var roundHistoryTracker = new PersistentRoundHistoryTracker(db, wallet.WalletId);
+        await roundHistoryTracker.LoadAsync();
+
         var random = _network == Network.RegTest
             ? new InsecureRandom()
             : (WasabiRandom)SecureRandom.Instance;
@@ -108,7 +112,7 @@ public class MixingManager : IAsyncDisposable
             CircuitFactory = circuitFactory
         };
 
-        var service = new KompaktorService(options, scoringWallet, _logger);
+        var service = new KompaktorService(options, scoringWallet, _logger, roundHistoryTracker);
 
         service.BehaviorFactory = (round, factory) =>
         [
