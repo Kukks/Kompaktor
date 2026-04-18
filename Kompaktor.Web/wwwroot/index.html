@@ -147,6 +147,16 @@
                 <div class="value" id="activeRounds">-</div>
                 <div class="unit">rounds</div>
             </div>
+            <div class="card">
+                <div class="label">Avg Privacy Score</div>
+                <div class="value" id="avgScore">-</div>
+                <div class="unit">effective</div>
+            </div>
+            <div class="card">
+                <div class="label">Needs Mixing</div>
+                <div class="value" id="needsMixing">-</div>
+                <div class="unit">UTXOs</div>
+            </div>
         </div>
 
         <section>
@@ -272,6 +282,14 @@
             }
         }
 
+        async function loadPrivacySummary() {
+            const data = await fetchJson('/api/dashboard/privacy-summary');
+            if (data) {
+                document.getElementById('avgScore').textContent = data.averageEffectiveScore.toFixed(1);
+                document.getElementById('needsMixing').textContent = data.needsMixingCount;
+            }
+        }
+
         async function loadRounds() {
             const rounds = await fetchJson('/api/rounds');
             const body = document.getElementById('roundsBody');
@@ -357,7 +375,7 @@
 
         async function refreshAll() {
             document.getElementById('lastUpdate').textContent = 'Refreshing...';
-            await Promise.all([loadSummary(), loadRounds(), loadUtxos(), loadCoinjoins()]);
+            await Promise.all([loadSummary(), loadPrivacySummary(), loadRounds(), loadUtxos(), loadCoinjoins()]);
             document.getElementById('lastUpdate').textContent = 'Updated ' + new Date().toLocaleTimeString();
         }
 

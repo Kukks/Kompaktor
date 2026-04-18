@@ -174,47 +174,56 @@ app.MapGet("/api/dashboard/summary", async (WalletDbContext db) =>
     });
 }).WithTags("Dashboard");
 
-app.MapGet("/api/dashboard/utxos", async (WalletDbContext db, ScoringOptions scoringOptions) =>
+app.MapGet("/api/dashboard/utxos", async (WalletDbContext db) =>
 {
-    var utxos = await db.Utxos
-        .Include(u => u.Address)
-            .ThenInclude(a => a.Utxos)
-        .Where(u => u.SpentByTxId == null)
-        .OrderByDescending(u => u.AmountSat)
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.Ok(Array.Empty<object>());
+
+    var selector = new WalletCoinSelector(db);
+    var scored = await selector.GetScoredUtxosAsync(wallet.Id);
+
+    var result = scored
+        .OrderByDescending(s => s.Utxo.AmountSat)
         .Take(100)
-        .ToListAsync();
-
-    var participations = await db.CoinJoinParticipations
-        .Include(p => p.CoinJoinRecord)
-        .ToListAsync();
-
-    var labels = await db.Labels.ToListAsync();
-    var scorer = new AnonymityScorer(scoringOptions);
-
-    var scored = utxos.Select(u =>
-    {
-        var score = scorer.Score(u, participations, labels);
-        var utxoLabels = labels
-            .Where(l => l.EntityType == "Utxo" && l.EntityId == u.Id.ToString())
-            .Select(l => l.Text)
-            .ToArray();
-
-        return new
+        .Select(s => new
         {
-            txId = u.TxId,
-            outputIndex = u.OutputIndex,
-            amountSat = u.AmountSat,
-            amountBtc = u.AmountSat / 100_000_000.0,
-            confirmedHeight = u.ConfirmedHeight,
-            rawAnonSet = score.RawAnonSet,
-            effectiveScore = Math.Round(score.EffectiveScore, 2),
-            coinJoinCount = score.CoinJoinCount,
-            confidence = score.Confidence.ToString(),
-            labels = utxoLabels
-        };
-    }).ToList();
+            txId = s.Utxo.TxId,
+            outputIndex = s.Utxo.OutputIndex,
+            amountSat = s.Utxo.AmountSat,
+            amountBtc = s.Utxo.AmountSat / 100_000_000.0,
+            confirmedHeight = s.Utxo.ConfirmedHeight,
+            rawAnonSet = s.Score.RawAnonSet,
+            effectiveScore = Math.Round(s.Score.EffectiveScore, 2),
+            coinJoinCount = s.Score.CoinJoinCount,
+            confidence = s.Score.Confidence.ToString(),
+            labels = s.Labels
+        })
+        .ToList();
 
-    return Results.Ok(scored);
+    return Results.Ok(result);
+}).WithTags("Dashboard");
+
+app.MapGet("/api/dashboard/privacy-summary", async (WalletDbContext db) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null)
+        return Results.Ok(new { totalUtxos = 0, totalAmountSat = 0L, averageEffectiveScore = 0.0,
+            minEffectiveScore = 0.0, maxEffectiveScore = 0.0, mixedUtxoCount = 0, needsMixingCount = 0 });
+
+    var selector = new WalletCoinSelector(db);
+    var summary = await selector.GetPrivacySummaryAsync(wallet.Id);
+
+    return Results.Ok(new
+    {
+        totalUtxos = summary.TotalUtxos,
+        totalAmountSat = summary.TotalAmountSat,
+        totalAmountBtc = summary.TotalAmountSat / 100_000_000.0,
+        averageEffectiveScore = Math.Round(summary.AverageEffectiveScore, 2),
+        minEffectiveScore = Math.Round(summary.MinEffectiveScore, 2),
+        maxEffectiveScore = Math.Round(summary.MaxEffectiveScore, 2),
+        mixedUtxoCount = summary.MixedUtxoCount,
+        needsMixingCount = summary.NeedsMixingCount
+    });
 }).WithTags("Dashboard");
 
 app.MapGet("/api/dashboard/coinjoins", async (WalletDbContext db) =>
