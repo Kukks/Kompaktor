@@ -1,0 +1,150 @@
+using Kompaktor.Blockchain;
+using Kompaktor.Wallet;
+using Kompaktor.Wallet.Data;
+using Microsoft.EntityFrameworkCore;
+using NBitcoin;
+
+namespace Kompaktor.Web;
+
+/// <summary>
+/// Background service that runs wallet UTXO sync on startup and monitors
+/// for new transactions in real time. Publishes SSE events when UTXOs change.
+/// </summary>
+public class WalletSyncBackgroundService : BackgroundService
+{
+    private readonly IServiceProvider _services;
+    private readonly IBlockchainBackend _blockchain;
+    private readonly Network _network;
+    private readonly DashboardEventBus _eventBus;
+    private readonly ILogger<WalletSyncBackgroundService> _logger;
+
+    private WalletSyncService? _syncService;
+    private IServiceScope? _scope;
+
+    public bool IsSyncing { get; private set; }
+    public bool IsMonitoring { get; private set; }
+    public DateTimeOffset? LastSyncTime { get; private set; }
+    public int LastSyncUtxoCount { get; private set; }
+
+    public WalletSyncBackgroundService(
+        IServiceProvider services,
+        IBlockchainBackend blockchain,
+        Network network,
+        DashboardEventBus eventBus,
+        ILogger<WalletSyncBackgroundService> logger)
+    {
+        _services = services;
+        _blockchain = blockchain;
+        _network = network;
+        _eventBus = eventBus;
+        _logger = logger;
+    }
+
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        // Wait briefly for app startup to complete
+        await Task.Delay(1000, stoppingToken);
+
+        _scope = _services.CreateScope();
+        var db = _scope.ServiceProvider.GetRequiredService<WalletDbContext>();
+
+        var wallet = await db.Wallets.FirstOrDefaultAsync(stoppingToken);
+        if (wallet is null)
+        {
+            _logger.LogInformation("No wallet found — sync service will wait for wallet creation");
+            // Wait for a wallet to be created (check every 5 seconds)
+            while (!stoppingToken.IsCancellationRequested)
+            {
+                await Task.Delay(5000, stoppingToken);
+                wallet = await db.Wallets.FirstOrDefaultAsync(stoppingToken);
+                if (wallet is not null) break;
+            }
+            if (wallet is null) return;
+        }
+
+        _syncService = new WalletSyncService(db, _blockchain, _network);
+
+        _syncService.UtxosReceived += utxos =>
+        {
+            _logger.LogInformation("Sync discovered {Count} new UTXOs", utxos.Length);
+            _eventBus.Publish("utxos");
+        };
+
+        _syncService.UtxosSpent += utxos =>
+        {
+            _logger.LogInformation("Sync detected {Count} spent UTXOs", utxos.Length);
+            _eventBus.Publish("utxos");
+        };
+
+        // Initial full sync
+        try
+        {
+            IsSyncing = true;
+            _logger.LogInformation("Starting full wallet sync for {WalletId}", wallet.Id);
+            await _syncService.FullSyncAsync(wallet.Id, stoppingToken);
+            LastSyncTime = DateTimeOffset.UtcNow;
+            LastSyncUtxoCount = _syncService.LastSyncUtxoCount;
+            IsSyncing = false;
+            _logger.LogInformation("Full sync complete: {Count} UTXOs discovered", LastSyncUtxoCount);
+            _eventBus.Publish("utxos");
+        }
+        catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
+        {
+            IsSyncing = false;
+            _logger.LogError(ex, "Full sync failed");
+        }
+
+        // Start real-time monitoring
+        try
+        {
+            await _syncService.StartMonitoringAsync(wallet.Id, stoppingToken);
+            IsMonitoring = true;
+            _logger.LogInformation("Real-time UTXO monitoring started");
+        }
+        catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
+        {
+            _logger.LogError(ex, "Failed to start real-time monitoring");
+        }
+
+        // Periodic re-sync every 60 seconds to catch anything missed
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(60), stoppingToken);
+                IsSyncing = true;
+                await _syncService.FullSyncAsync(wallet.Id, stoppingToken);
+                LastSyncTime = DateTimeOffset.UtcNow;
+                LastSyncUtxoCount = _syncService.LastSyncUtxoCount;
+                IsSyncing = false;
+
+                if (LastSyncUtxoCount > 0)
+                    _eventBus.Publish("utxos");
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (Exception ex)
+            {
+                IsSyncing = false;
+                _logger.LogWarning(ex, "Periodic sync failed — will retry next cycle");
+            }
+        }
+    }
+
+    public override async Task StopAsync(CancellationToken cancellationToken)
+    {
+        if (_syncService is not null)
+        {
+            await _syncService.DisposeAsync();
+            _syncService = null;
+        }
+        IsMonitoring = false;
+
+        _scope?.Dispose();
+        _scope = null;
+
+        await base.StopAsync(cancellationToken);
+    }
+}

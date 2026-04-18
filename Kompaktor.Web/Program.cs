@@ -140,6 +140,8 @@ builder.Services.AddHostedService(sp => sp.GetRequiredService<KompaktorRoundOrch
 builder.Services.AddSingleton<DashboardEventBus>();
 builder.Services.AddSingleton(network);
 builder.Services.AddSingleton<MixingManager>();
+builder.Services.AddSingleton<WalletSyncBackgroundService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<WalletSyncBackgroundService>());
 builder.Services.AddOpenApi();
 
 var app = builder.Build();
@@ -646,6 +648,18 @@ app.MapGet("/api/coordinator/stats", (KompaktorRoundManager manager, KompaktorRo
         timestamp = DateTimeOffset.UtcNow
     });
 }).WithTags("Coordinator");
+
+// Wallet sync status
+app.MapGet("/api/wallet/sync-status", (WalletSyncBackgroundService sync) =>
+{
+    return Results.Ok(new
+    {
+        syncing = sync.IsSyncing,
+        monitoring = sync.IsMonitoring,
+        lastSyncTime = sync.LastSyncTime,
+        lastSyncUtxoCount = sync.LastSyncUtxoCount
+    });
+}).WithTags("Wallet");
 
 // Auto-mixing: start/stop/status
 app.MapGet("/api/mixing/status", (MixingManager mixer) =>

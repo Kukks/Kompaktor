@@ -34,7 +34,10 @@
             margin-bottom: 24px;
         }
         header h1 { font-size: 20px; font-weight: 600; }
-        header .status { font-size: 13px; color: var(--text-muted); }
+        header .status { font-size: 13px; color: var(--text-muted); display: flex; align-items: center; gap: 12px; }
+        .sync-indicator { font-size: 12px; }
+        .sync-indicator .syncing { color: var(--yellow); }
+        .sync-indicator .monitoring { color: var(--green); }
         .cards {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
@@ -359,8 +362,9 @@
     <div class="container">
         <header>
             <h1>Kompaktor Dashboard</h1>
-            <div>
-                <span class="status" id="lastUpdate"></span>
+            <div class="status">
+                <span class="sync-indicator" id="syncStatus"></span>
+                <span id="lastUpdate"></span>
                 <button class="refresh-btn" onclick="refreshAll()">Refresh</button>
             </div>
         </header>
@@ -1031,6 +1035,21 @@
             }
         }
 
+        // Sync status
+        async function loadSyncStatus() {
+            const data = await fetchJson('/api/wallet/sync-status');
+            const el = document.getElementById('syncStatus');
+            if (!data) { el.textContent = ''; return; }
+
+            if (data.syncing) {
+                el.innerHTML = '<span class="syncing">&#8635; Syncing</span>';
+            } else if (data.monitoring) {
+                el.innerHTML = '<span class="monitoring">&#9679; Monitoring</span>';
+            } else {
+                el.textContent = '';
+            }
+        }
+
         // Auto-mixing control
         let mixingRunning = false;
 
@@ -1090,7 +1109,7 @@
 
         async function refreshAll() {
             document.getElementById('lastUpdate').textContent = 'Refreshing...';
-            await Promise.all([loadSummary(), loadPrivacySummary(), loadRounds(), loadUtxos(), loadCoinjoins(), loadTransactions(), loadMixingStatus()]);
+            await Promise.all([loadSummary(), loadPrivacySummary(), loadRounds(), loadUtxos(), loadCoinjoins(), loadTransactions(), loadMixingStatus(), loadSyncStatus()]);
             updateConnectionStatus(sseConnected ? 'live' : 'polling');
         }
 
