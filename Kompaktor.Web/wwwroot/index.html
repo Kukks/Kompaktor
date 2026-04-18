@@ -310,6 +310,40 @@
         }
         .copy-btn:hover { border-color: var(--accent); }
         .addr-meta { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+        .privacy-meter {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 16px;
+            margin-bottom: 24px;
+        }
+        .privacy-meter h2 { font-size: 16px; margin-bottom: 12px; }
+        .meter-bar {
+            display: flex;
+            height: 24px;
+            border-radius: 4px;
+            overflow: hidden;
+            margin-bottom: 12px;
+            background: var(--border);
+        }
+        .meter-bar .segment { transition: width 0.3s ease; min-width: 0; }
+        .tier-legend {
+            display: flex;
+            gap: 16px;
+            flex-wrap: wrap;
+            font-size: 12px;
+        }
+        .tier-legend .tier-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .tier-legend .tier-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 2px;
+        }
+        .tier-legend .tier-count { color: var(--text-muted); }
         .mixing-control {
             background: var(--surface);
             border: 1px solid var(--border);
@@ -464,6 +498,13 @@
                 <div class="value" id="needsMixing">-</div>
                 <div class="unit">UTXOs</div>
             </div>
+        </div>
+
+        <!-- Privacy Health Meter -->
+        <div class="privacy-meter" id="privacyMeter">
+            <h2>Privacy Health</h2>
+            <div class="meter-bar" id="meterBar"></div>
+            <div class="tier-legend" id="tierLegend"></div>
         </div>
 
         <section>
@@ -1035,6 +1076,37 @@
             }
         }
 
+        // Privacy distribution meter
+        async function loadPrivacyDistribution() {
+            const data = await fetchJson('/api/dashboard/privacy-distribution');
+            if (!data || !data.tiers) return;
+
+            const bar = document.getElementById('meterBar');
+            const legend = document.getElementById('tierLegend');
+            const total = data.totalUtxos;
+
+            if (total === 0) {
+                bar.innerHTML = '';
+                legend.innerHTML = '<span style="color:var(--text-muted)">No UTXOs to analyze</span>';
+                return;
+            }
+
+            bar.innerHTML = data.tiers
+                .filter(t => t.count > 0)
+                .map(t => {
+                    const pct = (t.count / total * 100).toFixed(1);
+                    return `<div class="segment" style="width:${pct}%;background:${t.color}" title="${t.tier}: ${t.count} UTXOs (${t.amountBtc.toFixed(4)} BTC)"></div>`;
+                }).join('');
+
+            legend.innerHTML = data.tiers.map(t =>
+                `<div class="tier-item">
+                    <div class="tier-dot" style="background:${t.color}"></div>
+                    <span>${esc(t.tier)}</span>
+                    <span class="tier-count">${t.count} (${t.amountBtc.toFixed(4)})</span>
+                </div>`
+            ).join('');
+        }
+
         // Sync status
         async function loadSyncStatus() {
             const data = await fetchJson('/api/wallet/sync-status');
@@ -1109,7 +1181,7 @@
 
         async function refreshAll() {
             document.getElementById('lastUpdate').textContent = 'Refreshing...';
-            await Promise.all([loadSummary(), loadPrivacySummary(), loadRounds(), loadUtxos(), loadCoinjoins(), loadTransactions(), loadMixingStatus(), loadSyncStatus()]);
+            await Promise.all([loadSummary(), loadPrivacySummary(), loadPrivacyDistribution(), loadRounds(), loadUtxos(), loadCoinjoins(), loadTransactions(), loadMixingStatus(), loadSyncStatus()]);
             updateConnectionStatus(sseConnected ? 'live' : 'polling');
         }
 
@@ -1136,6 +1208,7 @@
                 loadUtxos();
                 loadSummary();
                 loadPrivacySummary();
+                loadPrivacyDistribution();
             });
 
             source.addEventListener('wallet', () => {

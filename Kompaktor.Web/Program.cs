@@ -649,6 +649,47 @@ app.MapGet("/api/coordinator/stats", (KompaktorRoundManager manager, KompaktorRo
     });
 }).WithTags("Coordinator");
 
+// Privacy score distribution for visualization
+app.MapGet("/api/dashboard/privacy-distribution", async (WalletDbContext db) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null)
+        return Results.Ok(new { tiers = Array.Empty<object>(), totalUtxos = 0 });
+
+    var selector = new WalletCoinSelector(db);
+    var scored = await selector.GetScoredUtxosAsync(wallet.Id);
+
+    // Group into privacy tiers
+    var tiers = new[]
+    {
+        new { name = "Unmixed", min = 0.0, max = 1.0, color = "#f85149" },
+        new { name = "Low", min = 1.0, max = 3.0, color = "#db6d28" },
+        new { name = "Medium", min = 3.0, max = 10.0, color = "#d29922" },
+        new { name = "Good", min = 10.0, max = 50.0, color = "#3fb950" },
+        new { name = "Excellent", min = 50.0, max = double.MaxValue, color = "#58a6ff" }
+    };
+
+    var distribution = tiers.Select(t =>
+    {
+        var inTier = scored.Where(s =>
+            s.Score.EffectiveScore >= t.min && s.Score.EffectiveScore < t.max).ToList();
+        return new
+        {
+            tier = t.name,
+            color = t.color,
+            count = inTier.Count,
+            amountSat = inTier.Sum(s => s.Utxo.AmountSat),
+            amountBtc = inTier.Sum(s => s.Utxo.AmountSat) / 100_000_000.0
+        };
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        tiers = distribution,
+        totalUtxos = scored.Count
+    });
+}).WithTags("Dashboard");
+
 // Wallet sync status
 app.MapGet("/api/wallet/sync-status", (WalletSyncBackgroundService sync) =>
 {
