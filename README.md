@@ -89,6 +89,7 @@ Kompaktor.sln
 │   ├── CoinSelectionAdvisor.cs         # Privacy-aware coin selection
 │   ├── WalletCoinSelector.cs          # Bridges wallet DB with scorer for UTXO queries
 │   ├── ScoringWalletAdapter.cs        # IKompaktorWalletInterface decorator for auto-mixing
+│   ├── WalletTransactionBuilder.cs    # Privacy-aware spending transaction planner
 │   └── CredentialFlowTracker.cs       # Credential lifecycle flow analysis
 ├── Kompaktor.Client/       # HTTP client for remote coordinator communication
 │   ├── KompaktorCoordinatorClient.cs   # High-level entry point: round discovery, status, factory creation
@@ -171,7 +172,7 @@ Network identity isolation abstraction. `TorCircuitFactory` routes each identity
 
 ### `Kompaktor.Web`
 
-Combined coordinator and wallet dashboard in a single ASP.NET Core process. Runs the full coordinator (round management, scheduling) alongside dashboard API endpoints that expose wallet balance, scored UTXOs with anonymity badges, and coinjoin history. Supports both Bitcoin Core RPC and Electrum backends via configuration. The frontend is a vanilla JS single-page dashboard with dark theme, auto-refresh, and color-coded anonymity score indicators.
+Combined coordinator and wallet dashboard in a single ASP.NET Core process. Runs the full coordinator (round management, scheduling) alongside dashboard API endpoints that expose wallet balance, privacy summary (average score, needs-mixing count), scored UTXOs with anonymity badges, coinjoin history, transaction history, and a send planning endpoint for previewing privacy-aware spending transactions. Supports both Bitcoin Core RPC and Electrum backends via configuration. The frontend is a vanilla JS single-page dashboard with dark theme, auto-refresh, and color-coded anonymity score indicators.
 
 ### Error Handling
 
@@ -400,6 +401,7 @@ The test suite includes 310+ tests covering:
 - CoinJoinRecorder round persistence with UTXO creation and spend tracking
 - WalletCoinSelector scored UTXO queries with privacy summary generation
 - ScoringWalletAdapter auto-mixing threshold filtering
+- WalletTransactionBuilder privacy-aware spending with strategy selection
 - Multi-server Electrum routing with round-robin assignment and script pinning
 - Credential lifecycle flow analysis with merge tree depth and fee calculation
 
