@@ -89,33 +89,34 @@ public class InteractivePendingPaymentSenderFlow
 
     public async Task SendPayment(CancellationToken cancellationToken)
     {
-        if(RegisteredOutput)
+        if (RegisteredOutput)
         {
             return;
         }
+
         if (P3 is null || AssignedCredentials.Sum(credential => credential.Value) != Payment.Amount.Satoshi)
         {
-            _logger.LogInformation($"Invalid credentials sum for payment {Payment.Id}");
+            _logger.LogWarning("Payment {Id}: invalid credentials sum, skipping", Payment.Id);
             return;
         }
 
-        P4 ??= ECPrivKey.Create(RandomUtils.GetBytes(32));
-       var receivedMessage = await  _communicationApi.SendAndWaitForMessageAsync(Pay(), P4.ToXPubKey().ToBytes(), cancellationToken,
-            $"credential payment {Payment.Id}");
-       
         try
         {
-            P5 = ECXOnlyPubKey.Create(receivedMessage[32..]);
+            P4 ??= ECPrivKey.Create(RandomUtils.GetBytes(32));
+            var receivedMessage = await _communicationApi.SendAndWaitForMessageAsync(Pay(),
+                P4.ToXPubKey().ToBytes(), cancellationToken,
+                $"credential payment {Payment.Id}");
 
-            _logger.LogInformation($"Received cred ack {Payment.Id}");
+            P5 = ECXOnlyPubKey.Create(receivedMessage[32..]);
+            _logger.LogInformation("Received cred ack for payment {Id}", Payment.Id);
         }
         catch (OperationCanceledException)
         {
-            _logger.LogInformation($"Timeout waiting for cred ack response {Payment.Id}");
+            _logger.LogInformation("Payment {Id}: timeout waiting for cred ack", Payment.Id);
         }
         catch (Exception e)
         {
-            _logger.LogException( $"Error waiting for cred ack response {Payment.Id}", e);
+            _logger.LogException($"Payment {Payment.Id}: error during credential send", e);
         }
     }
 
@@ -138,31 +139,41 @@ public class InteractivePendingPaymentSenderFlow
         {
             return;
         }
-        await TxIdSet.Task.WithCancellation(cancellationToken);
-        if (P6 is null)
-        {
-            return;
-        }
 
-        if (TxId is null)
+        try
         {
-            return;
-        }
-        var receivedMessageTask =
-            _communicationApi.WaitForMessage(P6.ToBytes(), cancellationToken, $"waiting for proof {Payment.Id}");
-        var receivedMessage = await receivedMessageTask;
-        if (SecpSchnorrSignature.TryCreate(receivedMessage[32..], out var sig))
-        {
-            var proof = new KompaktorOffchainPaymentProof(TxId, Payment.Amount.Satoshi, P1, sig);
-            if (proof.Verify())
+            await TxIdSet.Task.WithCancellation(cancellationToken);
+            if (P6 is null || TxId is null)
             {
-                _logger.LogInformation($"Received proof for payment {Payment.Id}");
-                Proof = proof;
                 return;
             }
-        }
 
-        throw new Exception("Invalid proof");
+            var receivedMessageTask =
+                _communicationApi.WaitForMessage(P6.ToBytes(), cancellationToken,
+                    $"waiting for proof {Payment.Id}");
+            var receivedMessage = await receivedMessageTask;
+            if (SecpSchnorrSignature.TryCreate(receivedMessage[32..], out var sig))
+            {
+                var proof = new KompaktorOffchainPaymentProof(TxId, Payment.Amount.Satoshi, P1, sig);
+                if (proof.Verify())
+                {
+                    _logger.LogInformation("Received valid proof for payment {Id}", Payment.Id);
+                    Proof = proof;
+                    return;
+                }
+            }
+
+            _logger.LogWarning("Payment {Id}: received invalid proof, payment will not complete this round",
+                Payment.Id);
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.LogInformation("Payment {Id} proof wait cancelled", Payment.Id);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogException($"Payment {Payment.Id}: proof verification failed", ex);
+        }
     }
 
 

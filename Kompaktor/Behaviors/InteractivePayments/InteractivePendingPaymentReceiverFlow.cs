@@ -80,71 +80,99 @@ public class InteractivePendingPaymentReceiverFlow
 
     public async Task Start(XPubKey p2, CancellationToken ct)
     {
-        P2 = p2;
-        P3 = ECPrivKey.Create(RandomNumberGenerator.GetBytes(32));
-
-        var msg = await _communicationApi
-            .SendAndWaitForMessageAsync(IntentPayAck(), P3.ToXPubKey().ToBytes(), ct,
-                $"creds for payment {Payment.Id}");
-        
-        _logger.LogInformation("Received creds for payment {0}", Payment.Id);
-        var p4 = msg[32..64].ToXPubKey();
-//grab every slice of 105 bytes from the message
-        var credentials = new List<Credential>();
-        var offset = 64;
-        while (offset < msg.Length)
+        try
         {
-            var credential = CredentialHelper.CredFromBytes(msg[offset..(offset + 105)]);
-            credentials.Add(credential);
-            offset += 105;
-        }
+            P2 = p2;
+            P3 = ECPrivKey.Create(RandomNumberGenerator.GetBytes(32));
 
-        // check if sum of all credential values is equal to the amount of the payment
-        if (credentials.Sum(c => c.Value) < Payment.Amount)
+            var msg = await _communicationApi
+                .SendAndWaitForMessageAsync(IntentPayAck(), P3.ToXPubKey().ToBytes(), ct,
+                    $"creds for payment {Payment.Id}");
+
+            _logger.LogInformation("Received creds for payment {0}", Payment.Id);
+
+            // Validate message has minimum expected length (32 bytes P4 key + at least one credential)
+            if (msg.Length < 64 + 105)
+            {
+                _logger.LogWarning("Payment {Id}: message too short ({Len} bytes), expected at least {Min}",
+                    Payment.Id, msg.Length, 64 + 105);
+                return;
+            }
+
+            // Validate remaining bytes are aligned to credential size
+            if ((msg.Length - 64) % 105 != 0)
+            {
+                _logger.LogWarning("Payment {Id}: message body not aligned to credential size (remainder {Rem})",
+                    Payment.Id, (msg.Length - 64) % 105);
+                return;
+            }
+
+            var p4 = msg[32..64].ToXPubKey();
+            var credentials = new List<Credential>();
+            var offset = 64;
+            while (offset + 105 <= msg.Length)
+            {
+                var credential = CredentialHelper.CredFromBytes(msg[offset..(offset + 105)]);
+                credentials.Add(credential);
+                offset += 105;
+            }
+
+            if (credentials.Sum(c => c.Value) < Payment.Amount)
+            {
+                _logger.LogWarning(
+                    "Payment {Id}: credential sum {Sum} < required {Amount}",
+                    Payment.Id, credentials.Sum(c => c.Value), Payment.Amount);
+                return;
+            }
+
+            P4 = p4;
+
+            var sw = Stopwatch.StartNew();
+            ReceivedCredentials = credentials.Select(credential => new BlindedCredential(credential)).ToArray();
+
+            P5 = ECPrivKey.Create(RandomNumberGenerator.GetBytes(32));
+            var credAckTask = _communicationApi.SendMessageAsync(CredReceiveAck(),
+                $"creds ack for payment {Payment.Id}");
+            var reissueTask = _reissue(ReceivedCredentials);
+            _logger.LogInformation("Reissuing credentials for payment {0}", Payment.Id);
+
+            await credAckTask;
+            _logger.LogInformation("Sent creds ack for payment {Id} (took {Ms}ms)",
+                Payment.Id, sw.ElapsedMilliseconds);
+            await reissueTask;
+
+            _logger.LogInformation("Reissued creds of payment {Id} ({Ms}ms)",
+                Payment.Id, sw.ElapsedMilliseconds);
+            P6 = ECPrivKey.Create(RandomNumberGenerator.GetBytes(32));
+
+            if (!await _waitUntilReady())
+            {
+                _logger.LogInformation("Payment {Id} timed out waiting to get ready", Payment.Id);
+                return;
+            }
+
+            await _communicationApi.SendMessageAsync(Ready(), $"ready for payment {Payment.Id}");
+            await TxIdSet.Task.WaitAsync(ct);
+            _logger.LogInformation("Received txid for payment {Id}", Payment.Id);
+
+            if (!await _waitUntilReady())
+            {
+                _logger.LogInformation("Payment {Id} timed out waiting to get ready (proof phase)", Payment.Id);
+                return;
+            }
+
+            var proof = new KompaktorOffchainPaymentProof(TxId, Payment.Amount.Satoshi, P1.ToXPubKey(), null);
+            var sig = ((ECPrivKey) P1).SignBIP340(proof.ProofMessage);
+            Proof = proof with { Proof = sig };
+            await _communicationApi.SendMessageAsync(ProofMsg(), $"proof for payment {Payment.Id}");
+        }
+        catch (OperationCanceledException)
         {
-            _logger.LogInformation(
-                $"Received creds for payment {Payment.Id} do not match the amount {credentials.Sum(c => c.Value)} not {Payment.Amount} ");
-            throw new Exception("Invalid credentials");
+            _logger.LogInformation("Payment {Id} receiver flow cancelled", Payment.Id);
         }
-
-        P4 = p4;
-
-        var sw = Stopwatch.StartNew();
-        ReceivedCredentials = credentials.Select(credential => new BlindedCredential(credential)).ToArray();
-
-
-        P5 = ECPrivKey.Create(RandomNumberGenerator.GetBytes(32));
-       var credAckTest = _communicationApi.SendMessageAsync(CredReceiveAck(), $"creds ack for payment {Payment.Id}");
-       var reissueTask = _reissue(ReceivedCredentials);
-        _logger.LogInformation("Reissuing credentials for payment {0}", Payment.Id);
-      
-await  credAckTest;
-        _logger.LogInformation($"Sent creds ack for payment {Payment.Id} (took {sw.ElapsedMilliseconds}ms)");
-        await reissueTask;
-
-        _logger.LogInformation($"Reissued creds of payment {Payment.Id} ({sw.ElapsedMilliseconds}ms)");
-        P6 = ECPrivKey.Create(RandomNumberGenerator.GetBytes(32));
-
-        if (!await _waitUntilReady())
+        catch (Exception ex)
         {
-            _logger.LogInformation($"Payment {Payment.Id} was waiting for too long for us to get ready");
-            return;
+            _logger.LogException($"Payment {Payment.Id}: receiver flow failed", ex);
         }
-
-
-        await _communicationApi.SendMessageAsync(Ready(), $"ready for payment {Payment.Id}");
-        await TxIdSet.Task.WaitAsync(ct);
-        _logger.LogInformation($"Received txid for payment {Payment.Id}");
-        
-        if (!await _waitUntilReady())
-        {
-            _logger.LogInformation($"Payment {Payment.Id} was waiting for too long for us to get ready");
-            return;
-        }
-
-        var proof = new KompaktorOffchainPaymentProof(TxId, Payment.Amount.Satoshi, P1.ToXPubKey(), null);
-        var sig = ((ECPrivKey) P1).SignBIP340(proof.ProofMessage);
-        Proof = proof with {Proof = sig};
-        await _communicationApi.SendMessageAsync(ProofMsg(), $"proof for payment {Payment.Id}");
     }
 }
