@@ -619,6 +619,10 @@
         <header>
             <h1>Kompaktor Dashboard</h1>
             <div class="status">
+                <span id="coordIndicator" style="display:inline-flex;align-items:center;gap:4px;font-size:11px;color:var(--text-muted)" title="Coordinator connection status">
+                    <span id="coordDot" style="width:8px;height:8px;border-radius:50%;background:var(--text-muted);display:inline-block"></span>
+                    <span id="coordLabel">Disconnected</span>
+                </span>
                 <span class="sync-indicator" id="syncStatus"></span>
                 <span id="lastUpdate"></span>
                 <button class="refresh-btn" onclick="toggleTheme()" id="themeBtn" title="Toggle dark/light theme (T)">Light</button>
@@ -2099,6 +2103,23 @@
                 phaseEl.textContent = '';
             }
             renderMixFeed();
+            // Update header coordinator indicator
+            const dot = document.getElementById('coordDot');
+            const lbl = document.getElementById('coordLabel');
+            const ind = document.getElementById('coordIndicator');
+            if (data.running && data.activeRoundPhase) {
+                dot.style.background = 'var(--green)';
+                lbl.textContent = data.torEnabled ? 'Tor Connected' : 'Connected';
+                ind.title = `Coordinator: ${data.coordinatorUrl || 'local'}\nPhase: ${data.activeRoundPhase}`;
+            } else if (data.running) {
+                dot.style.background = 'var(--yellow)';
+                lbl.textContent = 'Waiting for round';
+                ind.title = `Coordinator: ${data.coordinatorUrl || 'local'}\nWaiting for next round...`;
+            } else {
+                dot.style.background = 'var(--text-muted)';
+                lbl.textContent = 'Disconnected';
+                ind.title = 'Mixing not active. Click the toggle in the Mixing tab to connect.';
+            }
         }
 
         function toggleMixing() {
