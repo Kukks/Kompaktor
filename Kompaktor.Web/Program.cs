@@ -845,6 +845,98 @@ app.MapGet("/api/dashboard/privacy-recommendations", async (WalletDbContext db, 
     return Results.Ok(new { recommendations });
 }).WithTags("Dashboard");
 
+// Interactive Payments: create, list, cancel
+app.MapGet("/api/payments", async (WalletDbContext db) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.Ok(Array.Empty<object>());
+
+    var payments = await db.PendingPayments
+        .Where(p => p.WalletId == wallet.Id)
+        .OrderByDescending(p => p.CreatedAt)
+        .Take(50)
+        .Select(p => new
+        {
+            p.Id, p.Direction, p.AmountSat,
+            amountBtc = p.AmountSat / 100_000_000.0,
+            p.Destination, p.Status, p.IsInteractive, p.IsUrgent,
+            p.Label, p.CompletedTxId, p.CreatedAt, p.CompletedAt
+        })
+        .ToListAsync();
+
+    return Results.Ok(payments);
+}).WithTags("Payments");
+
+app.MapPost("/api/payments/send", async (WalletDbContext db, HttpContext ctx) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.BadRequest("No wallet found");
+
+    var body = await ctx.Request.ReadFromJsonAsync<CreatePaymentRequest>();
+    if (body is null || string.IsNullOrWhiteSpace(body.Destination) || body.AmountSat <= 0)
+        return Results.BadRequest("Destination and amount required");
+
+    try
+    {
+        BitcoinAddress.Create(body.Destination, network);
+    }
+    catch
+    {
+        return Results.BadRequest("Invalid Bitcoin address");
+    }
+
+    var manager = new WalletPaymentManager(db, wallet.Id, network);
+    var entity = await manager.CreateOutboundPaymentAsync(
+        body.Destination, body.AmountSat, body.Interactive, body.Urgent, body.Label);
+
+    return Results.Ok(new
+    {
+        entity.Id, entity.Direction, entity.AmountSat,
+        amountBtc = entity.AmountSat / 100_000_000.0,
+        entity.Destination, entity.Status, entity.IsInteractive,
+        kompaktorPubKey = entity.KompaktorKeyHex,
+        entity.Label, entity.CreatedAt
+    });
+}).WithTags("Payments");
+
+app.MapPost("/api/payments/receive", async (WalletDbContext db, HttpContext ctx) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.BadRequest("No wallet found");
+
+    var body = await ctx.Request.ReadFromJsonAsync<CreateReceiveRequest>();
+    if (body is null || body.AmountSat <= 0)
+        return Results.BadRequest("Amount required");
+
+    var manager = new WalletPaymentManager(db, wallet.Id, network);
+    var entity = await manager.CreateInboundPaymentAsync(body.AmountSat, body.Label);
+
+    // Build BIP21 URI with Kompaktor extension parameter
+    var bip21 = $"bitcoin:{entity.Destination}?amount={entity.AmountSat / 100_000_000.0:F8}";
+    if (entity.KompaktorKeyHex is not null)
+        bip21 += $"&kompaktor={entity.KompaktorKeyHex.ToLower()}";
+
+    return Results.Ok(new
+    {
+        entity.Id, entity.Direction, entity.AmountSat,
+        amountBtc = entity.AmountSat / 100_000_000.0,
+        entity.Destination, entity.Status, entity.IsInteractive,
+        bip21Uri = bip21,
+        kompaktorKey = entity.KompaktorKeyHex,
+        entity.Label, entity.CreatedAt
+    });
+}).WithTags("Payments");
+
+app.MapDelete("/api/payments/{paymentId}", async (string paymentId, WalletDbContext db) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.BadRequest("No wallet found");
+
+    var manager = new WalletPaymentManager(db, wallet.Id, network);
+    var cancelled = await manager.CancelPaymentAsync(paymentId);
+    return cancelled ? Results.Ok(new { paymentId, status = "cancelled" }) : Results.NotFound();
+}).WithTags("Payments");
+
 // Address book CRUD
 app.MapGet("/api/address-book", async (WalletDbContext db) =>
 {
@@ -1371,3 +1463,5 @@ record MixingStartRequest(string Passphrase, string? CoordinatorUrl = null, stri
 record AddressBookRequest(string Label, string Address);
 record SendRequest(string Destination, long AmountSat, long FeeRateSatPerVb = 2, string Strategy = "PrivacyFirst", string Passphrase = "");
 record BroadcastPsbtRequest(string SignedPsbt);
+record CreatePaymentRequest(string Destination, long AmountSat, bool Interactive = true, bool Urgent = false, string? Label = null);
+record CreateReceiveRequest(long AmountSat, string? Label = null);

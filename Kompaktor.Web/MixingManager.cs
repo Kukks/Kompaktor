@@ -1,4 +1,5 @@
 using Kompaktor.Behaviors;
+using Kompaktor.Behaviors.InteractivePayments;
 using Kompaktor.Client;
 using Kompaktor.Scoring;
 using Kompaktor.Wallet;
@@ -115,13 +116,23 @@ public class MixingManager : IAsyncDisposable
             CircuitFactory = circuitFactory
         };
 
+        var paymentManager = new WalletPaymentManager(db, wallet.WalletId, _network);
+
         var service = new KompaktorService(options, scoringWallet, _logger, roundHistoryTracker);
 
         service.BehaviorFactory = (round, factory) =>
-        [
-            new ConsolidationBehaviorTrait(10),
-            new SelfSendChangeBehaviorTrait(wallet.GetChangeScript, TimeSpan.FromSeconds(30))
-        ];
+        {
+            var api = factory.Create();
+            var messagingApi = new KompaktorMessagingApi(_logger, round, api);
+
+            return
+            [
+                new ConsolidationBehaviorTrait(10),
+                new SelfSendChangeBehaviorTrait(wallet.GetChangeScript, TimeSpan.FromSeconds(30)),
+                new InteractivePaymentSenderBehaviorTrait(paymentManager, messagingApi),
+                new InteractivePaymentReceiverBehaviorTrait(paymentManager, messagingApi)
+            ];
+        };
 
         service.RoundCompleted += result =>
         {

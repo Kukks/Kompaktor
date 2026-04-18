@@ -16,6 +16,7 @@ public class WalletDbContext : DbContext
     public DbSet<CredentialEventEntity> CredentialEvents => Set<CredentialEventEntity>();
     public DbSet<LabelEntity> Labels => Set<LabelEntity>();
     public DbSet<AddressBookEntry> AddressBook => Set<AddressBookEntry>();
+    public DbSet<PendingPaymentEntity> PendingPayments => Set<PendingPaymentEntity>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -86,6 +87,12 @@ public class WalletDbContext : DbContext
         {
             e.HasKey(a => a.Id);
             e.HasOne(a => a.Wallet).WithMany().HasForeignKey(a => a.WalletId);
+        });
+
+        modelBuilder.Entity<PendingPaymentEntity>(e =>
+        {
+            e.HasKey(p => p.Id);
+            e.HasIndex(p => new { p.WalletId, p.Direction, p.Status });
         });
 
         modelBuilder.Entity<FailedRoundInputEntity>(e =>

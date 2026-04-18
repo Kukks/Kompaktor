@@ -134,6 +134,41 @@ public class LabelEntity
 }
 
 /// <summary>
+/// A pending payment waiting to be fulfilled in a CoinJoin round.
+/// Supports both outbound (sending) and inbound (receiving) interactive payments.
+/// </summary>
+public class PendingPaymentEntity
+{
+    public string Id { get; set; } = Guid.NewGuid().ToString();
+    public string WalletId { get; set; } = "";
+    /// <summary>"Outbound" or "Inbound"</summary>
+    public string Direction { get; set; } = "";
+    public long AmountSat { get; set; }
+    /// <summary>Bitcoin address string (e.g. bc1q...)</summary>
+    public string Destination { get; set; } = "";
+    /// <summary>"Pending", "Reserved", "Committed", "Completed", "Failed"</summary>
+    public string Status { get; set; } = "Pending";
+    /// <summary>
+    /// For interactive payments: the Kompaktor protocol key (hex-encoded).
+    /// Outbound: sender's public key. Inbound: receiver's private key.
+    /// Null for non-interactive payments.
+    /// </summary>
+    public string? KompaktorKeyHex { get; set; }
+    /// <summary>Whether this is an interactive (peer-to-peer credential transfer) payment</summary>
+    public bool IsInteractive { get; set; }
+    /// <summary>Urgent payments fall back to non-interactive if peer is offline</summary>
+    public bool IsUrgent { get; set; }
+    /// <summary>Optional label for display</summary>
+    public string? Label { get; set; }
+    /// <summary>Serialized proof once the payment completes</summary>
+    public string? ProofJson { get; set; }
+    /// <summary>Transaction ID if the payment was included in a broadcast CoinJoin</summary>
+    public string? CompletedTxId { get; set; }
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+    public DateTimeOffset? CompletedAt { get; set; }
+}
+
+/// <summary>
 /// Records which inputs were co-registered in a failed round.
 /// Used by the intersection attack tracker to prevent the same wallet from
 /// re-disclosing coin pairings across rounds after service restarts.
