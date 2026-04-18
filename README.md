@@ -202,6 +202,19 @@ Combined coordinator and wallet dashboard in a single ASP.NET Core process. Runs
 | `CoordinatorSigningKeyHex` | null | Persistent BIP-340 signing key for transcript signatures |
 | `MaxConcurrentRounds` | 10 | Concurrent round limit |
 
+### Service Options (`KompaktorServiceOptions`)
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `CoordinatorUri` | required | Coordinator server URI (supports Tor onion) |
+| `Network` | required | Bitcoin network (Main, TestNet, RegTest) |
+| `CircuitFactory` | null | Tor circuit factory for stream isolation |
+| `RoundDiscoveryInterval` | 10s | Coordinator polling interval when idle |
+| `EventPollInterval` | 1s | Round event polling during participation |
+| `RoundCooldown` | 5s | Anti-fingerprinting delay between rounds |
+| `MaxConsecutiveFailures` | 5 | Protocol failures before pause (network errors excluded) |
+| `FailurePauseDuration` | 5m | Pause after max consecutive failures |
+
 ### Client Options (`KompaktorClientOptions`)
 
 | Option | Default | Description |
