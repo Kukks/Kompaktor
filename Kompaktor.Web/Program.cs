@@ -275,6 +275,85 @@ app.MapGet("/api/dashboard/credential-flows/{roundId}", async (int roundId, Wall
     }));
 }).WithTags("Dashboard");
 
+app.MapPost("/api/dashboard/plan-send", async (WalletDbContext db, HttpContext ctx) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.BadRequest("No wallet found");
+
+    var body = await ctx.Request.ReadFromJsonAsync<SendPlanRequest>();
+    if (body is null) return Results.BadRequest("Invalid request");
+
+    try
+    {
+        var destination = BitcoinAddress.Create(body.Destination, network);
+        var amount = Money.Satoshis(body.AmountSat);
+        var feeRate = new FeeRate(Money.Satoshis(body.FeeRateSatPerVb), 1);
+        var strategy = Enum.TryParse<CoinSelectionStrategy>(body.Strategy, true, out var s)
+            ? s : CoinSelectionStrategy.PrivacyFirst;
+
+        var txBuilder = new WalletTransactionBuilder(db, network);
+        var plan = await txBuilder.PlanTransactionAsync(
+            wallet.Id, destination.ScriptPubKey, amount, feeRate, strategy);
+
+        return Results.Ok(new
+        {
+            txHex = plan.Transaction.ToHex(),
+            inputCount = plan.InputCoins.Length,
+            outputCount = plan.Transaction.Outputs.Count,
+            estimatedFeeSat = plan.EstimatedFee.Satoshi,
+            estimatedFeeBtc = plan.EstimatedFee.ToUnit(MoneyUnit.BTC),
+            selectedUtxos = plan.SelectedUtxos.Select(u => new
+            {
+                txId = u.Utxo.TxId,
+                outputIndex = u.Utxo.OutputIndex,
+                amountSat = u.Utxo.AmountSat,
+                effectiveScore = Math.Round(u.Score.EffectiveScore, 2)
+            }),
+            warnings = plan.Warnings
+        });
+    }
+    catch (Exception ex)
+    {
+        return Results.BadRequest(ex.Message);
+    }
+}).WithTags("Dashboard");
+
+app.MapGet("/api/dashboard/transactions", async (WalletDbContext db) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.Ok(Array.Empty<object>());
+
+    // Get all UTXOs (spent and unspent) to build transaction history
+    var utxos = await db.Utxos
+        .Include(u => u.Address)
+        .ThenInclude(a => a.Account)
+        .Where(u => u.Address.Account.WalletId == wallet.Id)
+        .OrderByDescending(u => u.ConfirmedHeight)
+        .Take(100)
+        .ToListAsync();
+
+    // Group by transaction
+    var txGroups = utxos.GroupBy(u => u.TxId).Select(g =>
+    {
+        var received = g.Sum(u => u.AmountSat);
+        var isSpent = g.Any(u => u.SpentByTxId != null);
+        var firstUtxo = g.First();
+
+        return new
+        {
+            txId = g.Key,
+            amountSat = received,
+            amountBtc = received / 100_000_000.0,
+            confirmedHeight = firstUtxo.ConfirmedHeight,
+            isSpent,
+            utxoCount = g.Count(),
+            type = firstUtxo.SpentByTxId != null ? "spent" : "received"
+        };
+    }).ToList();
+
+    return Results.Ok(txGroups);
+}).WithTags("Dashboard");
+
 // Health check
 app.MapGet("/health", (KompaktorRoundManager manager) =>
 {
@@ -294,3 +373,5 @@ app.MapOpenApi();
 app.MapFallbackToFile("index.html");
 
 app.Run();
+
+record SendPlanRequest(string Destination, long AmountSat, long FeeRateSatPerVb = 2, string Strategy = "PrivacyFirst");
