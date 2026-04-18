@@ -48,6 +48,16 @@ public class MixingManager : IAsyncDisposable
         }
     }
 
+    public string[]? ActiveMixingOutpoints
+    {
+        get
+        {
+            var round = _service?.ActiveRound;
+            var coins = round?.RegisteredCoins;
+            return coins?.Select(c => $"{c.Outpoint.Hash}:{c.Outpoint.N}").ToArray();
+        }
+    }
+
     public MixingManager(
         IServiceProvider services,
         Network network,

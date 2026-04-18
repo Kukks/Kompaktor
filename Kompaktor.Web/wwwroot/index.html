@@ -1054,6 +1054,7 @@
         }
 
         let selectedUtxos = new Set();
+        let mixingOutpoints = new Set();
 
         async function loadUtxos() {
             const utxos = await fetchJson('/api/dashboard/utxos');
@@ -1062,9 +1063,17 @@
                 body.innerHTML = '<tr><td colspan="9" class="empty">No UTXOs in wallet</td></tr>';
                 return;
             }
-            body.innerHTML = utxos.map(u => `<tr class="${u.isFrozen ? 'frozen-row' : ''}" data-utxo-id="${u.id}">
+            body.innerHTML = utxos.map(u => {
+                const outpoint = `${u.txId}:${u.outputIndex}`;
+                const isMixing = mixingOutpoints.has(outpoint);
+                let statusHtml;
+                if (u.isFrozen) statusHtml = '<span class="frozen-badge">FROZEN</span>';
+                else if (isMixing) statusHtml = '<span style="color:var(--orange);font-size:11px;font-weight:600">Mixing</span>';
+                else statusHtml = '<span style="color:var(--green);font-size:11px">Active</span>';
+
+                return `<tr class="${u.isFrozen ? 'frozen-row' : ''}" data-utxo-id="${u.id}">
                 <td><input type="checkbox" class="utxo-select" value="${u.id}" onchange="updateBatchBar()" ${selectedUtxos.has(u.id) ? 'checked' : ''}></td>
-                <td class="truncate" title="${esc(u.txId)}:${u.outputIndex}" style="cursor:pointer" onclick="showUtxoDetail(${u.id})">${truncate(u.txId)}:${u.outputIndex}</td>
+                <td class="truncate" title="${esc(outpoint)}" style="cursor:pointer" onclick="showUtxoDetail(${u.id})">${truncate(u.txId)}:${u.outputIndex}</td>
                 <td>${u.amountBtc.toFixed(8)}</td>
                 <td>${u.rawAnonSet}</td>
                 <td><span class="score-badge ${scoreClass(u.effectiveScore)}">${u.effectiveScore}</span></td>
@@ -1073,13 +1082,14 @@
                     ${u.labels.map(l => `<span class="label-tag">${esc(l)}</span>`).join('')}
                     <input class="label-input" placeholder="+label" onkeydown="if(event.key==='Enter')addLabel(${u.id},this.value,this)">
                 </td>
-                <td>${u.isFrozen ? '<span class="frozen-badge">FROZEN</span>' : '<span style="color:var(--green);font-size:11px">Active</span>'}</td>
+                <td>${statusHtml}</td>
                 <td>
                     ${u.isFrozen
                         ? `<button class="unfreeze-btn" onclick="toggleFreeze(${u.id},false)">Unfreeze</button>`
                         : `<button class="freeze-btn" onclick="toggleFreeze(${u.id},true)">Freeze</button>`}
                 </td>
-            </tr>`).join('');
+            </tr>`;
+            }).join('');
         }
 
         async function toggleFreeze(utxoId, freeze) {
@@ -1643,6 +1653,8 @@
             const data = await fetchJson('/api/mixing/status');
             if (!data) return;
             mixingRunning = data.running;
+            // Track which outpoints are actively mixing
+            mixingOutpoints = new Set(data.mixingOutpoints || []);
             const toggle = document.getElementById('mixingToggle');
             const label = document.getElementById('mixingLabel');
             toggle.classList.toggle('active', mixingRunning);
