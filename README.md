@@ -55,7 +55,8 @@ Kompaktor.sln
 │   │   ├── InteractivePayments/  # Interactive payment sender/receiver flows
 │   │   ├── SelfSendChangeBehaviorTrait.cs
 │   │   ├── ConsolidationBehaviorTrait.cs
-│   │   └── StaticPaymentBehaviorTrait.cs
+│   │   ├── StaticPaymentBehaviorTrait.cs
+│   │   └── PrivacyAwareCoinSelectionTrait.cs
 │   ├── Contracts/          # Interfaces (IKompaktorRoundApi, ICircuit, IKompaktorWalletInterface)
 │   ├── Credentials/        # Credential types and reissuance requests
 │   ├── Errors/             # Structured error types (KompaktorProtocolException)
@@ -72,7 +73,8 @@ Kompaktor.sln
 │   ├── IBlockchainBackend.cs           # Interface replacing direct RPCClient usage
 │   ├── BitcoinCoreBackend.cs           # RPCClient adapter for Bitcoin Core
 │   ├── ElectrumClient.cs              # Stratum JSON-RPC over TCP/SSL
-│   └── ElectrumBackend.cs             # IBlockchainBackend via Electrum protocol
+│   ├── ElectrumBackend.cs             # IBlockchainBackend via Electrum protocol
+│   └── MultiServerBackend.cs         # Split-server routing across multiple Electrum servers
 ├── Kompaktor.Wallet/       # HD wallet library with EF Core persistence
 │   ├── KompaktorHdWallet.cs           # IKompaktorWalletInterface with BIP-39/84/86
 │   ├── MnemonicEncryption.cs          # AES-256-GCM mnemonic encryption
@@ -117,6 +119,7 @@ Pluggable client behaviors that compose to define what a participant does in a r
 | `ConsolidationBehaviorTrait` | Consolidates multiple small UTXOs into fewer larger ones. |
 | `InteractivePaymentSenderBehaviorTrait` | Sends payments within the coinjoin round via the P1-P6 interactive protocol. |
 | `InteractivePaymentReceiverBehaviorTrait` | Receives interactive payments — waits until output registration is complete before signaling readiness. |
+| `PrivacyAwareCoinSelectionTrait` | Prioritizes low-anonymity-score coins for coinjoin, ensuring coins that need mixing are selected first. Takes a `Func<OutPoint, double?>` score lookup to stay decoupled from the scoring library. |
 
 ### `IBlockchainBackend`
 
@@ -310,7 +313,7 @@ cd Kompaktor.Web
 dotnet run
 ```
 
-This starts a combined coordinator and wallet dashboard. The web UI at the root URL shows wallet balance, anonymity-scored UTXOs, active rounds, and coinjoin history. Supports Electrum as an alternative backend:
+This starts a combined coordinator and wallet dashboard. The web UI at the root URL shows wallet balance, anonymity-scored UTXOs, active rounds, and coinjoin history. The `/api/dashboard/credential-flows/{roundId}` endpoint exposes per-payment credential flow analysis. Supports Electrum as an alternative backend:
 
 ```json
 {
@@ -318,6 +321,20 @@ This starts a combined coordinator and wallet dashboard. The web UI at the root 
     "Host": "127.0.0.1",
     "Port": 50001,
     "UseSsl": false
+  }
+}
+```
+
+For split-server privacy routing (no single Electrum server sees all wallet addresses):
+
+```json
+{
+  "Electrum": {
+    "Servers": [
+      { "Name": "Server1", "Host": "electrum1.example.com", "Port": 50002, "UseSsl": true },
+      { "Name": "Server2", "Host": "electrum2.example.com", "Port": 50002, "UseSsl": true }
+    ],
+    "RoutingStrategy": "RoundRobin"
   }
 }
 ```
