@@ -70,7 +70,8 @@ public class AnonymityScorer
             ? ConfidenceLevel.High
             : ConfidenceLevel.Medium;
 
-        return new AnonymityScore(rawAnonSet, effectiveScore, totalCoinJoinCount, confidence);
+        return new AnonymityScore(rawAnonSet, effectiveScore, totalCoinJoinCount, confidence,
+            amountPenalty, clusterPenalty, reusePenalty);
     }
 
     private List<CoinJoinRecordEntity> WalkAncestors(

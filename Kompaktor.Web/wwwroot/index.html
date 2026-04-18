@@ -1035,6 +1035,48 @@
             return 'score-low';
         }
 
+        function scoreTooltip(u) {
+            if (!u.penalties) return `Score: ${u.effectiveScore}`;
+            const p = u.penalties;
+            const parts = [`Raw anon set: ${u.rawAnonSet}`];
+            if (p.amount < 1) parts.push(`Amount penalty: ${(p.amount * 100).toFixed(0)}% (distinguishable output size)`);
+            if (p.cluster < 1) parts.push(`Cluster penalty: ${(p.cluster * 100).toFixed(0)}% (labeled/linked to external entity)`);
+            if (p.addressReuse < 1) parts.push(`Reuse penalty: ${(p.addressReuse * 100).toFixed(0)}% (address used more than once)`);
+            if (p.amount === 1 && p.cluster === 1 && p.addressReuse === 1) parts.push('No penalties applied');
+            parts.push(`Effective: ${u.rawAnonSet} × ${p.amount} × ${p.cluster} × ${p.addressReuse} = ${u.effectiveScore}`);
+            return parts.join('\n');
+        }
+
+        function scoreBreakdownHtml(utxoId) {
+            const u = utxoCache.get(utxoId);
+            if (!u || !u.penalties) return '';
+            const p = u.penalties;
+            const penaltyBar = (label, value, reason) => {
+                const pct = Math.round(value * 100);
+                const color = value >= 1 ? 'var(--green)' : value >= 0.5 ? 'var(--yellow)' : 'var(--red)';
+                return `<div style="margin-bottom:6px">
+                    <div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:2px">
+                        <span>${label}</span><span style="color:${color};font-weight:600">${pct}%</span>
+                    </div>
+                    <div style="height:4px;background:var(--border);border-radius:2px;overflow:hidden">
+                        <div style="width:${pct}%;height:100%;background:${color};border-radius:2px"></div>
+                    </div>
+                    ${value < 1 ? `<div style="font-size:10px;color:var(--text-muted);margin-top:1px">${reason}</div>` : ''}
+                </div>`;
+            };
+            return `<div style="margin-top:12px;padding:12px;background:var(--bg);border:1px solid var(--border);border-radius:6px">
+                <div style="font-size:12px;font-weight:600;margin-bottom:8px">Privacy Score Breakdown</div>
+                <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px">
+                    Raw Anon Set: <strong style="color:var(--text)">${u.rawAnonSet}</strong> &middot;
+                    CoinJoins: <strong style="color:var(--text)">${u.coinJoinCount}</strong> &middot;
+                    Effective: <strong style="color:var(--text)">${u.effectiveScore}</strong>
+                </div>
+                ${penaltyBar('Amount Indistinguishability', p.amount, 'Output amount stands out from other round outputs')}
+                ${penaltyBar('Cluster Privacy', p.cluster, 'Labels link this coin to an external entity (exchange, KYC)')}
+                ${penaltyBar('Address Reuse', p.addressReuse, 'Address has been used for multiple transactions')}
+            </div>`;
+        }
+
         function statusClass(status) {
             return 'status-' + status.toLowerCase().replace(/\s/g, '');
         }
@@ -1126,14 +1168,18 @@
 
         let selectedUtxos = new Set();
         let mixingOutpoints = new Set();
+        let utxoCache = new Map();
 
         async function loadUtxos() {
             const utxos = await fetchJson('/api/dashboard/utxos');
             const body = document.getElementById('utxosBody');
             if (!utxos || utxos.length === 0) {
                 body.innerHTML = '<tr><td colspan="9" class="empty">No UTXOs in wallet</td></tr>';
+                utxoCache.clear();
                 return;
             }
+            utxoCache.clear();
+            utxos.forEach(u => utxoCache.set(u.id, u));
             body.innerHTML = utxos.map(u => {
                 const outpoint = `${u.txId}:${u.outputIndex}`;
                 const isMixing = mixingOutpoints.has(outpoint);
@@ -1147,7 +1193,7 @@
                 <td class="truncate" title="${esc(outpoint)}" style="cursor:pointer" onclick="showUtxoDetail(${u.id})">${truncate(u.txId)}:${u.outputIndex}</td>
                 <td>${u.amountBtc.toFixed(8)}</td>
                 <td>${u.rawAnonSet}</td>
-                <td><span class="score-badge ${scoreClass(u.effectiveScore)}">${u.effectiveScore}</span></td>
+                <td><span class="score-badge ${scoreClass(u.effectiveScore)}" title="${scoreTooltip(u)}" style="cursor:help">${u.effectiveScore}</span></td>
                 <td>${u.coinJoinCount}</td>
                 <td>
                     ${u.labels.map(l => `<span class="label-tag">${esc(l)}</span>`).join('')}
@@ -1256,7 +1302,8 @@
                     <span class="label">CoinJoin History</span>
                     <span>${data.coinjoinHistory.length === 0 ? 'None' :
                         data.coinjoinHistory.map(h => `${esc(h.role)} in ${truncate(h.roundId, 8)} (${esc(h.status)})`).join('<br>')}</span>
-                </div>`;
+                </div>
+                ${scoreBreakdownHtml(utxoId)}`;
         }
 
         async function removeLabel(utxoId, labelId) {

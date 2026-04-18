@@ -207,6 +207,12 @@ app.MapGet("/api/dashboard/utxos", async (WalletDbContext db) =>
             effectiveScore = Math.Round(s.Score.EffectiveScore, 2),
             coinJoinCount = s.Score.CoinJoinCount,
             confidence = s.Score.Confidence.ToString(),
+            penalties = new
+            {
+                amount = Math.Round(s.Score.AmountPenalty, 3),
+                cluster = Math.Round(s.Score.ClusterPenalty, 3),
+                addressReuse = Math.Round(s.Score.ReusePenalty, 3)
+            },
             labels = s.Labels
         })
         .ToList();
@@ -726,7 +732,7 @@ app.MapGet("/api/dashboard/privacy-recommendations", async (WalletDbContext db, 
     if (wallet is null) return Results.Ok(new { recommendations = Array.Empty<object>() });
 
     var selector = new WalletCoinSelector(db);
-    var scored = await selector.GetScoredUtxosAsync(wallet.Id);
+    var scored = await selector.GetScoredUtxosAsync(wallet.Id, includeFrozen: true);
 
     var recommendations = new List<object>();
 
@@ -771,6 +777,33 @@ app.MapGet("/api/dashboard/privacy-recommendations", async (WalletDbContext db, 
             priority = "medium",
             title = "High Value Concentration",
             message = $"One UTXO holds {(double)largestUtxo / totalSat * 100:F0}% of your total balance. Consider splitting through CoinJoin rounds to reduce amount-based fingerprinting."
+        });
+    }
+
+    // Check cluster-linked coins (external entity labels)
+    var clusterLinked = scored.Count(s => s.Score.ClusterPenalty < 1.0);
+    if (clusterLinked > 0)
+    {
+        recommendations.Add(new
+        {
+            priority = "medium",
+            title = $"{clusterLinked} Cluster-Linked UTXO{(clusterLinked > 1 ? "s" : "")}",
+            message = "These coins are labeled with external entities (exchanges, KYC services). Their anonymity set is reduced because the entity knows your identity. Mix thoroughly before spending."
+        });
+    }
+
+    // Check address reuse
+    var reusedAddressCoins = scored.Where(s => s.Score.ReusePenalty < 1.0).ToList();
+    if (reusedAddressCoins.Count > 0)
+    {
+        var reusedAddresses = reusedAddressCoins.Select(s => s.Utxo.AddressId).Distinct().Count();
+        recommendations.Add(new
+        {
+            priority = "high",
+            title = $"Address Reuse Detected ({reusedAddresses} address{(reusedAddresses > 1 ? "es" : "")})",
+            message = $"{reusedAddressCoins.Count} UTXO{(reusedAddressCoins.Count > 1 ? "s" : "")} sit on reused addresses. " +
+                      "Address reuse destroys privacy gains from CoinJoin by linking transactions. " +
+                      "Mix these coins and avoid sending to already-used addresses."
         });
     }
 
