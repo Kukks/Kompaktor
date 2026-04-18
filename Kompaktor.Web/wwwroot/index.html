@@ -955,7 +955,7 @@
 
             <section>
                 <h2>Payment Queue</h2>
-                <div style="display:flex;gap:8px;margin-bottom:12px">
+                <div style="display:flex;gap:8px;margin-bottom:12px;align-items:center">
                     <button class="refresh-btn" onclick="loadPayments()" style="font-size:12px">Refresh</button>
                     <select id="payFilter" onchange="loadPayments()" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:4px;font-size:12px">
                         <option value="all">All</option>
@@ -965,6 +965,7 @@
                         <option value="Completed">Completed</option>
                         <option value="Failed">Failed</option>
                     </select>
+                    <a href="/api/payments/export" download="kompaktor-payments.csv" class="refresh-btn" style="font-size:12px;text-decoration:none;color:var(--text)">Export CSV</a>
                 </div>
                 <table id="paymentsTable">
                     <thead>

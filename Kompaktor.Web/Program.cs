@@ -1003,6 +1003,27 @@ app.MapGet("/api/payments/stats", async (WalletDbContext db) =>
     });
 }).WithTags("Payments");
 
+app.MapGet("/api/payments/export", async (WalletDbContext db) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.Ok("No wallet");
+
+    var payments = await db.PendingPayments
+        .Where(p => p.WalletId == wallet.Id)
+        .OrderByDescending(p => p.CreatedAt)
+        .ToListAsync();
+
+    var csv = new System.Text.StringBuilder();
+    csv.AppendLine("Id,Direction,AmountSat,AmountBtc,Destination,Status,Interactive,Urgent,Retries,Label,TxId,CreatedAt,CompletedAt,ExpiresAt");
+    foreach (var p in payments)
+    {
+        var label = (p.Label ?? "").Replace("\"", "\"\"");
+        csv.AppendLine($"{p.Id},{p.Direction},{p.AmountSat},{p.AmountSat / 100_000_000.0:F8},{p.Destination},{p.Status},{p.IsInteractive},{p.IsUrgent},{p.RetryCount},\"{label}\",{p.CompletedTxId ?? ""},{p.CreatedAt:o},{p.CompletedAt?.ToString("o") ?? ""},{p.ExpiresAt?.ToString("o") ?? ""}");
+    }
+
+    return Results.Text(csv.ToString(), "text/csv", System.Text.Encoding.UTF8);
+}).WithTags("Payments");
+
 // Address book CRUD
 app.MapGet("/api/address-book", async (WalletDbContext db) =>
 {
