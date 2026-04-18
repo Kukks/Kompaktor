@@ -474,6 +474,40 @@ app.MapGet("/api/coin-control/utxo/{utxoId}", async (int utxoId, WalletDbContext
     });
 }).WithTags("CoinControl");
 
+// Coordinator stats for dashboard
+app.MapGet("/api/coordinator/stats", (KompaktorRoundManager manager, KompaktorRoundOrchestrator orchestrator) =>
+{
+    var activeRounds = manager.GetActiveRoundOperators();
+    var demand = orchestrator.DemandTracker;
+
+    var roundDetails = activeRounds.Select(r => new
+    {
+        roundId = r.RoundEventCreated.RoundId,
+        status = r.Status.ToString(),
+        inputCount = r.Inputs.Count,
+        outputCount = r.Outputs.Count,
+        signatureCount = r.SignatureCount,
+        maxInputs = r.RoundEventCreated.InputCount.Max,
+        fillPercent = r.RoundEventCreated.InputCount.Max > 0
+            ? Math.Round(100.0 * r.Inputs.Count / r.RoundEventCreated.InputCount.Max, 1)
+            : 0,
+        isBlameRound = r.RoundEventCreated.IsBlameRound
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        network = network.Name,
+        activeRounds = roundDetails.Count,
+        roundsInRegistration = roundDetails.Count(r => r.status == "InputRegistration"),
+        roundsInProgress = roundDetails.Count(r => r.status != "InputRegistration"),
+        recentCompletedRounds = demand.RecentCompletedCount,
+        recentFailedRounds = demand.RecentFailedCount,
+        averageFillRate = Math.Round(demand.AverageFillRate * 100, 1),
+        rounds = roundDetails,
+        timestamp = DateTimeOffset.UtcNow
+    });
+}).WithTags("Coordinator");
+
 // Health check
 app.MapGet("/health", (KompaktorRoundManager manager) =>
 {

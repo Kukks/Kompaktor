@@ -228,6 +228,31 @@
         </div>
 
         <section>
+            <h2>Coordinator</h2>
+            <div class="cards" id="coordCards">
+                <div class="card">
+                    <div class="label">Network</div>
+                    <div class="value" id="coordNetwork" style="font-size:20px">-</div>
+                </div>
+                <div class="card">
+                    <div class="label">Completed (30m)</div>
+                    <div class="value" id="coordCompleted">-</div>
+                    <div class="unit">rounds</div>
+                </div>
+                <div class="card">
+                    <div class="label">Failed (30m)</div>
+                    <div class="value" id="coordFailed">-</div>
+                    <div class="unit">rounds</div>
+                </div>
+                <div class="card">
+                    <div class="label">Avg Fill Rate</div>
+                    <div class="value" id="coordFillRate">-</div>
+                    <div class="unit">%</div>
+                </div>
+            </div>
+        </section>
+
+        <section>
             <h2>Active Rounds</h2>
             <table id="roundsTable">
                 <thead>
@@ -235,12 +260,15 @@
                         <th>Round ID</th>
                         <th>Status</th>
                         <th>Inputs</th>
+                        <th>Max Inputs</th>
+                        <th>Fill %</th>
                         <th>Outputs</th>
                         <th>Signatures</th>
+                        <th>Type</th>
                     </tr>
                 </thead>
                 <tbody id="roundsBody">
-                    <tr><td colspan="5" class="empty">Loading...</td></tr>
+                    <tr><td colspan="8" class="empty">Loading...</td></tr>
                 </tbody>
             </table>
         </section>
@@ -387,29 +415,35 @@
         }
 
         async function loadRounds() {
-            const rounds = await fetchJson('/api/rounds');
+            const stats = await fetchJson('/api/coordinator/stats');
             const body = document.getElementById('roundsBody');
-            if (!rounds || rounds.length === 0) {
-                body.innerHTML = '<tr><td colspan="5" class="empty">No active rounds</td></tr>';
-                document.getElementById('activeRounds').textContent = '0';
-                return;
-            }
-            document.getElementById('activeRounds').textContent = rounds.length;
 
-            const rows = [];
-            for (const roundId of rounds) {
-                const status = await fetchJson(`/api/round/${roundId}/status`);
-                if (status) {
-                    rows.push(`<tr>
-                        <td class="truncate" title="${roundId}">${truncate(roundId, 16)}</td>
-                        <td><span class="status-badge ${statusClass(status.status)}">${esc(status.status)}</span></td>
-                        <td>${status.inputCount}</td>
-                        <td>${status.outputCount}</td>
-                        <td>${status.signatureCount}</td>
-                    </tr>`);
+            if (stats) {
+                document.getElementById('coordNetwork').textContent = esc(stats.network);
+                document.getElementById('coordCompleted').textContent = stats.recentCompletedRounds;
+                document.getElementById('coordFailed').textContent = stats.recentFailedRounds;
+                document.getElementById('coordFillRate').textContent = stats.averageFillRate;
+                document.getElementById('activeRounds').textContent = stats.activeRounds;
+
+                if (!stats.rounds || stats.rounds.length === 0) {
+                    body.innerHTML = '<tr><td colspan="8" class="empty">No active rounds</td></tr>';
+                    return;
                 }
+
+                body.innerHTML = stats.rounds.map(r => `<tr>
+                    <td class="truncate" title="${esc(r.roundId)}">${truncate(r.roundId, 16)}</td>
+                    <td><span class="status-badge ${statusClass(r.status)}">${esc(r.status)}</span></td>
+                    <td>${r.inputCount}</td>
+                    <td>${r.maxInputs}</td>
+                    <td><span class="score-badge ${r.fillPercent >= 80 ? 'score-high' : r.fillPercent >= 30 ? 'score-medium' : 'score-low'}">${r.fillPercent}%</span></td>
+                    <td>${r.outputCount}</td>
+                    <td>${r.signatureCount}</td>
+                    <td>${r.isBlameRound ? '<span style="color:var(--red)">Blame</span>' : 'Normal'}</td>
+                </tr>`).join('');
+            } else {
+                body.innerHTML = '<tr><td colspan="8" class="empty">No active rounds</td></tr>';
+                document.getElementById('activeRounds').textContent = '0';
             }
-            body.innerHTML = rows.join('') || '<tr><td colspan="5" class="empty">No active rounds</td></tr>';
         }
 
         let selectedUtxos = new Set();
