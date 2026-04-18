@@ -1,4 +1,6 @@
-﻿namespace Kompaktor.Utils;
+﻿using Microsoft.Extensions.Logging;
+
+namespace Kompaktor.Utils;
 
 internal static class AsyncEventHandlerExtensions
 {
@@ -46,6 +48,38 @@ internal static class AsyncEventHandlerExtensions
     }
 
     /// <summary>
+    ///     Invokes asynchronous event handlers with fault isolation. Each handler runs independently;
+    ///     failures are logged but do not prevent remaining handlers from executing or propagate to the caller.
+    ///     Use this for notification-style events where one trait's failure should not crash the round.
+    /// </summary>
+    public static async Task InvokeSafeAsync<TEventArgs>(
+        this AsyncEventHandler<TEventArgs>? handlers,
+        object sender,
+        TEventArgs args,
+        ILogger logger,
+        string eventName)
+    {
+        if (handlers == null)
+            return;
+
+        var listenerDelegates = handlers.GetInvocationList();
+        for (var index = 0; index < listenerDelegates.Length; ++index)
+        {
+            var listenerDelegate = (AsyncEventHandler<TEventArgs>) listenerDelegates[index];
+            try
+            {
+                await listenerDelegate(sender, args).ConfigureAwait(true);
+            }
+            catch (Exception ex)
+            {
+                var traitName = listenerDelegate.Target?.GetType().Name ?? "unknown";
+                logger.LogException(
+                    $"Trait {traitName} failed during {eventName} - isolating failure, round continues", ex);
+            }
+        }
+    }
+
+    /// <summary>
     ///     Invokes asynchronous event handlers, returning an awaitable task. Each handler is fully executed
     ///     before the next handler in the list is invoked.
     /// </summary>
@@ -82,6 +116,37 @@ internal static class AsyncEventHandlerExtensions
         // Throw collected exceptions, if any
         if (exceptions != null)
             throw new AggregateException(exceptions);
+    }
+
+    /// <summary>
+    ///     Invokes asynchronous event handlers with fault isolation. Each handler runs independently;
+    ///     failures are logged but do not prevent remaining handlers from executing or propagate to the caller.
+    ///     Use this for notification-style events where one trait's failure should not crash the round.
+    /// </summary>
+    public static async Task InvokeSafeAsync(
+        this AsyncEventHandler? handlers,
+        object sender,
+        ILogger logger,
+        string eventName)
+    {
+        if (handlers == null)
+            return;
+
+        var listenerDelegates = handlers.GetInvocationList();
+        foreach (var t in listenerDelegates)
+        {
+            var listenerDelegate = (AsyncEventHandler) t;
+            try
+            {
+                await listenerDelegate(sender).ConfigureAwait(true);
+            }
+            catch (Exception ex)
+            {
+                var traitName = listenerDelegate.Target?.GetType().Name ?? "unknown";
+                logger.LogException(
+                    $"Trait {traitName} failed during {eventName} - isolating failure, round continues", ex);
+            }
+        }
     }
 
 

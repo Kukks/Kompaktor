@@ -54,7 +54,18 @@ public class KompaktorRoundClient : IDisposable
         _roundHistoryTracker = roundHistoryTracker;
 
 
-        foreach (var behaviorTrait in behaviorTraits) behaviorTrait.Start(this);
+        foreach (var behaviorTrait in behaviorTraits)
+        {
+            try
+            {
+                behaviorTrait.Start(this);
+            }
+            catch (Exception ex)
+            {
+                Logger.LogException(
+                    $"Trait {behaviorTrait.GetType().Name} failed during Start - isolating, round continues", ex);
+            }
+        }
         Logger.LogInformation($"{_behaviorTraits.Count} behavior traits started");
         _statusChannel =
             Channel.CreateBounded<KompaktorStatus>(Enum.GetValues<KompaktorStatus>().Length);
@@ -178,7 +189,18 @@ public class KompaktorRoundClient : IDisposable
 
     public void Dispose()
     {
-        foreach (var behaviorTrait in _behaviorTraits) behaviorTrait.Dispose();
+        foreach (var behaviorTrait in _behaviorTraits)
+        {
+            try
+            {
+                behaviorTrait.Dispose();
+            }
+            catch (Exception ex)
+            {
+                Logger.LogException(
+                    $"Trait {behaviorTrait.GetType().Name} failed during Dispose", ex);
+            }
+        }
 
         _cts.Cancel();
         Round.NewEvent -= RoundOnNewEvent;
@@ -289,10 +311,10 @@ public class KompaktorRoundClient : IDisposable
                     // coins will be selected and use round parameter tuning to profile the wallet.
                     ShuffleCoinCandidates();
                     await StartCoinSelection.InvokeIfNotNullAsync(this);
-                    await FinishedCoinSelection.InvokeIfNotNullAsync(this);
+                    await FinishedCoinSelection.InvokeSafeAsync(this, Logger, nameof(FinishedCoinSelection));
                     Logger.LogInformation($"Finished coin selection. Selected {AllocatedSelectedCoins.Count} coins");
                     await RegisterCoins();
-                    await FinishedCoinRegistration.InvokeIfNotNullAsync(this);
+                    await FinishedCoinRegistration.InvokeSafeAsync(this, Logger, nameof(FinishedCoinRegistration));
 
                     Logger.LogInformation($"Finished coin registration. Registered {Identities.Count} identities");
                     // Establish persistent connections for all registered inputs
@@ -300,9 +322,9 @@ public class KompaktorRoundClient : IDisposable
                     break;
                 case KompaktorStatus.OutputRegistration:
                     Logger.LogInformation($"Starting output registration");
-                    await StartOutputRegistration.InvokeIfNotNullAsync(this);
+                    await StartOutputRegistration.InvokeSafeAsync(this, Logger, nameof(StartOutputRegistration));
                     await RegisterOutputs();
-                    await FinishedOutputRegistration.InvokeIfNotNullAsync(this);
+                    await FinishedOutputRegistration.InvokeSafeAsync(this, Logger, nameof(FinishedOutputRegistration));
 
                     Logger.LogInformation($"Finished intital output registration");
                     _ = TaskUtils.Loop(RegisterOutputs, () => Round.Status != KompaktorStatus.OutputRegistration,
@@ -311,7 +333,7 @@ public class KompaktorRoundClient : IDisposable
                         Logger, "ReadyToSign", _cts.Token);
                     break;
                 case KompaktorStatus.Signing:
-                    await StartSigning.InvokeIfNotNullAsync(this);
+                    await StartSigning.InvokeSafeAsync(this, Logger, nameof(StartSigning));
                     await Sign();
                     break;
                 case KompaktorStatus.Broadcasting:
