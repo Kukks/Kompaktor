@@ -105,6 +105,46 @@ public static class KompaktorEndpoints
             }
         });
 
+        // Batch endpoints — reduce round-trips for clients with multiple inputs
+        group.MapPost("/batch-pre-register-input", async (string roundId, BatchPreRegisterInputRequest request, KompaktorRoundManager manager) =>
+        {
+            var op = manager.GetOperator(roundId);
+            if (op is null) return Results.NotFound(new { error = "Round not found" });
+            var result = await op.BatchPreRegisterInput(request);
+            return Results.Ok(result);
+        });
+
+        group.MapPost("/batch-register-input", async (string roundId, BatchRegisterInputRequest request, KompaktorRoundManager manager) =>
+        {
+            var op = manager.GetOperator(roundId);
+            if (op is null) return Results.NotFound(new { error = "Round not found" });
+            var result = await op.BatchRegisterInput(request);
+            return Results.Ok(result);
+        });
+
+        group.MapPost("/batch-sign", async (string roundId, BatchSignRequest request, KompaktorRoundManager manager) =>
+        {
+            var op = manager.GetOperator(roundId);
+            if (op is null) return Results.NotFound(new { error = "Round not found" });
+            var result = await op.BatchSign(request);
+            return Results.Ok(result);
+        });
+
+        group.MapPost("/batch-ready-to-sign", async (string roundId, BatchReadyToSignRequest request, KompaktorRoundManager manager) =>
+        {
+            var op = manager.GetOperator(roundId);
+            if (op is null) return Results.NotFound(new { error = "Round not found" });
+            try
+            {
+                await op.BatchReadyToSign(request);
+                return Results.Ok();
+            }
+            catch (KompaktorProtocolException ex)
+            {
+                return Results.BadRequest(new { error = ex.Message, code = ex.ErrorCode.ToString() });
+            }
+        });
+
         group.MapPost("/send-message", async (string roundId, MessageRequest request, KompaktorRoundManager manager) =>
         {
             var op = manager.GetOperator(roundId);

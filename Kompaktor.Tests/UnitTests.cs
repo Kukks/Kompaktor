@@ -1366,3 +1366,111 @@ public class DemandTrackerTests
 }
 
 #endregion
+
+#region Batch Request Model Tests
+
+public class BatchRequestModelTests
+{
+    [Fact]
+    public void BatchItemResult_Ok_SetsSuccessTrue()
+    {
+        var result = BatchItemResult<string>.Ok("hello");
+        Assert.True(result.Success);
+        Assert.Equal("hello", result.Result);
+        Assert.Null(result.Error);
+        Assert.Null(result.ErrorCode);
+    }
+
+    [Fact]
+    public void BatchItemResult_Fail_SetsSuccessFalse()
+    {
+        var ex = new KompaktorProtocolException(
+            KompaktorProtocolErrorCode.WrongPhase, "not in signing");
+        var result = BatchItemResult<string>.Fail(ex);
+        Assert.False(result.Success);
+        Assert.Null(result.Result);
+        Assert.Equal("not in signing", result.Error);
+        Assert.Equal("WrongPhase", result.ErrorCode);
+    }
+
+    [Fact]
+    public void BatchItemResult_FailString_SetsError()
+    {
+        var result = BatchItemResult<int>.Fail("something broke");
+        Assert.False(result.Success);
+        Assert.Equal("something broke", result.Error);
+    }
+
+    [Fact]
+    public void BatchResponse_CountsSuccessAndFailure()
+    {
+        var response = new BatchResponse<string>
+        {
+            Results =
+            [
+                BatchItemResult<string>.Ok("a"),
+                BatchItemResult<string>.Fail("b"),
+                BatchItemResult<string>.Ok("c")
+            ]
+        };
+        Assert.Equal(2, response.SuccessCount);
+        Assert.Equal(1, response.FailureCount);
+    }
+
+    [Fact]
+    public void BatchSignRequest_HoldsMultipleRequests()
+    {
+        var req = new BatchSignRequest
+        {
+            Requests =
+            [
+                new SignRequest { OutPoint = new OutPoint(uint256.One, 0), Witness = WitScript.Empty },
+                new SignRequest { OutPoint = new OutPoint(uint256.One, 1), Witness = WitScript.Empty }
+            ]
+        };
+        Assert.Equal(2, req.Requests.Length);
+    }
+
+    [Fact]
+    public void BatchReadyToSignRequest_HoldsMultipleSecrets()
+    {
+        var req = new BatchReadyToSignRequest
+        {
+            Secrets = ["secret1", "secret2", "secret3"]
+        };
+        Assert.Equal(3, req.Secrets.Length);
+    }
+
+    [Fact]
+    public void BatchPreRegisterInputRequest_HoldsMultipleRequests()
+    {
+        var req = new BatchPreRegisterInputRequest
+        {
+            Requests = Array.Empty<RegisterInputQuoteRequest>()
+        };
+        Assert.Empty(req.Requests);
+    }
+
+    [Fact]
+    public void BatchRegisterInputRequest_HoldsMultipleRequests()
+    {
+        var req = new BatchRegisterInputRequest
+        {
+            Requests = Array.Empty<RegisterInputRequest>()
+        };
+        Assert.Empty(req.Requests);
+    }
+
+    [Fact]
+    public void BatchResponse_EmptyResults_ZeroCounts()
+    {
+        var response = new BatchResponse<object>
+        {
+            Results = Array.Empty<BatchItemResult<object>>()
+        };
+        Assert.Equal(0, response.SuccessCount);
+        Assert.Equal(0, response.FailureCount);
+    }
+}
+
+#endregion

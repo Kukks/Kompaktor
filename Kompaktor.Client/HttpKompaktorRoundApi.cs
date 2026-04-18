@@ -98,6 +98,31 @@ public class HttpKompaktorRoundApi : IKompaktorRoundApi, IDisposable
         await PostAsync<ReadyToSignRequest>($"/api/round/{_roundId}/ready-to-sign", request);
     }
 
+    public async Task<BatchResponse<InputRegistrationQuoteResponse>> BatchPreRegisterInput(
+        BatchPreRegisterInputRequest request)
+    {
+        return await PostAsync<BatchPreRegisterInputRequest, BatchResponse<InputRegistrationQuoteResponse>>(
+            $"/api/round/{_roundId}/batch-pre-register-input", request);
+    }
+
+    public async Task<BatchResponse<KompaktorRoundEventInputRegistered>> BatchRegisterInput(
+        BatchRegisterInputRequest request)
+    {
+        return await PostAsync<BatchRegisterInputRequest, BatchResponse<KompaktorRoundEventInputRegistered>>(
+            $"/api/round/{_roundId}/batch-register-input", request);
+    }
+
+    public async Task<BatchResponse<KompaktorRoundEventSignaturePosted>> BatchSign(BatchSignRequest request)
+    {
+        return await PostAsync<BatchSignRequest, BatchResponse<KompaktorRoundEventSignaturePosted>>(
+            $"/api/round/{_roundId}/batch-sign", request);
+    }
+
+    public async Task BatchReadyToSign(BatchReadyToSignRequest request)
+    {
+        await PostAsync<BatchReadyToSignRequest>($"/api/round/{_roundId}/batch-ready-to-sign", request);
+    }
+
     private async Task<TResponse> PostAsync<TRequest, TResponse>(string path, TRequest request)
     {
         var content = new ByteArrayContent(KompaktorJsonHelper.SerializeToUtf8Bytes(request));

@@ -205,4 +205,26 @@ public class LocalKompaktorApi : IKompaktorRoundApi
     {
         await _roundOperator.ReadyToSign(request);
     }
+
+    public async Task<BatchResponse<InputRegistrationQuoteResponse>> BatchPreRegisterInput(
+        BatchPreRegisterInputRequest request)
+    {
+        return await _roundOperator.BatchPreRegisterInput(request);
+    }
+
+    public async Task<BatchResponse<KompaktorRoundEventInputRegistered>> BatchRegisterInput(
+        BatchRegisterInputRequest request)
+    {
+        return await _roundOperator.BatchRegisterInput(request);
+    }
+
+    public async Task<BatchResponse<KompaktorRoundEventSignaturePosted>> BatchSign(BatchSignRequest request)
+    {
+        return await _roundOperator.BatchSign(request);
+    }
+
+    public async Task BatchReadyToSign(BatchReadyToSignRequest request)
+    {
+        await _roundOperator.BatchReadyToSign(request);
+    }
 }

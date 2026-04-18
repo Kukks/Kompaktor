@@ -213,16 +213,22 @@ Combined coordinator and wallet dashboard in a single ASP.NET Core process. Runs
 The `Kompaktor.Server` project exposes the coordinator as an HTTP API using ASP.NET Core Minimal APIs:
 
 ```
-POST /api/round/{roundId}/pre-register-input   # Get a fee quote for input registration
-POST /api/round/{roundId}/register-input        # Register a UTXO with ownership proof
-POST /api/round/{roundId}/reissue-credentials   # Reissue WabiSabi credentials
-POST /api/round/{roundId}/register-output       # Register an output using credentials
-POST /api/round/{roundId}/sign                  # Submit a signature
-POST /api/round/{roundId}/ready-to-sign         # Signal ready to sign
-POST /api/round/{roundId}/send-message          # Send peer-to-peer message
-GET  /api/rounds                                # List active rounds
-GET  /api/round/{roundId}/status                # Get round status
+POST /api/round/{roundId}/pre-register-input         # Get a fee quote for input registration
+POST /api/round/{roundId}/register-input              # Register a UTXO with ownership proof
+POST /api/round/{roundId}/reissue-credentials         # Reissue WabiSabi credentials
+POST /api/round/{roundId}/register-output             # Register an output using credentials
+POST /api/round/{roundId}/sign                        # Submit a signature
+POST /api/round/{roundId}/ready-to-sign               # Signal ready to sign
+POST /api/round/{roundId}/send-message                # Send peer-to-peer message
+POST /api/round/{roundId}/batch-pre-register-input    # Batch: multiple input quotes in one call
+POST /api/round/{roundId}/batch-register-input        # Batch: multiple input registrations
+POST /api/round/{roundId}/batch-sign                  # Batch: multiple signatures in one call
+POST /api/round/{roundId}/batch-ready-to-sign         # Batch: signal readiness for multiple inputs
+GET  /api/rounds                                      # List active rounds
+GET  /api/round/{roundId}/status                      # Get round status
 ```
+
+Batch endpoints return per-item results (success/failure) so partial failures don't reject the entire batch. The client uses batch signing and batch ready-to-sign internally — batch input registration is available for consolidation scenarios but the default client uses per-coin circuits for privacy.
 
 ## Prerequisites
 

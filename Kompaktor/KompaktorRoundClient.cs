@@ -19,10 +19,7 @@ using TaskScheduler = Kompaktor.Utils.TaskScheduler;
 
 namespace Kompaktor;
 
-//TODO: Allow multiple input registration in one call
-//TODO: Allow multiple output registration in one call
-//TODO: Allow multiple signing in one call
-//TODO: Introduce ready to sign 
+//TODO: Allow multiple output registration in one call (dependency graph already optimizes this path)
 
 public class KompaktorRoundClient : IDisposable
 {
@@ -470,9 +467,27 @@ public class KompaktorRoundClient : IDisposable
                 });
             });
         }));
-        var tasks = signRequests.Select<(IKompaktorRoundApi Api, SignRequest), Func<Task>>(signRequest =>
+
+        // Group by API instance and batch-sign within each identity for fewer round-trips.
+        // Cross-identity isolation is preserved — each batch goes through its own circuit.
+        var grouped = signRequests.GroupBy(r => r.Api).ToArray();
+        var tasks = grouped.Select<IGrouping<IKompaktorRoundApi, (IKompaktorRoundApi Api, SignRequest)>, Func<Task>>(group =>
         {
-            return async () => { await signRequest.Item1.Sign(signRequest.Item2); };
+            return async () =>
+            {
+                var requests = group.Select(g => g.Item2).ToArray();
+                if (requests.Length == 1)
+                {
+                    await group.Key.Sign(requests[0]);
+                }
+                else
+                {
+                    var batchResult = await group.Key.BatchSign(new BatchSignRequest { Requests = requests });
+                    var failures = batchResult.Results.Where(r => !r.Success).ToArray();
+                    if (failures.Length > 0)
+                        Logger.LogWarning("Batch sign: {Failed}/{Total} failed", failures.Length, requests.Length);
+                }
+            };
         }).ToArray();
         await TaskScheduler.Schedule("signing", tasks, expiry, _random, cts.Token, Logger);
     }
@@ -1077,20 +1092,28 @@ public class KompaktorRoundClient : IDisposable
                 Logger.LogInformation("Signalling to sign all");
             }
 
-            var tasks = toSignal.Select<KompaktorIdentity, Func<Task>>(
-                identity =>
+            // Group by API instance and batch-signal within each circuit
+            var grouped = toSignal.GroupBy(i => i.Api).ToArray();
+            var tasks = grouped.Select<IGrouping<IKompaktorRoundApi, KompaktorIdentity>, Func<Task>>(group =>
+            {
+                return async () =>
                 {
-                    return async () =>
+                    var identities = group.ToList();
+                    var secrets = identities.Select(i => i.Secret!).ToArray();
+                    if (secrets.Length == 1)
                     {
-                        await identity.Api.ReadyToSign(new ReadyToSignRequest(identity.Secret));
+                        await group.Key.ReadyToSign(new ReadyToSignRequest(secrets[0]));
+                    }
+                    else
+                    {
+                        await group.Key.BatchReadyToSign(new BatchReadyToSignRequest { Secrets = secrets });
+                    }
+                    foreach (var identity in identities)
                         identity.SignalledReady = true;
+                };
+            }).ToArray();
 
-                    };
-                }).ToArray();
-
-            await TaskScheduler.Schedule("signal ready to sign", tasks
-                ,
-                expiry, _random, _cts.Token, Logger);
+            await TaskScheduler.Schedule("signal ready to sign", tasks, expiry, _random, _cts.Token, Logger);
             Logger.LogInformation("Finished signalling ready to sign");
         }
         finally

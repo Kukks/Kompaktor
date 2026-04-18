@@ -407,6 +407,70 @@ public class KompaktorRoundOperator : KompaktorRound, IKompaktorRoundApi
         }
     }
 
+    public async Task<BatchResponse<InputRegistrationQuoteResponse>> BatchPreRegisterInput(
+        BatchPreRegisterInputRequest request)
+    {
+        var results = new BatchItemResult<InputRegistrationQuoteResponse>[request.Requests.Length];
+        for (var i = 0; i < request.Requests.Length; i++)
+        {
+            try
+            {
+                results[i] = BatchItemResult<InputRegistrationQuoteResponse>.Ok(
+                    await PreRegisterInput(request.Requests[i]));
+            }
+            catch (KompaktorProtocolException ex)
+            {
+                results[i] = BatchItemResult<InputRegistrationQuoteResponse>.Fail(ex);
+            }
+        }
+        return new BatchResponse<InputRegistrationQuoteResponse> { Results = results };
+    }
+
+    public async Task<BatchResponse<KompaktorRoundEventInputRegistered>> BatchRegisterInput(
+        BatchRegisterInputRequest request)
+    {
+        var results = new BatchItemResult<KompaktorRoundEventInputRegistered>[request.Requests.Length];
+        for (var i = 0; i < request.Requests.Length; i++)
+        {
+            try
+            {
+                results[i] = BatchItemResult<KompaktorRoundEventInputRegistered>.Ok(
+                    await RegisterInput(request.Requests[i]));
+            }
+            catch (KompaktorProtocolException ex)
+            {
+                results[i] = BatchItemResult<KompaktorRoundEventInputRegistered>.Fail(ex);
+            }
+        }
+        return new BatchResponse<KompaktorRoundEventInputRegistered> { Results = results };
+    }
+
+    public async Task<BatchResponse<KompaktorRoundEventSignaturePosted>> BatchSign(BatchSignRequest request)
+    {
+        var results = new BatchItemResult<KompaktorRoundEventSignaturePosted>[request.Requests.Length];
+        for (var i = 0; i < request.Requests.Length; i++)
+        {
+            try
+            {
+                results[i] = BatchItemResult<KompaktorRoundEventSignaturePosted>.Ok(
+                    await Sign(request.Requests[i]));
+            }
+            catch (KompaktorProtocolException ex)
+            {
+                results[i] = BatchItemResult<KompaktorRoundEventSignaturePosted>.Fail(ex);
+            }
+        }
+        return new BatchResponse<KompaktorRoundEventSignaturePosted> { Results = results };
+    }
+
+    public async Task BatchReadyToSign(BatchReadyToSignRequest request)
+    {
+        foreach (var secret in request.Secrets)
+        {
+            await ReadyToSign(new ReadyToSignRequest(secret));
+        }
+    }
+
     public async Task Start(KompaktorRoundEventCreated created, Dictionary<CredentialType, ICredentialIssuer> issuers)
     {
         if (Events.Count() != 0)
