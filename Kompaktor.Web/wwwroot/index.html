@@ -823,7 +823,8 @@
                 <div class="send-form">
                     <div class="field">
                         <label>Destination Address</label>
-                        <input type="text" id="sendDest" class="wide" placeholder="bc1q... or bitcoin: URI" oninput="parseBip21(this.value)">
+                        <input type="text" id="sendDest" class="wide" placeholder="bc1q... or bitcoin: URI" oninput="parseBip21(this.value)" list="addressBookSuggestions">
+                        <datalist id="addressBookSuggestions"></datalist>
                         <span id="bip21Label" style="font-size:11px;color:var(--text-muted);display:none"></span>
                     </div>
                     <div class="field">
@@ -1530,10 +1531,15 @@
         async function loadAddressBook() {
             const entries = await fetchJson('/api/address-book');
             const list = document.getElementById('addressBookList');
+            const datalist = document.getElementById('addressBookSuggestions');
             if (!entries || entries.length === 0) {
                 list.innerHTML = '<li class="empty">No saved addresses</li>';
+                datalist.innerHTML = '';
                 return;
             }
+            datalist.innerHTML = entries.map(e =>
+                `<option value="${esc(e.address)}">${esc(e.label)}</option>`
+            ).join('');
             list.innerHTML = entries.map(e => `<li>
                 <div>
                     <span class="ab-label">${esc(e.label)}</span>
