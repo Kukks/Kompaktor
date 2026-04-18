@@ -157,7 +157,7 @@ Abuse prevention system. Bans misbehaving coins (failed to sign, double-spend at
 
 ### `ICircuit` / `ICircuitFactory`
 
-Network identity isolation abstraction. In production, each circuit maps to a separate Tor circuit, preventing the coordinator or network observers from linking a participant's input registration to their output registration. `DefaultCircuitFactory` provides a no-op implementation for development/testing.
+Network identity isolation abstraction. `TorCircuitFactory` routes each identity through a separate Tor circuit via SOCKS5 credential-based stream isolation, preventing the coordinator or network observers from linking a participant's input registration to their output registration. `DefaultCircuitFactory` provides a no-op implementation for development/testing.
 
 ### `Kompaktor.Web`
 
@@ -182,7 +182,7 @@ Combined coordinator and wallet dashboard in a single ASP.NET Core process. Runs
 | `MinOutputAmount` / `MaxOutputAmount` | 10,000 sats / 100 BTC | Output value bounds |
 | `MaxCredentialValue` | ~43 BTC | Maximum WabiSabi credential value |
 | `CredentialCount` | 2 | Credentials per issuance step (k in WabiSabi paper) |
-| `UseBulletproofs` | false | Use Bulletproofs++ for range proofs (O(log n) vs O(n)) |
+| `UseBulletproofs` | true | Use Bulletproofs++ for range proofs (O(log n) vs O(n), 39% faster at scale) |
 | `AllowP2wpkh` / `AllowP2tr` | true | Allowed input/output script types |
 | `InputRegistrationSoftTimeout` | null | Optional early transition when minimum inputs met |
 | `CoordinatorSigningKeyHex` | null | Persistent BIP-340 signing key for transcript signatures |
@@ -227,10 +227,39 @@ POST /api/round/{roundId}/batch-register-input        # Batch: multiple input re
 POST /api/round/{roundId}/batch-sign                  # Batch: multiple signatures in one call
 POST /api/round/{roundId}/batch-ready-to-sign         # Batch: signal readiness for multiple inputs
 GET  /api/rounds                                      # List active rounds
-GET  /api/round/{roundId}/status                      # Get round status
+GET  /api/round/{roundId}/info                        # Get round parameters
+GET  /api/round/{roundId}/status                      # Get round status with event stream
+GET  /health                                          # Coordinator health check
+GET  /openapi/v1.json                                 # OpenAPI specification
 ```
 
 Batch endpoints return per-item results (success/failure) so partial failures don't reject the entire batch. The client uses batch signing and batch ready-to-sign internally — batch input registration is available for consolidation scenarios but the default client uses per-coin circuits for privacy.
+
+### Server Configuration
+
+The coordinator reads configuration from `appsettings.json`, environment variables, or CLI args:
+
+```json
+{
+  "Bitcoin": {
+    "Network": "regtest",
+    "RpcUri": "http://localhost:53782",
+    "RpcUser": "ceiwHEbqWI83",
+    "RpcPassword": "DwubwWsoo3"
+  },
+  "Kompaktor": {
+    "CoordinatorSigningKeyHex": "...",
+    "MinInputCount": 2,
+    "FeeRate": 2
+  }
+}
+```
+
+**Production checklist:**
+- Set `Bitcoin:Network` to `main` or `testnet` (defaults to `regtest`)
+- Configure a persistent `CoordinatorSigningKeyHex` for transcript signature continuity
+- Place behind a reverse proxy with TLS termination
+- HTTP rate limiting is enabled by default (200 req/min protocol, 60 req/min discovery per IP)
 
 ## Prerequisites
 
