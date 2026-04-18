@@ -137,4 +137,43 @@ public class WalletDbTests : IDisposable
         Assert.Single(addressLabels);
         Assert.Equal("Exchange deposit", addressLabels[0].Text);
     }
+
+    [Fact]
+    public async Task WalletSyncService_GetBalance_SeparatesConfirmedAndUnconfirmed()
+    {
+        var wallet = new WalletEntity { Name = "SyncTest" };
+        var account = new AccountEntity { Purpose = 84, AccountIndex = 0, Wallet = wallet };
+        var address = new AddressEntity { KeyPath = "0/0", ScriptPubKey = [0xAA], Account = account };
+        _db.Wallets.Add(wallet);
+        _db.Addresses.Add(address);
+        _db.SaveChanges();
+
+        // Confirmed UTXO
+        _db.Utxos.Add(new UtxoEntity
+        {
+            TxId = "tx1", OutputIndex = 0, AddressId = address.Id,
+            AmountSat = 100_000, ScriptPubKey = [0xAA], ConfirmedHeight = 100
+        });
+        // Unconfirmed UTXO
+        _db.Utxos.Add(new UtxoEntity
+        {
+            TxId = "tx2", OutputIndex = 0, AddressId = address.Id,
+            AmountSat = 50_000, ScriptPubKey = [0xAA], ConfirmedHeight = null
+        });
+        // Spent UTXO (should not count)
+        _db.Utxos.Add(new UtxoEntity
+        {
+            TxId = "tx3", OutputIndex = 0, AddressId = address.Id,
+            AmountSat = 30_000, ScriptPubKey = [0xAA], ConfirmedHeight = 99,
+            SpentByTxId = "spender"
+        });
+        _db.SaveChanges();
+
+        var sync = new Kompaktor.Wallet.WalletSyncService(
+            _db, null!, NBitcoin.Network.RegTest);
+        var (confirmed, unconfirmed) = await sync.GetBalanceAsync(wallet.Id);
+
+        Assert.Equal(100_000, confirmed);
+        Assert.Equal(50_000, unconfirmed);
+    }
 }
