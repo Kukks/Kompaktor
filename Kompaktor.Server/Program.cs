@@ -100,11 +100,29 @@ builder.Services.AddSingleton<IRoundSchedulingPolicy>(new DemandAdaptiveScheduli
 builder.Services.AddSingleton<KompaktorRoundOrchestrator>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<KompaktorRoundOrchestrator>());
 
+// OpenAPI documentation
+builder.Services.AddOpenApi();
+
 var app = builder.Build();
 
 app.UseRateLimiter();
 
 // Map Kompaktor API endpoints
 app.MapKompaktorEndpoints();
+
+// Health check — reports coordinator readiness (active rounds, network connectivity)
+app.MapGet("/health", (KompaktorRoundManager manager) =>
+{
+    var rounds = manager.GetActiveRounds();
+    return Results.Ok(new
+    {
+        status = "healthy",
+        network = network.Name,
+        activeRounds = rounds.Length,
+        timestamp = DateTimeOffset.UtcNow
+    });
+}).WithTags("Health").ExcludeFromDescription();
+
+app.MapOpenApi();
 
 app.Run();

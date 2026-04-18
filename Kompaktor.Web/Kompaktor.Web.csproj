@@ -6,8 +6,9 @@
     </PropertyGroup>
 
     <ItemGroup>
-        <PackageReference Include="NBitcoin" Version="7.0.46"/>
-        <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="9.0.0"/>
+        <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.6" />
+        <PackageReference Include="NBitcoin" Version="7.0.46" />
+        <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="9.0.0" />
     </ItemGroup>
 
     <ItemGroup>

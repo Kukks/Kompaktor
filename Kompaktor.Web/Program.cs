@@ -134,6 +134,8 @@ builder.Services.AddSingleton<IRoundSchedulingPolicy>(new DemandAdaptiveScheduli
 builder.Services.AddSingleton<KompaktorRoundOrchestrator>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<KompaktorRoundOrchestrator>());
 
+builder.Services.AddOpenApi();
+
 var app = builder.Build();
 
 // Ensure database exists
@@ -263,6 +265,21 @@ app.MapGet("/api/dashboard/credential-flows/{roundId}", async (int roundId, Wall
         outputLabel = f.OutputLabel
     }));
 }).WithTags("Dashboard");
+
+// Health check
+app.MapGet("/health", (KompaktorRoundManager manager) =>
+{
+    var rounds = manager.GetActiveRounds();
+    return Results.Ok(new
+    {
+        status = "healthy",
+        network = network.Name,
+        activeRounds = rounds.Length,
+        timestamp = DateTimeOffset.UtcNow
+    });
+}).WithTags("Health").ExcludeFromDescription();
+
+app.MapOpenApi();
 
 // Serve index.html as fallback
 app.MapFallbackToFile("index.html");
