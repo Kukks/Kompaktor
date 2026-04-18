@@ -726,6 +726,11 @@
                     <div class="value" id="needsMixing">-</div>
                     <div class="unit">UTXOs</div>
                 </div>
+                <div class="card">
+                    <div class="label">Payments</div>
+                    <div class="value" id="pendingPayments">-</div>
+                    <div class="unit">pending</div>
+                </div>
             </div>
 
             <!-- Privacy Health Meter -->
@@ -880,7 +885,7 @@
                         <h3 style="font-size:14px;margin-bottom:12px">Send Payment</h3>
                         <div class="field" style="margin-bottom:8px">
                             <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;display:block;margin-bottom:4px">Destination</label>
-                            <input type="text" id="payDest" placeholder="bc1q... or bitcoin: URI" list="addressBookSuggestions" style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:4px;font-size:13px;font-family:'SFMono-Regular',Consolas,monospace">
+                            <input type="text" id="payDest" placeholder="bc1q... or bitcoin: URI" list="addressBookSuggestions" oninput="parsePaymentBip21(this.value)" style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:4px;font-size:13px;font-family:'SFMono-Regular',Consolas,monospace">
                         </div>
                         <div style="display:flex;gap:8px;margin-bottom:8px">
                             <div class="field" style="flex:1">
@@ -2159,9 +2164,12 @@
             if (!payments || payments.length === 0) {
                 body.innerHTML = '<tr><td colspan="9" class="empty">No payments yet</td></tr>';
                 paymentsCache = [];
+                document.getElementById('pendingPayments').textContent = '0';
                 return;
             }
             paymentsCache = payments;
+            const pendingCount = payments.filter(p => p.status === 'Pending' || p.status === 'Reserved' || p.status === 'Committed').length;
+            document.getElementById('pendingPayments').textContent = pendingCount;
             const filter = document.getElementById('payFilter')?.value || 'all';
             const filtered = filter === 'all' ? payments : payments.filter(p => p.status === filter);
             if (filtered.length === 0) {
@@ -2276,6 +2284,30 @@
         function copyPaymentUri() {
             const uri = document.getElementById('recvBip21').textContent;
             navigator.clipboard.writeText(uri).then(() => showToast('URI copied', 'info'));
+        }
+
+        function parsePaymentBip21(value) {
+            if (!value.toLowerCase().startsWith('bitcoin:')) return;
+            try {
+                const withoutScheme = value.substring(8);
+                const qIdx = withoutScheme.indexOf('?');
+                const address = qIdx >= 0 ? withoutScheme.substring(0, qIdx) : withoutScheme;
+                document.getElementById('payDest').value = address;
+                if (qIdx >= 0) {
+                    const params = new URLSearchParams(withoutScheme.substring(qIdx + 1));
+                    if (params.has('amount')) {
+                        const btc = parseFloat(params.get('amount'));
+                        if (!isNaN(btc) && btc > 0)
+                            document.getElementById('payAmount').value = Math.round(btc * 100000000);
+                    }
+                    if (params.has('label'))
+                        document.getElementById('payLabel').value = params.get('label');
+                    if (params.has('kompaktor')) {
+                        document.getElementById('payInteractive').checked = true;
+                        showToast('Kompaktor interactive payment detected', 'info');
+                    }
+                }
+            } catch { /* ignore parse errors */ }
         }
 
         async function refreshAll() {
