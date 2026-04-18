@@ -731,6 +731,11 @@
                     <div class="value" id="pendingPayments">-</div>
                     <div class="unit">pending</div>
                 </div>
+                <div class="card">
+                    <div class="label">Paid Volume</div>
+                    <div class="value" id="paymentVolume">-</div>
+                    <div class="unit" id="paymentVolumeUnit">sats</div>
+                </div>
             </div>
 
             <!-- Privacy Health Meter -->
@@ -2173,11 +2178,31 @@
                 body.innerHTML = '<tr><td colspan="9" class="empty">No payments yet</td></tr>';
                 paymentsCache = [];
                 document.getElementById('pendingPayments').textContent = '0';
+                document.getElementById('paymentVolume').textContent = '0';
                 return;
+            }
+            // Detect newly completed payments for notifications
+            if (paymentsCache.length > 0) {
+                for (const p of payments) {
+                    if (p.status === 'Completed') {
+                        const prev = paymentsCache.find(c => c.id === p.id);
+                        if (prev && prev.status !== 'Completed') {
+                            const dir = p.direction === 'Outbound' ? 'sent' : 'received';
+                            const amt = p.amountSat.toLocaleString();
+                            showToast(`Payment ${dir}: ${amt} sats`, 'success');
+                            sendBrowserNotification('Kompaktor Payment', `${amt} sats ${dir} via CoinJoin`);
+                        }
+                    }
+                }
             }
             paymentsCache = payments;
             const pendingCount = payments.filter(p => p.status === 'Pending' || p.status === 'Reserved' || p.status === 'Committed').length;
             document.getElementById('pendingPayments').textContent = pendingCount;
+            const completedVolume = payments.filter(p => p.status === 'Completed').reduce((sum, p) => sum + p.amountSat, 0);
+            document.getElementById('paymentVolume').textContent = completedVolume.toLocaleString();
+            document.getElementById('paymentVolumeUnit').textContent = completedVolume >= 100_000_000 ? 'BTC' : 'sats';
+            if (completedVolume >= 100_000_000)
+                document.getElementById('paymentVolume').textContent = (completedVolume / 100_000_000).toFixed(4);
             const filter = document.getElementById('payFilter')?.value || 'all';
             const filtered = filter === 'all' ? payments : payments.filter(p => p.status === filter);
             if (filtered.length === 0) {
