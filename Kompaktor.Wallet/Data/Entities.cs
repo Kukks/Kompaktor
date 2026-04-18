@@ -8,6 +8,8 @@ public class WalletEntity
     public byte[] MnemonicSalt { get; set; } = [];
     public string Network { get; set; } = "RegTest";
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+    /// <summary>True once the user has verified their mnemonic backup by confirming word positions</summary>
+    public bool IsBackupVerified { get; set; }
 
     public List<AccountEntity> Accounts { get; set; } = [];
 }
@@ -174,6 +176,8 @@ public class PendingPaymentEntity
     public DateTimeOffset? CompletedAt { get; set; }
     /// <summary>Number of times this payment has been retried after round failures</summary>
     public int RetryCount { get; set; }
+    /// <summary>Maximum retry attempts before auto-failing (0 = unlimited, default 10)</summary>
+    public int MaxRetries { get; set; } = 10;
     /// <summary>Optional expiration time — expired pending payments are auto-cancelled</summary>
     public DateTimeOffset? ExpiresAt { get; set; }
 }
