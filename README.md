@@ -82,6 +82,7 @@ Kompaktor.sln
 │   ├── KompaktorHdWallet.cs           # IKompaktorWalletInterface with BIP-39/84/86
 │   ├── MnemonicEncryption.cs          # AES-256-GCM mnemonic encryption
 │   ├── WalletSyncService.cs           # UTXO sync engine with blockchain monitoring
+│   ├── WalletPaymentManager.cs        # IOutbound/InboundPaymentManager with DB persistence
 │   ├── CoinJoinRecorder.cs            # Persists completed/failed rounds to wallet DB
 │   ├── PersistentRoundHistoryTracker.cs # DB-backed intersection attack tracking
 │   └── Data/                          # EF Core entities and WalletDbContext
@@ -105,7 +106,7 @@ Kompaktor.sln
 │   ├── DashboardEventBus.cs           # SSE broadcast bus for real-time dashboard updates
 │   ├── MixingManager.cs               # Auto-mixing lifecycle with Tor stream isolation, configurable coordinator URL, and active outpoint tracking
 │   ├── WalletSyncBackgroundService.cs # Background UTXO sync + real-time blockchain monitoring
-│   └── wwwroot/index.html             # Tab-based responsive dashboard (Overview, Send/Receive, UTXOs, CoinJoins, Settings) with dark/light theme, SSE with exponential backoff, tab badges, score breakdown tooltips, mixing activity feed, coin control, auto-mixing with Tor, QR receive, fee estimation, full send, PSBT, event log, blockchain info, wallet export, privacy meter, and keyboard navigation
+│   └── wwwroot/index.html             # Tab-based responsive dashboard (Overview, Send/Receive, Payments, UTXOs, CoinJoins, Settings) with dark/light theme, SSE with exponential backoff, tab badges, score breakdown tooltips, mixing activity feed, coin control, auto-mixing with Tor, QR receive, fee estimation, full send, PSBT, event log, blockchain info, wallet export, privacy meter, payment queue with retry tracking, and keyboard navigation
 └── Kompaktor.Tests/        # Integration tests against regtest bitcoind
 ```
 
@@ -178,7 +179,7 @@ Network identity isolation abstraction. `TorCircuitFactory` routes each identity
 
 ### `Kompaktor.Web`
 
-Combined coordinator and wallet dashboard in a single ASP.NET Core process. Runs the full coordinator (round management, scheduling) alongside wallet management and dashboard APIs. The dashboard uses **tab-based navigation** (Overview, Send & Receive, UTXOs, CoinJoins, Settings) with URL hash routing and keyboard shortcuts (1-5 tabs, arrow keys prev/next, R=refresh, T=theme, Esc=close panels). Features include: **dark/light theme toggle** with localStorage persistence, wallet creation with mnemonic backup display, wallet restore from BIP-39 mnemonic, mnemonic export for backup, **wallet data export** (labels, address book, coinjoin history as JSON), **receive address with QR code** (BIP-21 URI, P2TR preferred), privacy summary with anonymity scoring, scored UTXOs with **privacy score tooltips** showing penalty breakdown (amount indistinguishability, cluster privacy, address reuse) and **interactive score breakdown panel** in UTXO detail view, **active mixing indicators**, coin control (freeze/unfreeze, labels, batch operations), **full send flow** with transaction preview, passphrase-authenticated signing, and blockchain broadcast, **PSBT export/import** for hardware wallet signing, **fee estimation** with clickable presets for 1/3/6/25 block confirmation targets, **block explorer links** (network-aware, links to mempool.space on mainnet/testnet), **privacy recommendations** engine with actionable guidance for unmixed coins, value concentration, **address reuse detection**, and **cluster-linked coin warnings**, coinjoin history with credential flow analysis, coordinator stats with round fill rates and demand metrics, transaction history, **real-time SSE (Server-Sent Events) push updates** with **exponential backoff reconnection** (2s→30s cap with jitter) and **tab notification badges** (pulsing dot on tabs with new events), **persistent event log** in Settings tab for session audit, **auto-mixing** with configurable coordinator URL, **Tor SOCKS proxy** for stream-isolated mixing, **live mixing activity feed** showing phase transitions and round completions in real time, **privacy health meter** showing 5-tier UTXO distribution, **address book** for saved payment destinations, **blockchain connection status** with block height display, **toast notifications** for real-time events, and **mobile-responsive layout** with 768px/480px breakpoints. The SSE event bus broadcasts state changes from coin control, wallet, and round lifecycle operations, with automatic fallback to 10-second polling when the SSE connection drops. Supports both Bitcoin Core RPC and Electrum backends via configuration.
+Combined coordinator and wallet dashboard in a single ASP.NET Core process. Runs the full coordinator (round management, scheduling) alongside wallet management and dashboard APIs. The dashboard uses **tab-based navigation** (Overview, Send & Receive, Payments, UTXOs, CoinJoins, Settings) with URL hash routing and keyboard shortcuts (1-6 tabs, arrow keys prev/next, R=refresh, T=theme, Esc=close panels). Features include: **dark/light theme toggle** with localStorage persistence, wallet creation with mnemonic backup display, wallet restore from BIP-39 mnemonic, mnemonic export for backup, **wallet data export** (labels, address book, coinjoin history as JSON), **receive address with QR code** (BIP-21 URI, P2TR preferred), privacy summary with anonymity scoring, scored UTXOs with **privacy score tooltips** showing penalty breakdown (amount indistinguishability, cluster privacy, address reuse) and **interactive score breakdown panel** in UTXO detail view, **active mixing indicators**, coin control (freeze/unfreeze, labels, batch operations), **full send flow** with transaction preview, passphrase-authenticated signing, and blockchain broadcast, **PSBT export/import** for hardware wallet signing, **fee estimation** with clickable presets for 1/3/6/25 block confirmation targets, **block explorer links** (network-aware, links to mempool.space on mainnet/testnet), **privacy recommendations** engine with actionable guidance for unmixed coins, value concentration, **address reuse detection**, and **cluster-linked coin warnings**, **interactive payments tab** with send/receive forms, BIP21+kompaktor URI parsing, QR code generation for receive invoices, payment queue with retry count tracking, proof verification badges, expiry countdown, CSV export for accounting, payment completion browser notifications, and payment volume/success rate statistics on overview, coinjoin history with credential flow analysis, coordinator stats with round fill rates and demand metrics, transaction history, **real-time SSE (Server-Sent Events) push updates** with **exponential backoff reconnection** (2s→30s cap with jitter) and **tab notification badges** (pulsing dot on tabs with new events) for utxos, wallet, rounds, mixing, and payments events, **persistent event log** in Settings tab for session audit, **auto-mixing** with configurable coordinator URL, **Tor SOCKS proxy** for stream-isolated mixing, **live mixing activity feed** showing phase transitions and round completions in real time, **privacy health meter** showing 5-tier UTXO distribution, **address book** for saved payment destinations with datalist auto-suggest in payment forms, **manual resync trigger** for immediate wallet sync, **blockchain connection status** with block height display, **toast notifications** for real-time events, and **mobile-responsive layout** with 768px/480px breakpoints. The SSE event bus broadcasts state changes from coin control, wallet, round lifecycle, and payment operations, with automatic fallback to 10-second polling when the SSE connection drops. Supports both Bitcoin Core RPC and Electrum backends via configuration.
 
 ### Error Handling
 
@@ -391,7 +392,7 @@ This starts a `bitcoind` regtest node on port 53782 with RPC credentials `ceiwHE
 dotnet test
 ```
 
-The test suite includes 360+ tests covering:
+The test suite includes 390+ tests covering:
 - Round lifecycle (input registration, output registration, signing, broadcasting)
 - Multi-participant coinjoins (up to 100 participants)
 - Interactive payments between participants during rounds
@@ -428,6 +429,7 @@ The test suite includes 360+ tests covering:
 - Mnemonic export with passphrase validation
 - Multi-server Electrum routing with round-robin assignment and script pinning
 - Credential lifecycle flow analysis with merge tree depth and fee calculation
+- WalletPaymentManager: outbound/inbound creation, interactive key generation, commitment lifecycle, cancellation, wallet isolation, protocol type mapping, expiry, auto-cancellation, retry count tracking
 
 ### 4. Run the Coordinator Server
 
@@ -461,7 +463,7 @@ cd Kompaktor.Web
 dotnet run
 ```
 
-This starts a combined coordinator and wallet dashboard. The web UI at the root URL shows wallet balance, anonymity-scored UTXOs, active rounds, and coinjoin history. The dashboard uses **Server-Sent Events** for real-time updates — state changes push instantly without polling. Use the **Auto-Mix toggle** to start continuous coinjoin participation directly from the UI (requires wallet passphrase). The `/api/dashboard/credential-flows/{roundId}` endpoint exposes per-payment credential flow analysis. Supports Electrum as an alternative backend:
+This starts a combined coordinator and wallet dashboard. The web UI at the root URL shows wallet balance, anonymity-scored UTXOs, active rounds, and coinjoin history. The dashboard uses **Server-Sent Events** for real-time updates — state changes push instantly without polling. Use the **Auto-Mix toggle** to start continuous coinjoin participation directly from the UI (requires wallet passphrase). Payment APIs: `POST /api/payments/send` (create outbound), `POST /api/payments/receive` (create inbound with BIP21 URI), `GET /api/payments` (list all), `GET /api/payments/{id}/status` (individual status), `GET /api/payments/stats` (aggregate metrics), `GET /api/payments/{id}/qr` (SVG QR code), `GET /api/payments/export` (CSV), `DELETE /api/payments/{id}` (cancel). The `/api/dashboard/credential-flows/{roundId}` endpoint exposes per-payment credential flow analysis. Supports Electrum as an alternative backend:
 
 ```json
 {
