@@ -30,6 +30,13 @@ public class WalletSyncService : IAsyncDisposable
     private readonly List<Script> _subscribedScripts = [];
     private CancellationTokenSource? _monitoringCts;
 
+    // Tracks in-flight address-notification handlers so StopMonitoringAsync
+    // can drain them before the caller disposes the scoped DbContext. Without
+    // this, an async-void handler can still be executing a query against
+    // _db when the connection pool tries to reclaim the SQLite connection.
+    private readonly HashSet<Task> _pendingHandlers = [];
+    private readonly Lock _pendingHandlersLock = new();
+
     private const int GapLimit = 20;
 
     public WalletSyncService(WalletDbContext db, IBlockchainBackend blockchain, Network network)
@@ -205,12 +212,35 @@ public class WalletSyncService : IAsyncDisposable
             catch (ObjectDisposedException) { /* already disposed — cancellation no-op */ }
             cts.Dispose();
         }
+
+        // Drain in-flight notification handlers so the caller can safely
+        // dispose the scoped DbContext. Unsubscribing from AddressNotified
+        // above prevents new handlers from starting, but ones already running
+        // still hold an EF Core query open on the SQLite connection.
+        Task[] pending;
+        lock (_pendingHandlersLock) pending = [.. _pendingHandlers];
+        if (pending.Length > 0)
+        {
+            try { await Task.WhenAll(pending); }
+            catch { /* handlers swallow errors internally; drain is best-effort */ }
+        }
     }
 
-    private async void OnAddressNotified(object? sender, AddressNotification notification)
+    private void OnAddressNotified(object? sender, AddressNotification notification)
     {
         if (_monitoringCts?.IsCancellationRequested == true) return;
 
+        var task = HandleAddressNotifiedAsync(notification);
+        lock (_pendingHandlersLock) _pendingHandlers.Add(task);
+        _ = task.ContinueWith(
+            t => { lock (_pendingHandlersLock) _pendingHandlers.Remove(t); },
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+    }
+
+    private async Task HandleAddressNotifiedAsync(AddressNotification notification)
+    {
         try
         {
             var scriptBytes = notification.ScriptPubKey.ToBytes();
