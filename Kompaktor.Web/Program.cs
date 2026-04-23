@@ -1421,6 +1421,23 @@ app.MapGet("/api/dashboard/privacy-recommendations", async (WalletDbContext db, 
         });
     }
 
+    // Flag exposed-address UTXOs: scripts that were revealed in a prior
+    // coinjoin round (often a failed one). Co-spending these with
+    // non-exposed UTXOs is the #1 foot-gun the planner warns about,
+    // so surface them at the dashboard level too.
+    var exposedCount = scored.Count(s => s.Utxo.Address.IsExposed);
+    if (exposedCount > 0)
+    {
+        recommendations.Add(new
+        {
+            priority = "high",
+            title = $"{exposedCount} UTXO{(exposedCount > 1 ? "s" : "")} on Exposed Addresses",
+            message = "These sit on scripts revealed in a prior coinjoin round. " +
+                      "Co-spending them with non-exposed UTXOs links the two sets together. " +
+                      "Either remix them or freeze them before sending."
+        });
+    }
+
     // Check frozen UTXOs
     var frozenCount = scored.Count(s => s.Utxo.IsFrozen);
     if (frozenCount > 0)

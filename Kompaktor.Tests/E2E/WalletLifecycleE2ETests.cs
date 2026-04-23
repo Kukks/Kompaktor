@@ -2785,6 +2785,38 @@ public class WalletLifecycleE2ETests
     }
 
     [Fact]
+    public async Task Privacy_recommendations_flag_exposed_address_utxos()
+    {
+        // Exposed-address UTXOs are the #1 co-spend linkage footgun — the
+        // planner warns at send-time, but the dashboard should also nag
+        // about them so users fix the composition before they're about
+        // to send. Mutate IsExposed directly (no HTTP surface toggles it)
+        // and verify the recommendation appears with the right title.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var utxoId = await SeedUtxoAsync(factory, client, amountSat: 100_000, tag: 0xB4);
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<WalletDbContext>();
+            var utxo = await db.Utxos.Include(u => u.Address).SingleAsync(u => u.Id == utxoId);
+            utxo.Address.IsExposed = true;
+            await db.SaveChangesAsync();
+        }
+
+        var resp = await client.GetFromJsonAsync<JsonElement>("/api/dashboard/privacy-recommendations");
+        var recs = resp.GetProperty("recommendations").EnumerateArray()
+            .Select(r => (title: r.GetProperty("title").GetString()!, priority: r.GetProperty("priority").GetString()!))
+            .ToArray();
+
+        var exposed = recs.Single(r => r.title.Contains("Exposed", StringComparison.Ordinal));
+        Assert.Equal("high", exposed.priority);
+        Assert.Contains("1", exposed.title);
+    }
+
+    [Fact]
     public async Task Privacy_recommendations_no_wallet_returns_empty()
     {
         await using var factory = new KompaktorWebFactory();
