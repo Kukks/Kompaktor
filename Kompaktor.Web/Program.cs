@@ -988,50 +988,15 @@ app.MapPost("/api/wallet/test-tor", async (HttpContext ctx) =>
     var host = string.IsNullOrWhiteSpace(body?.Host) ? "127.0.0.1" : body.Host;
     var port = body?.Port is > 0 and <= 65535 ? body.Port.Value : 9050;
 
-    using var tcp = new System.Net.Sockets.TcpClient();
-    var sw = System.Diagnostics.Stopwatch.StartNew();
-    try
+    var result = await TorReachability.ProbeAsync(host, port, ctx.RequestAborted);
+    if (!result.Reachable)
+        return Results.Ok(new { reachable = false, error = result.Error });
+    return Results.Ok(new
     {
-        using var connectCts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-        await tcp.ConnectAsync(host, port, connectCts.Token);
-    }
-    catch (Exception ex)
-    {
-        return Results.Ok(new { reachable = false, error = ex.Message });
-    }
-
-    try
-    {
-        var stream = tcp.GetStream();
-        using var ioCts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
-
-        // SOCKS5 greeting: Version=5, 1 method, NoAuth(0x00).
-        // Tor accepts either NoAuth or UserPass, so we offer both and
-        // whichever the server picks tells us it's SOCKS5.
-        await stream.WriteAsync(new byte[] { 0x05, 0x02, 0x00, 0x02 }, ioCts.Token);
-
-        var resp = new byte[2];
-        var n = await stream.ReadAsync(resp.AsMemory(), ioCts.Token);
-        sw.Stop();
-
-        if (n < 2 || resp[0] != 0x05)
-            return Results.Ok(new { reachable = false, error = "Endpoint did not speak SOCKS5" });
-
-        // resp[1] = chosen method: 0x00 NoAuth, 0x02 UserPass, 0xFF rejected.
-        if (resp[1] == 0xFF)
-            return Results.Ok(new { reachable = false, error = "SOCKS5 server rejected offered auth methods" });
-
-        return Results.Ok(new
-        {
-            reachable = true,
-            latencyMs = sw.ElapsedMilliseconds,
-            authMethod = resp[1] switch { 0x00 => "none", 0x02 => "userpass", _ => $"0x{resp[1]:X2}" }
-        });
-    }
-    catch (Exception ex)
-    {
-        return Results.Ok(new { reachable = false, error = ex.Message });
-    }
+        reachable = true,
+        latencyMs = result.LatencyMs,
+        authMethod = result.AuthMethod
+    });
 }).WithTags("Wallet");
 
 // Get receive address
@@ -2670,6 +2635,21 @@ app.MapPost("/api/mixing/start", async (MixingManager mixer, WalletDbContext db,
             }
         }
 
+        // Preflight: if Tor was requested, verify the daemon is actually
+        // reachable before handing off to the mixer. The mixer would
+        // otherwise silently fall back to clearnet on connection refusal,
+        // leaking the wallet's IP to the coordinator.
+        if (torOptions is not null)
+        {
+            var probe = await TorReachability.ProbeAsync(torOptions.SocksHost, torOptions.SocksPort, ctx.RequestAborted);
+            if (!probe.Reachable)
+                return Results.BadRequest(new
+                {
+                    error = "tor_unreachable",
+                    message = $"Tor daemon unreachable at {torOptions.SocksHost}:{torOptions.SocksPort} — {probe.Error}"
+                });
+        }
+
         var result = await mixer.StartAsync(body.Passphrase, coordinatorUri, torOptions, body.AllowUnconfirmedCoinjoinReuse, body.Profile);
         return Results.Ok(new
         {
@@ -2794,6 +2774,62 @@ record WalletSettingsUpdateRequest(
     string? TorSocksHost = null,
     int? TorSocksPort = null);
 record TorTestRequest(string? Host = null, int? Port = null);
+
+/// <summary>
+/// Result of a SOCKS5 greeting probe against a Tor daemon (or anything
+/// claiming to speak SOCKS5). Used both by the Settings "Test connection"
+/// button and as a preflight check when starting a mixing session — we
+/// refuse to start under Tor if the probe fails, preventing silent
+/// clearnet fallback that would leak the wallet's IP.
+/// </summary>
+internal record TorProbeResult(bool Reachable, long LatencyMs, string? AuthMethod, string? Error);
+
+internal static class TorReachability
+{
+    public static async Task<TorProbeResult> ProbeAsync(string host, int port, CancellationToken ct = default)
+    {
+        using var tcp = new System.Net.Sockets.TcpClient();
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        try
+        {
+            using var connectCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            connectCts.CancelAfter(TimeSpan.FromSeconds(5));
+            await tcp.ConnectAsync(host, port, connectCts.Token);
+        }
+        catch (Exception ex)
+        {
+            return new TorProbeResult(false, 0, null, ex.Message);
+        }
+
+        try
+        {
+            var stream = tcp.GetStream();
+            using var ioCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            ioCts.CancelAfter(TimeSpan.FromSeconds(3));
+
+            // Offer both NoAuth (0x00) and UserPass (0x02); whichever the
+            // server picks confirms SOCKS5 and tells us which stream
+            // isolation path TorCircuitFactory will actually use.
+            await stream.WriteAsync(new byte[] { 0x05, 0x02, 0x00, 0x02 }, ioCts.Token);
+
+            var resp = new byte[2];
+            var n = await stream.ReadAsync(resp.AsMemory(), ioCts.Token);
+            sw.Stop();
+
+            if (n < 2 || resp[0] != 0x05)
+                return new TorProbeResult(false, sw.ElapsedMilliseconds, null, "Endpoint did not speak SOCKS5");
+            if (resp[1] == 0xFF)
+                return new TorProbeResult(false, sw.ElapsedMilliseconds, null, "SOCKS5 server rejected offered auth methods");
+
+            var auth = resp[1] switch { 0x00 => "none", 0x02 => "userpass", _ => $"0x{resp[1]:X2}" };
+            return new TorProbeResult(true, sw.ElapsedMilliseconds, auth, null);
+        }
+        catch (Exception ex)
+        {
+            return new TorProbeResult(false, sw.ElapsedMilliseconds, null, ex.Message);
+        }
+    }
+}
 
 /// <summary>
 /// Named mixing presets. Each string is a stable identifier the UI can show

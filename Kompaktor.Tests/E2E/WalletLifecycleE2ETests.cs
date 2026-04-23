@@ -2222,6 +2222,34 @@ public class WalletLifecycleE2ETests
     }
 
     [Fact]
+    public async Task Mixing_start_refuses_when_tor_is_unreachable()
+    {
+        // If the user asked for Tor but the daemon isn't listening, the
+        // endpoint must refuse — otherwise KompaktorService silently falls
+        // back to clearnet and the wallet's IP leaks to the coordinator.
+        // Bind+close a loopback listener to get a guaranteed-dead port.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+        listener.Start();
+        var deadPort = ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
+        listener.Stop();
+
+        var resp = await client.PostAsJsonAsync("/api/mixing/start", new
+        {
+            Passphrase = "pw",
+            TorSocksHost = "127.0.0.1",
+            TorSocksPort = deadPort
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        var body = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("tor_unreachable", body.GetProperty("error").GetString());
+    }
+
+    [Fact]
     public async Task Mixing_start_without_wallet_returns_bad_request()
     {
         // No wallet has been created yet. StartAsync will throw, and the
