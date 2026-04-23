@@ -1707,8 +1707,11 @@ app.MapGet("/api/webhooks/{webhookId}/deliveries", async (int webhookId, WalletD
     var webhook = await db.PaymentWebhooks.FindAsync(webhookId);
     if (webhook is null || webhook.WalletId != wallet.Id) return Results.NotFound();
 
-    var deliveries = await db.WebhookDeliveries
-        .Where(d => d.WebhookId == webhookId)
+    // Same SQLite DateTimeOffset-in-ORDER-BY trap as the payments endpoints —
+    // materialize first, order in memory, then cap to 50.
+    var deliveries = (await db.WebhookDeliveries
+            .Where(d => d.WebhookId == webhookId)
+            .ToListAsync())
         .OrderByDescending(d => d.Timestamp)
         .Take(50)
         .Select(d => new
@@ -1721,7 +1724,7 @@ app.MapGet("/api/webhooks/{webhookId}/deliveries", async (int webhookId, WalletD
             errorMessage = d.ErrorMessage,
             timestamp = d.Timestamp
         })
-        .ToListAsync();
+        .ToList();
 
     return Results.Ok(deliveries);
 }).WithTags("Webhooks");

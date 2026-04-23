@@ -686,6 +686,87 @@ public class WalletLifecycleE2ETests
     }
 
     [Fact]
+    public async Task Webhook_crud_happy_path()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        // Empty to start.
+        var empty = await client.GetFromJsonAsync<JsonElement>("/api/webhooks");
+        Assert.Empty(empty.EnumerateArray());
+
+        // Create — response should carry the one-time secret.
+        var createResp = await client.PostAsJsonAsync("/api/webhooks", new
+        {
+            Url = "https://example.com/kompaktor-hook",
+            EventFilter = "payment.completed"
+        });
+        Assert.Equal(HttpStatusCode.OK, createResp.StatusCode);
+        var created = await createResp.Content.ReadFromJsonAsync<JsonElement>();
+        var id = created.GetProperty("id").GetInt32();
+        var secret = created.GetProperty("secret").GetString()!;
+        Assert.Equal(64, secret.Length); // 32 bytes hex
+        Assert.Matches("^[0-9a-f]+$", secret);
+
+        // List now has it (but not the secret — secrets are one-time only).
+        var listed = await client.GetFromJsonAsync<JsonElement>("/api/webhooks");
+        var items = listed.EnumerateArray().ToArray();
+        Assert.Single(items);
+        Assert.Equal(id, items[0].GetProperty("id").GetInt32());
+        Assert.Equal("payment.completed", items[0].GetProperty("eventFilter").GetString());
+        Assert.False(items[0].TryGetProperty("secret", out _),
+            "secret should not be returned after creation");
+
+        // Deliveries endpoint should return an empty list, not crash.
+        var deliveries = await client.GetFromJsonAsync<JsonElement>(
+            $"/api/webhooks/{id}/deliveries");
+        Assert.Empty(deliveries.EnumerateArray());
+
+        // Delete works.
+        var del = await client.DeleteAsync($"/api/webhooks/{id}");
+        Assert.Equal(HttpStatusCode.OK, del.StatusCode);
+
+        var after = await client.GetFromJsonAsync<JsonElement>("/api/webhooks");
+        Assert.Empty(after.EnumerateArray());
+    }
+
+    [Fact]
+    public async Task Webhook_rejects_non_http_urls()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        // Empty URL
+        var empty = await client.PostAsJsonAsync("/api/webhooks", new { Url = "" });
+        Assert.Equal(HttpStatusCode.BadRequest, empty.StatusCode);
+
+        // Garbage
+        var garbage = await client.PostAsJsonAsync("/api/webhooks", new { Url = "not-a-url" });
+        Assert.Equal(HttpStatusCode.BadRequest, garbage.StatusCode);
+
+        // Non-http scheme — we don't want users pointing at file:// or ftp://
+        // since the webhook sender only knows how to POST over HTTP(S).
+        var ftp = await client.PostAsJsonAsync("/api/webhooks", new { Url = "ftp://example.com" });
+        Assert.Equal(HttpStatusCode.BadRequest, ftp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Webhook_delete_and_deliveries_404_for_unknown_id()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var del = await client.DeleteAsync("/api/webhooks/999999");
+        Assert.Equal(HttpStatusCode.NotFound, del.StatusCode);
+
+        var deliveries = await client.GetAsync("/api/webhooks/999999/deliveries");
+        Assert.Equal(HttpStatusCode.NotFound, deliveries.StatusCode);
+    }
+
+    [Fact]
     public async Task Transactions_export_returns_csv_for_wallet_activity()
     {
         // Tax / accounting flow: user downloads a CSV of their on-chain activity.
