@@ -1023,6 +1023,10 @@
                                 <input type="text" id="recvLabel" placeholder="Optional" style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:4px;font-size:13px">
                             </div>
                         </div>
+                        <div style="display:flex;gap:6px;align-items:center;margin-bottom:12px">
+                            <label for="recvExpiryMinutes" style="font-size:11px;color:var(--text-muted);text-transform:uppercase" title="Auto-cancel the invoice if it hasn't been filled within this many minutes. Blank = no expiry.">Expires in (min)</label>
+                            <input type="number" id="recvExpiryMinutes" placeholder="none" min="1" max="10080" style="width:90px;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:4px;font-size:12px">
+                        </div>
                         <button class="send-btn" onclick="createReceivePayment()">Create Invoice</button>
                         <span id="recvStatus" style="font-size:12px;margin-left:8px"></span>
                         <div id="recvResult" style="display:none;margin-top:12px;padding:12px;background:var(--bg);border:1px solid var(--border);border-radius:6px">
@@ -2997,6 +3001,7 @@
         async function createReceivePayment() {
             const amount = parseInt(document.getElementById('recvAmount').value);
             const label = document.getElementById('recvLabel').value.trim();
+            const expiryRaw = document.getElementById('recvExpiryMinutes').value.trim();
             const status = document.getElementById('recvStatus');
 
             if (!amount || amount <= 0) {
@@ -3006,10 +3011,15 @@
 
             status.innerHTML = '<span style="color:var(--yellow)">Creating...</span>';
             try {
+                const body = { amountSat: amount, label: label || null };
+                if (expiryRaw !== '') {
+                    const em = parseInt(expiryRaw);
+                    if (!isNaN(em) && em > 0) body.expiryMinutes = em;
+                }
                 const res = await fetch('/api/payments/receive', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ amountSat: amount, label: label || null })
+                    body: JSON.stringify(body)
                 });
                 const data = await res.json();
                 if (!res.ok) {
@@ -3031,6 +3041,7 @@
                 } catch { /* QR optional */ }
                 document.getElementById('recvAmount').value = '';
                 document.getElementById('recvLabel').value = '';
+                document.getElementById('recvExpiryMinutes').value = '';
                 showToast(`Receive invoice for ${amount.toLocaleString()} sats created`, 'success');
                 await loadPayments();
                 setTimeout(() => { status.innerHTML = ''; }, 3000);
