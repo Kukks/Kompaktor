@@ -1473,6 +1473,117 @@ public class WalletLifecycleE2ETests
         Assert.Equal(0.0, resp.GetProperty("successRate").GetDouble());
     }
 
+    [Fact]
+    public async Task Export_psbt_returns_base64_psbt_with_witness_utxos()
+    {
+        // Hardware-wallet path: export an unsigned PSBT for an external signer.
+        // Must include at least one input, witness UTXOs populated, and non-zero
+        // estimated fee.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+        await SeedUtxoAsync(factory, client, amountSat: 200_000, tag: 0x81);
+
+        var dest = (await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address"))
+            .GetProperty("address").GetString()!;
+
+        var resp = await client.PostAsJsonAsync("/api/dashboard/export-psbt", new
+        {
+            Destination = dest,
+            AmountSat = 50_000L,
+            FeeRateSatPerVb = 2L,
+            Strategy = "PrivacyFirst"
+        });
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var body = await resp.Content.ReadFromJsonAsync<JsonElement>();
+
+        var psbtBase64 = body.GetProperty("psbt").GetString()!;
+        Assert.False(string.IsNullOrWhiteSpace(psbtBase64));
+
+        var psbt = PSBT.Parse(psbtBase64, Network.RegTest);
+        Assert.Equal(body.GetProperty("inputCount").GetInt32(), psbt.Inputs.Count);
+        Assert.True(psbt.Inputs.Count >= 1);
+        // Each input must carry its WitnessUtxo so an air-gapped signer can
+        // verify amounts without the source transactions.
+        foreach (var input in psbt.Inputs)
+            Assert.NotNull(input.WitnessUtxo);
+
+        Assert.True(body.GetProperty("estimatedFeeSat").GetInt64() > 0);
+    }
+
+    [Fact]
+    public async Task Export_psbt_without_wallet_returns_bad_request()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        var resp = await client.PostAsJsonAsync("/api/dashboard/export-psbt", new
+        {
+            Destination = "bcrt1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq4tkvrp",
+            AmountSat = 1_000L,
+            FeeRateSatPerVb = 2L
+        });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Broadcast_psbt_rejects_unsigned_psbt()
+    {
+        // PSBT from /export-psbt has no signatures — broadcasting it without
+        // signing must fail and must not reach the fake backend.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+        await SeedUtxoAsync(factory, client, amountSat: 200_000, tag: 0x82);
+
+        var dest = (await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address"))
+            .GetProperty("address").GetString()!;
+
+        var exportResp = await client.PostAsJsonAsync("/api/dashboard/export-psbt", new
+        {
+            Destination = dest,
+            AmountSat = 50_000L,
+            FeeRateSatPerVb = 2L
+        });
+        var unsigned = (await exportResp.Content.ReadFromJsonAsync<JsonElement>())
+            .GetProperty("psbt").GetString()!;
+
+        var before = factory.Blockchain.BroadcastedTransactions.Count;
+        var resp = await client.PostAsJsonAsync("/api/dashboard/broadcast-psbt", new
+        {
+            SignedPsbt = unsigned
+        });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        Assert.Equal(before, factory.Blockchain.BroadcastedTransactions.Count);
+    }
+
+    [Fact]
+    public async Task Broadcast_psbt_rejects_garbage_payload()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.PostAsJsonAsync("/api/dashboard/broadcast-psbt", new
+        {
+            SignedPsbt = "not-a-real-psbt"
+        });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Broadcast_psbt_requires_signed_psbt_field()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        var resp = await client.PostAsJsonAsync("/api/dashboard/broadcast-psbt", new
+        {
+            SignedPsbt = ""
+        });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
     /// <summary>
     /// Stages a single confirmed UTXO on the fake backend against a fresh wallet
     /// receive address. Returns the DB-assigned utxoId once the wallet has
