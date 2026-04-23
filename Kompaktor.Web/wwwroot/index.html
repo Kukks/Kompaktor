@@ -995,6 +995,11 @@
                         <div style="margin-bottom:12px">
                             <input type="datetime-local" id="payScheduleAt" style="display:none;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:4px;font-size:12px">
                         </div>
+                        <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px">
+                            <label for="payMaxRetries" style="font-size:11px;color:var(--text-muted);text-transform:uppercase" title="Number of round failures before auto-failing the payment. 0 = unlimited. Default 10.">Max retries</label>
+                            <input type="number" id="payMaxRetries" placeholder="10" min="0" max="1000" style="width:80px;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:4px;font-size:12px">
+                            <span style="font-size:10px;color:var(--text-muted)">0 = unlimited</span>
+                        </div>
                         <button class="send-btn" onclick="createSendPayment()">Queue Payment</button>
                         <span id="payStatus" style="font-size:12px;margin-left:8px"></span>
                     </div>
@@ -2875,6 +2880,7 @@
             const urgent = document.getElementById('payUrgent').checked;
             const scheduleToggle = document.getElementById('payScheduleToggle').checked;
             const scheduleLocal = document.getElementById('payScheduleAt').value;
+            const maxRetriesRaw = document.getElementById('payMaxRetries').value.trim();
             const status = document.getElementById('payStatus');
 
             if (!dest || !amount || amount <= 0) {
@@ -2891,10 +2897,15 @@
 
             status.innerHTML = '<span style="color:var(--yellow)">Creating...</span>';
             try {
+                const body = { destination: dest, amountSat: amount, interactive, urgent, label: label || null, scheduledAt };
+                if (maxRetriesRaw !== '') {
+                    const mr = parseInt(maxRetriesRaw);
+                    if (!isNaN(mr) && mr >= 0) body.maxRetries = mr;
+                }
                 const res = await fetch('/api/payments/send', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ destination: dest, amountSat: amount, interactive, urgent, label: label || null, scheduledAt })
+                    body: JSON.stringify(body)
                 });
                 const data = await res.json();
                 if (!res.ok) {
@@ -2905,6 +2916,7 @@
                 document.getElementById('payDest').value = '';
                 document.getElementById('payAmount').value = '';
                 document.getElementById('payLabel').value = '';
+                document.getElementById('payMaxRetries').value = '';
                 document.getElementById('payScheduleToggle').checked = false;
                 document.getElementById('payScheduleAt').value = '';
                 document.getElementById('payScheduleAt').style.display = 'none';
