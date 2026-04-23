@@ -3380,4 +3380,89 @@ public class WalletLifecycleE2ETests
         Assert.Equal(50_000, resp.GetProperty("exposedBalanceSats").GetInt64());
         Assert.Equal(1, resp.GetProperty("exposedUtxoCount").GetInt32());
     }
+
+    [Fact]
+    public async Task Tor_status_endpoint_reports_disabled_for_default_wallet()
+    {
+        // Brand-new wallets don't opt into Tor, so the dashboard shouldn't
+        // run a probe — enabled=false and no probe fields.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.GetFromJsonAsync<JsonElement>("/api/dashboard/tor-status");
+
+        Assert.False(resp.GetProperty("enabled").GetBoolean());
+        Assert.False(resp.TryGetProperty("reachable", out _));
+    }
+
+    [Fact]
+    public async Task Tor_status_endpoint_reports_unreachable_when_enabled_and_daemon_down()
+    {
+        // Open a TCP port just to reserve it, then close it so the SOCKS5
+        // probe gets a clean connection refusal. This is the realistic
+        // "user enabled Tor but the daemon isn't running" case.
+        var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+        listener.Start();
+        var closedPort = ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
+        listener.Stop();
+
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+        await client.PostAsJsonAsync("/api/wallet/settings",
+            new { TorEnabled = true, TorSocksHost = "127.0.0.1", TorSocksPort = closedPort });
+
+        var resp = await client.GetFromJsonAsync<JsonElement>("/api/dashboard/tor-status");
+
+        Assert.True(resp.GetProperty("enabled").GetBoolean());
+        Assert.Equal("127.0.0.1", resp.GetProperty("host").GetString());
+        Assert.Equal(closedPort, resp.GetProperty("port").GetInt32());
+        Assert.False(resp.GetProperty("reachable").GetBoolean());
+        Assert.False(string.IsNullOrWhiteSpace(resp.GetProperty("error").GetString()));
+    }
+
+    [Fact]
+    public async Task Tor_status_endpoint_reports_reachable_against_fake_socks5_server()
+    {
+        // Spin up a loopback SOCKS5 greeting responder; the dashboard endpoint
+        // should resolve the saved settings, run the probe, and surface
+        // reachable=true with latency + auth method.
+        var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
+        var serverTask = Task.Run(async () =>
+        {
+            try
+            {
+                using var socket = await listener.AcceptTcpClientAsync();
+                var stream = socket.GetStream();
+                var greeting = new byte[4];
+                await stream.ReadAsync(greeting.AsMemory());
+                await stream.WriteAsync(new byte[] { 0x05, 0x00 });
+                await Task.Delay(100);
+            }
+            catch { /* accept may be aborted when the test tears down */ }
+        });
+
+        try
+        {
+            await using var factory = new KompaktorWebFactory();
+            using var client = factory.CreateClient();
+            await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+            await client.PostAsJsonAsync("/api/wallet/settings",
+                new { TorEnabled = true, TorSocksHost = "127.0.0.1", TorSocksPort = port });
+
+            var resp = await client.GetFromJsonAsync<JsonElement>("/api/dashboard/tor-status");
+
+            Assert.True(resp.GetProperty("enabled").GetBoolean());
+            Assert.True(resp.GetProperty("reachable").GetBoolean());
+            Assert.Equal("none", resp.GetProperty("authMethod").GetString());
+        }
+        finally
+        {
+            listener.Stop();
+            await serverTask;
+        }
+    }
 }

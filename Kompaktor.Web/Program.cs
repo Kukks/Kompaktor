@@ -238,6 +238,43 @@ app.MapGet("/api/dashboard/summary", async (
     });
 }).WithTags("Dashboard");
 
+// Live Tor health for the dashboard: resolves the wallet's persisted Tor
+// settings and actively probes them so users can see at-a-glance whether
+// mixing will actually route through Tor. Probe is skipped when Tor is
+// disabled to keep the endpoint cheap on clearnet wallets.
+app.MapGet("/api/dashboard/tor-status", async (WalletDbContext db, HttpContext ctx) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.Ok(new { enabled = false, configured = false });
+
+    var host = string.IsNullOrWhiteSpace(wallet.TorSocksHost) ? "127.0.0.1" : wallet.TorSocksHost;
+    var port = wallet.TorSocksPort ?? 9050;
+
+    if (!wallet.TorEnabled)
+    {
+        return Results.Ok(new
+        {
+            enabled = false,
+            configured = !string.IsNullOrWhiteSpace(wallet.TorSocksHost),
+            host,
+            port
+        });
+    }
+
+    var probe = await TorReachability.ProbeAsync(host, port, ctx.RequestAborted);
+    return Results.Ok(new
+    {
+        enabled = true,
+        configured = true,
+        host,
+        port,
+        reachable = probe.Reachable,
+        latencyMs = probe.Reachable ? probe.LatencyMs : (long?)null,
+        authMethod = probe.Reachable ? probe.AuthMethod : null,
+        error = probe.Reachable ? null : probe.Error
+    });
+}).WithTags("Dashboard");
+
 app.MapGet("/api/dashboard/utxos", async (WalletDbContext db) =>
 {
     var wallet = await db.Wallets.FirstOrDefaultAsync();

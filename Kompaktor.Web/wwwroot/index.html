@@ -763,6 +763,13 @@
                 </div>
             </div>
 
+            <!-- Tor status indicator -->
+            <div id="torStatusBar" style="display:none;margin-bottom:16px;padding:10px 14px;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);font-size:12px;align-items:center;gap:10px">
+                <span id="torStatusDot" style="width:10px;height:10px;border-radius:50%;display:inline-block;background:var(--text-muted)"></span>
+                <span id="torStatusText" style="color:var(--text-muted)">Tor: unknown</span>
+                <button type="button" class="btn" onclick="refreshTorStatus()" style="margin-left:auto;font-size:11px;padding:3px 8px">Refresh</button>
+            </div>
+
             <!-- Payment Stats Summary -->
             <div id="paymentStats" style="display:none;margin-bottom:16px;padding:12px 16px;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);font-size:12px;color:var(--text-muted)">
                 <span style="font-weight:600;color:var(--text);margin-right:12px">Payments</span>
@@ -3093,9 +3100,39 @@
             document.getElementById('psRetries').textContent = stats.averageRetries.toFixed(1);
         }
 
+        async function refreshTorStatus() {
+            const bar = document.getElementById('torStatusBar');
+            const dot = document.getElementById('torStatusDot');
+            const text = document.getElementById('torStatusText');
+            const data = await fetchJson('/api/dashboard/tor-status');
+            if (!data) { bar.style.display = 'none'; return; }
+            if (!data.enabled) {
+                // Only show "Tor off" chip if something was configured before; otherwise stay hidden.
+                if (data.configured) {
+                    bar.style.display = 'flex';
+                    dot.style.background = 'var(--text-muted)';
+                    text.textContent = `Tor: off (saved ${data.host}:${data.port})`;
+                    text.style.color = 'var(--text-muted)';
+                } else {
+                    bar.style.display = 'none';
+                }
+                return;
+            }
+            bar.style.display = 'flex';
+            if (data.reachable) {
+                dot.style.background = 'var(--green)';
+                text.textContent = `Tor: reachable at ${data.host}:${data.port} (${data.latencyMs}ms, ${data.authMethod})`;
+                text.style.color = 'var(--green)';
+            } else {
+                dot.style.background = 'var(--red)';
+                text.textContent = `Tor: UNREACHABLE at ${data.host}:${data.port} — ${data.error || 'no response'}`;
+                text.style.color = 'var(--red)';
+            }
+        }
+
         async function refreshAll() {
             document.getElementById('lastUpdate').textContent = 'Refreshing...';
-            await Promise.all([loadSummary(), loadPrivacySummary(), loadPrivacyDistribution(), loadPrivacyRecommendations(), loadPrivacyHistory(), loadRounds(), loadUtxos(), loadCoinjoins(), loadTransactions(), loadMixingStatus(), loadMixingStats(), loadSyncStatus(), loadAddressBook(), loadFeeEstimates(), loadSettingsInfo(), loadPayments(), loadPaymentStats(), loadWebhooks(), loadPrice()]);
+            await Promise.all([loadSummary(), loadPrivacySummary(), loadPrivacyDistribution(), loadPrivacyRecommendations(), loadPrivacyHistory(), loadRounds(), loadUtxos(), loadCoinjoins(), loadTransactions(), loadMixingStatus(), loadMixingStats(), loadSyncStatus(), loadAddressBook(), loadFeeEstimates(), loadSettingsInfo(), loadPayments(), loadPaymentStats(), loadWebhooks(), loadPrice(), refreshTorStatus()]);
             updateConnectionStatus(sseConnected ? 'live' : 'polling');
         }
 
