@@ -940,6 +940,61 @@ app.MapPost("/api/wallet/settings", async (WalletDbContext db, HttpContext ctx, 
     });
 }).WithTags("Wallet");
 
+// Probes whether a SOCKS5 proxy (usually a Tor daemon) is reachable on the
+// given host/port. Performs the no-auth SOCKS5 greeting so we can tell a
+// live proxy from "port happens to be open on some other service."
+app.MapPost("/api/wallet/test-tor", async (HttpContext ctx) =>
+{
+    var body = await ctx.Request.ReadFromJsonAsync<TorTestRequest>();
+    var host = string.IsNullOrWhiteSpace(body?.Host) ? "127.0.0.1" : body.Host;
+    var port = body?.Port is > 0 and <= 65535 ? body.Port.Value : 9050;
+
+    using var tcp = new System.Net.Sockets.TcpClient();
+    var sw = System.Diagnostics.Stopwatch.StartNew();
+    try
+    {
+        using var connectCts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        await tcp.ConnectAsync(host, port, connectCts.Token);
+    }
+    catch (Exception ex)
+    {
+        return Results.Ok(new { reachable = false, error = ex.Message });
+    }
+
+    try
+    {
+        var stream = tcp.GetStream();
+        using var ioCts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+
+        // SOCKS5 greeting: Version=5, 1 method, NoAuth(0x00).
+        // Tor accepts either NoAuth or UserPass, so we offer both and
+        // whichever the server picks tells us it's SOCKS5.
+        await stream.WriteAsync(new byte[] { 0x05, 0x02, 0x00, 0x02 }, ioCts.Token);
+
+        var resp = new byte[2];
+        var n = await stream.ReadAsync(resp.AsMemory(), ioCts.Token);
+        sw.Stop();
+
+        if (n < 2 || resp[0] != 0x05)
+            return Results.Ok(new { reachable = false, error = "Endpoint did not speak SOCKS5" });
+
+        // resp[1] = chosen method: 0x00 NoAuth, 0x02 UserPass, 0xFF rejected.
+        if (resp[1] == 0xFF)
+            return Results.Ok(new { reachable = false, error = "SOCKS5 server rejected offered auth methods" });
+
+        return Results.Ok(new
+        {
+            reachable = true,
+            latencyMs = sw.ElapsedMilliseconds,
+            authMethod = resp[1] switch { 0x00 => "none", 0x02 => "userpass", _ => $"0x{resp[1]:X2}" }
+        });
+    }
+    catch (Exception ex)
+    {
+        return Results.Ok(new { reachable = false, error = ex.Message });
+    }
+}).WithTags("Wallet");
+
 // Get receive address
 app.MapGet("/api/wallet/receive-address", async (WalletDbContext db) =>
 {
@@ -2682,6 +2737,7 @@ record WalletSettingsUpdateRequest(
     bool? TorEnabled = null,
     string? TorSocksHost = null,
     int? TorSocksPort = null);
+record TorTestRequest(string? Host = null, int? Port = null);
 
 /// <summary>
 /// Named mixing presets. Each string is a stable identifier the UI can show

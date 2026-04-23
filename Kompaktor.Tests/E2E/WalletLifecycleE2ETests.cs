@@ -3134,6 +3134,69 @@ public class WalletLifecycleE2ETests
     }
 
     [Fact]
+    public async Task Test_tor_endpoint_reports_unreachable_for_closed_port()
+    {
+        // Bind a TCP listener just to acquire a port number, then close it —
+        // that gives us a port that's very unlikely to be occupied when the
+        // endpoint tries to connect. Safer than hard-coding a random port.
+        var probe = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+        probe.Start();
+        var closedPort = ((System.Net.IPEndPoint)probe.LocalEndpoint).Port;
+        probe.Stop();
+
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        var resp = await client.PostAsJsonAsync("/api/wallet/test-tor",
+            new { host = "127.0.0.1", port = closedPort });
+        var body = await resp.Content.ReadFromJsonAsync<JsonElement>();
+
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        Assert.False(body.GetProperty("reachable").GetBoolean());
+        Assert.False(string.IsNullOrWhiteSpace(body.GetProperty("error").GetString()));
+    }
+
+    [Fact]
+    public async Task Test_tor_endpoint_reports_reachable_for_fake_socks5_server()
+    {
+        // Spin up a minimal SOCKS5 greeting responder on a loopback port:
+        // accept a connection, read the 4-byte greeting (0x05, 0x02, 0x00, 0x02),
+        // reply with (0x05, 0x00) picking no-auth. This is the exact exchange
+        // the endpoint performs, so a positive response proves the protocol
+        // handling end-to-end.
+        var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
+
+        var serverDone = new TaskCompletionSource();
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                using var c = await listener.AcceptTcpClientAsync();
+                using var s = c.GetStream();
+                var buf = new byte[4];
+                await s.ReadExactlyAsync(buf.AsMemory());
+                await s.WriteAsync(new byte[] { 0x05, 0x00 });
+                await Task.Delay(100); // let client read before we close
+            }
+            finally { listener.Stop(); serverDone.SetResult(); }
+        });
+
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        var resp = await client.PostAsJsonAsync("/api/wallet/test-tor",
+            new { host = "127.0.0.1", port });
+        var body = await resp.Content.ReadFromJsonAsync<JsonElement>();
+
+        Assert.True(body.GetProperty("reachable").GetBoolean(),
+            $"expected reachable=true, got body={body}");
+        Assert.Equal("none", body.GetProperty("authMethod").GetString());
+        await serverDone.Task.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
     public async Task Exposed_address_flag_surfaces_in_utxo_and_detail_endpoints()
     {
         // IsExposed is set by KompaktorHdWallet.MarkScriptsExposed after a

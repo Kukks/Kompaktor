@@ -1209,7 +1209,9 @@
                             <div id="torFields" style="display:none;margin-top:8px;gap:8px;align-items:center;flex-wrap:wrap">
                                 <input type="text" id="settTorHost" placeholder="127.0.0.1" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:4px;font-size:13px;width:150px">
                                 <input type="number" id="settTorPort" placeholder="9050" min="1" max="65535" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:4px;font-size:13px;width:110px">
-                                <span style="font-size:11px;color:var(--text-muted)">SOCKS5 host &amp; port (leave blank for 127.0.0.1:9050)</span>
+                                <button class="send-btn" style="padding:6px 12px;font-size:12px" onclick="testTorConnection()">Test Connection</button>
+                                <span id="torTestStatus" style="font-size:12px"></span>
+                                <span style="font-size:11px;color:var(--text-muted);flex-basis:100%">SOCKS5 host &amp; port (leave blank for 127.0.0.1:9050)</span>
                             </div>
                         </div>
                         <div style="display:flex;gap:8px;align-items:center">
@@ -3382,6 +3384,28 @@
         function toggleTorFields() {
             const enabled = document.getElementById('settTorEnabled').checked;
             document.getElementById('torFields').style.display = enabled ? 'flex' : 'none';
+        }
+
+        async function testTorConnection() {
+            const host = document.getElementById('settTorHost').value.trim() || '127.0.0.1';
+            const port = parseInt(document.getElementById('settTorPort').value.trim() || '9050');
+            const status = document.getElementById('torTestStatus');
+            status.innerHTML = '<span style="color:var(--text-muted)">Testing...</span>';
+            try {
+                const res = await fetch('/api/wallet/test-tor', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ host, port })
+                });
+                const data = await res.json();
+                if (data.reachable) {
+                    status.innerHTML = `<span style="color:var(--green)">&#10003; SOCKS5 OK (${data.latencyMs}ms, auth=${esc(data.authMethod)})</span>`;
+                } else {
+                    status.innerHTML = `<span style="color:var(--red)">&#10007; ${esc(data.error || 'unreachable')}</span>`;
+                }
+            } catch (e) {
+                status.innerHTML = `<span style="color:var(--red)">&#10007; ${esc(e.message)}</span>`;
+            }
         }
 
         async function loadMixingPreferences() {
