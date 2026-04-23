@@ -170,7 +170,7 @@ public class WalletSyncService : IAsyncDisposable
         {
             var script = new Script(addr.ScriptPubKey);
             await _blockchain.SubscribeAddressAsync(script, ct);
-            _subscribedScripts.Add(script);
+            lock (_subscribedScripts) _subscribedScripts.Add(script);
         }
     }
 
@@ -181,12 +181,20 @@ public class WalletSyncService : IAsyncDisposable
     {
         _blockchain.AddressNotified -= OnAddressNotified;
 
-        foreach (var script in _subscribedScripts)
+        // Snapshot under a copy to tolerate concurrent Add during shutdown —
+        // `StartMonitoringAsync` can still be appending when the host cancels.
+        Script[] toUnsubscribe;
+        lock (_subscribedScripts)
+        {
+            toUnsubscribe = _subscribedScripts.ToArray();
+            _subscribedScripts.Clear();
+        }
+
+        foreach (var script in toUnsubscribe)
         {
             try { await _blockchain.UnsubscribeAddressAsync(script); }
             catch { /* Best effort unsubscribe */ }
         }
-        _subscribedScripts.Clear();
 
         if (_monitoringCts is not null)
         {

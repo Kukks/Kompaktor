@@ -1088,6 +1088,63 @@ app.MapGet("/api/payments", async (WalletDbContext db) =>
     return Results.Ok(payments);
 }).WithTags("Payments");
 
+// Payments search with filters and pagination.
+// Separate from /api/payments to keep that endpoint's bare-array shape stable.
+app.MapGet("/api/payments/search", async (
+    WalletDbContext db,
+    string? direction = null,
+    string? status = null,
+    string? search = null,
+    int limit = 50,
+    int skip = 0) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null)
+        return Results.Ok(new { total = 0, skip = 0, limit = 0, items = Array.Empty<object>() });
+
+    limit = Math.Clamp(limit, 1, 500);
+    skip = Math.Max(skip, 0);
+
+    var query = db.PendingPayments.Where(p => p.WalletId == wallet.Id);
+
+    if (!string.IsNullOrWhiteSpace(direction))
+        query = query.Where(p => p.Direction == direction);
+
+    if (!string.IsNullOrWhiteSpace(status))
+    {
+        var statuses = status.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        query = query.Where(p => statuses.Contains(p.Status));
+    }
+
+    if (!string.IsNullOrWhiteSpace(search))
+    {
+        var term = search.Trim();
+        query = query.Where(p =>
+            EF.Functions.Like(p.Destination, $"%{term}%") ||
+            (p.Label != null && EF.Functions.Like(p.Label, $"%{term}%")));
+    }
+
+    var total = await query.CountAsync();
+
+    // SQLite can't ORDER BY DateTimeOffset with OFFSET, so page in memory after filtering.
+    var matches = await query.ToListAsync();
+    var payments = matches
+        .OrderByDescending(p => p.CreatedAt)
+        .Skip(skip)
+        .Take(limit)
+        .Select(p => new
+        {
+            p.Id, p.Direction, p.AmountSat,
+            amountBtc = p.AmountSat / 100_000_000.0,
+            p.Destination, p.Status, p.IsInteractive, p.IsUrgent,
+            p.Label, p.CompletedTxId, p.ProofJson, p.RetryCount, p.MaxRetries,
+            p.CreatedAt, p.CompletedAt, p.ExpiresAt
+        })
+        .ToList();
+
+    return Results.Ok(new { total, skip, limit, items = payments });
+}).WithTags("Payments");
+
 app.MapPost("/api/payments/send", async (WalletDbContext db, HttpContext ctx, DashboardEventBus bus) =>
 {
     var wallet = await db.Wallets.FirstOrDefaultAsync();

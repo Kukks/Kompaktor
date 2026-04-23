@@ -342,4 +342,94 @@ public class WalletLifecycleE2ETests
         });
         Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
     }
+
+    [Fact]
+    public async Task Payments_search_returns_paged_envelope()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        // Empty wallet: endpoint returns the paged envelope with total=0.
+        var resp = await client.GetFromJsonAsync<JsonElement>("/api/payments/search");
+        Assert.Equal(0, resp.GetProperty("total").GetInt32());
+        Assert.Empty(resp.GetProperty("items").EnumerateArray());
+    }
+
+    [Fact]
+    public async Task Payments_search_filters_by_direction_and_search_term()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        // Use the wallet's own receive address as a known-valid destination.
+        // The payment will fail to actually send (no UTXOs), but the PendingPayment row
+        // must still be created so we can test the search index.
+        var receive = await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address");
+        var addr = receive.GetProperty("address").GetString()!;
+
+        // Seed two payments with distinct labels so search can distinguish them.
+        await client.PostAsJsonAsync("/api/payments/send", new
+        {
+            Destination = addr,
+            AmountSat = 1000,
+            Label = "coffee"
+        });
+        await client.PostAsJsonAsync("/api/payments/send", new
+        {
+            Destination = addr,
+            AmountSat = 2000,
+            Label = "rent-march"
+        });
+
+        // Search by label substring: only "rent-march" should match.
+        var byLabel = await client.GetFromJsonAsync<JsonElement>(
+            "/api/payments/search?search=rent");
+        Assert.Equal(1, byLabel.GetProperty("total").GetInt32());
+        var onlyItem = byLabel.GetProperty("items").EnumerateArray().Single();
+        Assert.Equal("rent-march", onlyItem.GetProperty("label").GetString());
+
+        // Filter by direction=Outbound should return both seeded payments.
+        var byDirection = await client.GetFromJsonAsync<JsonElement>(
+            "/api/payments/search?direction=Outbound");
+        Assert.Equal(2, byDirection.GetProperty("total").GetInt32());
+
+        // Unknown direction returns nothing — no rows match.
+        var byUnknown = await client.GetFromJsonAsync<JsonElement>(
+            "/api/payments/search?direction=Sideways");
+        Assert.Equal(0, byUnknown.GetProperty("total").GetInt32());
+    }
+
+    [Fact]
+    public async Task Payments_search_respects_limit_and_skip()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+        var receive = await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address");
+        var addr = receive.GetProperty("address").GetString()!;
+
+        // Seed 3 payments.
+        for (var i = 0; i < 3; i++)
+        {
+            await client.PostAsJsonAsync("/api/payments/send", new
+            {
+                Destination = addr,
+                AmountSat = 1000 + i,
+                Label = $"payment-{i}"
+            });
+        }
+
+        var page1 = await client.GetFromJsonAsync<JsonElement>(
+            "/api/payments/search?limit=2&skip=0");
+        Assert.Equal(3, page1.GetProperty("total").GetInt32());
+        Assert.Equal(2, page1.GetProperty("items").EnumerateArray().Count());
+
+        var page2 = await client.GetFromJsonAsync<JsonElement>(
+            "/api/payments/search?limit=2&skip=2");
+        Assert.Equal(3, page2.GetProperty("total").GetInt32());
+        Assert.Single(page2.GetProperty("items").EnumerateArray());
+    }
 }
