@@ -1940,6 +1940,47 @@ app.MapGet("/api/dashboard/fee-estimates", async (IBlockchainBackend chain) =>
     return Results.Ok(estimates);
 }).WithTags("Dashboard");
 
+// Curated fee presets for send-form UX: fast / medium / slow / economy.
+// Returns named tiers with sat/vB rates so clients don't have to map
+// confirmation targets to human-readable labels themselves.
+app.MapGet("/api/dashboard/fee-presets", async (IBlockchainBackend chain) =>
+{
+    async Task<long> EstimateAsync(int target, long fallback)
+    {
+        try
+        {
+            var feeRate = await chain.EstimateFeeAsync(target);
+            return Math.Max(1, (long)Math.Ceiling(feeRate.SatoshiPerByte));
+        }
+        catch
+        {
+            return fallback;
+        }
+    }
+
+    var fast = await EstimateAsync(1, 10);
+    var medium = await EstimateAsync(3, 5);
+    var slow = await EstimateAsync(6, 2);
+    var economy = await EstimateAsync(25, 1);
+
+    // Guarantee monotonic ordering — a backend returning noisy/inconsistent
+    // estimates shouldn't show the user "medium is slower than slow".
+    medium = Math.Min(medium, fast);
+    slow = Math.Min(slow, medium);
+    economy = Math.Min(economy, slow);
+
+    return Results.Ok(new
+    {
+        presets = new[]
+        {
+            new { key = "fast", label = "Fast", confirmationTarget = 1, satPerVb = fast, description = "Next block (~10 min)" },
+            new { key = "medium", label = "Medium", confirmationTarget = 3, satPerVb = medium, description = "~30 minutes" },
+            new { key = "slow", label = "Slow", confirmationTarget = 6, satPerVb = slow, description = "~1 hour" },
+            new { key = "economy", label = "Economy", confirmationTarget = 25, satPerVb = economy, description = "Hours to days" }
+        }
+    });
+}).WithTags("Dashboard");
+
 // Current BTC price in fiat currencies (cached 60s via Coingecko)
 app.MapGet("/api/dashboard/price", async (IPriceService prices, CancellationToken ct) =>
 {

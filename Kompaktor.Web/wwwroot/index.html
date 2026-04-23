@@ -2060,12 +2060,21 @@
             }
         }
 
-        // Fee estimation
+        // Fee estimation — prefer the curated preset endpoint, fall back to raw targets
+        // for older servers that don't expose the new shape yet.
         async function loadFeeEstimates() {
-            const data = await fetchJson('/api/dashboard/fee-estimates');
             const container = document.getElementById('feePresets');
-            if (!data || !data.length) { container.innerHTML = ''; return; }
+            const presetResp = await fetchJson('/api/dashboard/fee-presets');
+            if (presetResp && Array.isArray(presetResp.presets) && presetResp.presets.length) {
+                container.innerHTML = presetResp.presets.map(p =>
+                    `<div class="fee-preset" onclick="selectFeePreset(${p.satPerVb}, this)" title="${p.description}">` +
+                    `<span class="rate">${p.satPerVb} sat/vB</span>${p.label}</div>`
+                ).join('');
+                return;
+            }
 
+            const data = await fetchJson('/api/dashboard/fee-estimates');
+            if (!data || !data.length) { container.innerHTML = ''; return; }
             const labels = { 1: 'Next block', 3: '~30 min', 6: '~1 hr', 25: '~4 hr' };
             container.innerHTML = data.map(e =>
                 `<div class="fee-preset" onclick="selectFeePreset(${e.satPerVb}, this)" title="${e.confirmationTarget} block target">` +

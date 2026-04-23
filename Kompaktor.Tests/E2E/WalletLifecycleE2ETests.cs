@@ -448,6 +448,38 @@ public class WalletLifecycleE2ETests
     }
 
     [Fact]
+    public async Task Fee_presets_returns_named_monotonic_tiers()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        var resp = await client.GetFromJsonAsync<JsonElement>("/api/dashboard/fee-presets");
+        var presets = resp.GetProperty("presets").EnumerateArray().ToArray();
+
+        // All four tiers present in the expected order.
+        Assert.Equal(4, presets.Length);
+        Assert.Equal("fast", presets[0].GetProperty("key").GetString());
+        Assert.Equal("medium", presets[1].GetProperty("key").GetString());
+        Assert.Equal("slow", presets[2].GetProperty("key").GetString());
+        Assert.Equal("economy", presets[3].GetProperty("key").GetString());
+
+        // Each preset has a label, target, description, and rate >= 1.
+        foreach (var p in presets)
+        {
+            Assert.False(string.IsNullOrWhiteSpace(p.GetProperty("label").GetString()));
+            Assert.False(string.IsNullOrWhiteSpace(p.GetProperty("description").GetString()));
+            Assert.True(p.GetProperty("satPerVb").GetInt64() >= 1);
+            Assert.True(p.GetProperty("confirmationTarget").GetInt32() >= 1);
+        }
+
+        // Monotonic: fast >= medium >= slow >= economy. We rely on this so the
+        // UI doesn't confusingly show slower tiers as more expensive.
+        var rates = presets.Select(p => p.GetProperty("satPerVb").GetInt64()).ToArray();
+        for (var i = 1; i < rates.Length; i++)
+            Assert.True(rates[i - 1] >= rates[i], $"non-monotonic: {string.Join(",", rates)}");
+    }
+
+    [Fact]
     public async Task Transaction_note_add_rejects_unknown_tx()
     {
         // Prevents users from scribbling notes onto arbitrary txids the wallet
