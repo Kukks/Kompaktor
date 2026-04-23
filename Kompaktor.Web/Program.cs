@@ -460,6 +460,78 @@ app.MapGet("/api/dashboard/transactions", async (WalletDbContext db) =>
     return Results.Ok(txGroups);
 }).WithTags("Dashboard");
 
+// Transaction detail: all UTXOs we own that this tx touched, plus labels,
+// confirmation state, and any linked coinjoin-round record.
+app.MapGet("/api/dashboard/transactions/{txId}", async (string txId, WalletDbContext db) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.NotFound();
+
+    // Outputs of txId that paid *to* this wallet.
+    var received = await db.Utxos
+        .Include(u => u.Address).ThenInclude(a => a.Account)
+        .Where(u => u.Address.Account.WalletId == wallet.Id && u.TxId == txId)
+        .ToListAsync();
+
+    // Inputs *spent by* txId: UTXOs we owned whose SpentByTxId = txId.
+    var spent = await db.Utxos
+        .Include(u => u.Address).ThenInclude(a => a.Account)
+        .Where(u => u.Address.Account.WalletId == wallet.Id && u.SpentByTxId == txId)
+        .ToListAsync();
+
+    if (received.Count == 0 && spent.Count == 0)
+        return Results.NotFound();
+
+    // Pull UTXO labels in one shot so each output/input can show its notes.
+    var utxoIds = received.Select(u => u.Id).Concat(spent.Select(u => u.Id))
+        .Select(id => id.ToString()).ToHashSet();
+    var labelsByUtxoId = (await db.Labels
+            .Where(l => l.EntityType == "Utxo" && utxoIds.Contains(l.EntityId))
+            .ToListAsync())
+        .GroupBy(l => l.EntityId)
+        .ToDictionary(g => g.Key, g => g.Select(l => l.Text).ToArray());
+
+    var receivedSats = received.Sum(u => u.AmountSat);
+    var spentSats = spent.Sum(u => u.AmountSat);
+    // Wallet-POV delta. Positive = net inflow. Fee sits between wallet-visible
+    // inputs and non-wallet outputs, so we can't compute it from this view alone.
+    var netSats = receivedSats - spentSats;
+
+    var coinjoin = await db.CoinJoinRecords
+        .Where(c => c.TransactionId == txId)
+        .Select(c => new { c.Id, c.RoundId, c.Status, c.OurInputCount, c.TotalInputCount, c.OurOutputCount, c.TotalOutputCount, c.ParticipantCount })
+        .FirstOrDefaultAsync();
+
+    return Results.Ok(new
+    {
+        txId,
+        netSats,
+        receivedSats,
+        spentSats,
+        confirmedHeight = received.FirstOrDefault()?.ConfirmedHeight ?? spent.FirstOrDefault()?.ConfirmedHeight ?? 0,
+        coinjoin,
+        receivedOutputs = received.Select(u => new
+        {
+            u.Id,
+            vout = u.OutputIndex,
+            u.AmountSat,
+            u.ConfirmedHeight,
+            u.IsFrozen,
+            labels = labelsByUtxoId.GetValueOrDefault(u.Id.ToString(), Array.Empty<string>()),
+            address = new Script(u.Address.ScriptPubKey).GetDestinationAddress(network)?.ToString()
+        }),
+        spentInputs = spent.Select(u => new
+        {
+            u.Id,
+            sourceTxId = u.TxId,
+            vout = u.OutputIndex,
+            u.AmountSat,
+            labels = labelsByUtxoId.GetValueOrDefault(u.Id.ToString(), Array.Empty<string>()),
+            address = new Script(u.Address.ScriptPubKey).GetDestinationAddress(network)?.ToString()
+        })
+    });
+}).WithTags("Dashboard");
+
 // Coin control: freeze/unfreeze UTXOs
 app.MapPost("/api/coin-control/freeze/{utxoId}", async (int utxoId, WalletDbContext db, DashboardEventBus bus) =>
 {

@@ -427,6 +427,27 @@ public class WalletLifecycleE2ETests
     }
 
     [Fact]
+    public async Task Transaction_detail_returns_not_found_for_unknown_tx()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.GetAsync("/api/dashboard/transactions/deadbeef");
+        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Transaction_detail_returns_not_found_when_no_wallet()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        var resp = await client.GetAsync("/api/dashboard/transactions/any");
+        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+    }
+
+    [Fact]
     public async Task Receive_uri_builds_bip21_with_amount_and_label()
     {
         await using var factory = new KompaktorWebFactory();
