@@ -151,6 +151,7 @@
         .unfreeze-btn { border-color: var(--yellow); color: var(--yellow); }
         .unfreeze-btn:hover { border-color: var(--green); color: var(--green); }
         .frozen-badge { background: rgba(210, 153, 34, 0.15); color: var(--yellow); padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+        .exposed-badge { background: rgba(228, 90, 63, 0.12); color: var(--red); padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: 600; }
         .label-input {
             background: var(--bg);
             border: 1px solid var(--border);
@@ -1582,6 +1583,10 @@
                 if (u.isFrozen) statusHtml = '<span class="frozen-badge">FROZEN</span>';
                 else if (isMixing) statusHtml = '<span style="color:var(--orange);font-size:11px;font-weight:600">Mixing</span>';
                 else statusHtml = '<span style="color:var(--green);font-size:11px">Active</span>';
+                // Exposed addresses are independent of Frozen/Mixing/Active —
+                // stack the warning so it stays visible even when the UTXO is
+                // actively in use or deliberately frozen.
+                if (u.isAddressExposed) statusHtml += ' <span class="exposed-badge" title="This address was revealed to other participants in a prior coinjoin round. Co-spending with non-exposed UTXOs leaks linkage.">EXPOSED</span>';
 
                 return `<tr class="${u.isFrozen ? 'frozen-row' : ''}" data-utxo-id="${u.id}">
                 <td><input type="checkbox" class="utxo-select" value="${u.id}" onchange="updateBatchBar()" ${selectedUtxos.has(u.id) ? 'checked' : ''}></td>
@@ -1689,6 +1694,7 @@
                     <span class="label">Key Path</span><span>${esc(data.keyPath)}</span>
                     <span class="label">Change</span><span>${data.isChange ? 'Yes' : 'No'}</span>
                     <span class="label">Frozen</span><span>${data.isFrozen ? '<span class="frozen-badge">FROZEN</span>' : 'No'}</span>
+                    <span class="label">Address Exposed</span><span>${data.isAddressExposed ? '<span class="exposed-badge" title="This address was revealed to other participants in a prior coinjoin round. Co-spending with non-exposed UTXOs leaks linkage.">EXPOSED</span> <small style="color:var(--dim)">— revealed in a prior coinjoin attempt</small>' : 'No'}</span>
                     <span class="label">Spent</span><span>${data.isSpent ? esc(data.spentByTxId || 'Yes') : 'No'}</span>
                     <span class="label">Labels</span>
                     <span>

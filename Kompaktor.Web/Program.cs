@@ -239,6 +239,12 @@ app.MapGet("/api/dashboard/utxos", async (WalletDbContext db) =>
             amountBtc = s.Utxo.AmountSat / 100_000_000.0,
             confirmedHeight = s.Utxo.ConfirmedHeight,
             isFrozen = s.Utxo.IsFrozen,
+            // An address is "exposed" if its script was revealed to other
+            // participants in a previous coinjoin round (even a failed one).
+            // Surface this so coin-control callers can steer away from
+            // intersection-attack risk; today only scoring's reuse penalty
+            // reacts to it, and only after the address has been used twice.
+            isAddressExposed = s.Utxo.Address.IsExposed,
             rawAnonSet = s.Score.RawAnonSet,
             effectiveScore = Math.Round(s.Score.EffectiveScore, 2),
             coinJoinCount = s.Score.CoinJoinCount,
@@ -801,6 +807,7 @@ app.MapGet("/api/coin-control/utxo/{utxoId}", async (int utxoId, WalletDbContext
         spentByTxId = utxo.SpentByTxId,
         keyPath = utxo.Address.KeyPath,
         isChange = utxo.Address.IsChange,
+        isAddressExposed = utxo.Address.IsExposed,
         labels = labels.Select(l => new { id = l.Id, text = l.Text, createdAt = l.CreatedAt }),
         coinjoinHistory = participations.Select(p => new
         {

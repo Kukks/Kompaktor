@@ -2,6 +2,9 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Kompaktor.Blockchain;
+using Kompaktor.Wallet.Data;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using NBitcoin;
 using NBitcoin.DataEncoders;
 using Xunit;
@@ -3128,5 +3131,43 @@ public class WalletLifecycleE2ETests
             await Task.Delay(250);
         }
         throw new TimeoutException($"Payment {paymentId} never reached status={expectedStatus}.");
+    }
+
+    [Fact]
+    public async Task Exposed_address_flag_surfaces_in_utxo_and_detail_endpoints()
+    {
+        // IsExposed is set by KompaktorHdWallet.MarkScriptsExposed after a
+        // coinjoin round reveals the script to other participants (including
+        // failed rounds). There's no HTTP surface to toggle it, so we mutate
+        // the address row directly and verify both the list and detail
+        // endpoints surface the flag — this is the signal the UI uses to
+        // warn about co-spend linkage risk.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var utxoId = await SeedUtxoAsync(factory, client, amountSat: 100_000, tag: 0x7A);
+
+        // Sanity-check baseline before mutation.
+        var before = await client.GetFromJsonAsync<JsonElement>("/api/dashboard/utxos");
+        var beforeRow = before.EnumerateArray().Single(u => u.GetProperty("id").GetInt32() == utxoId);
+        Assert.False(beforeRow.GetProperty("isAddressExposed").GetBoolean());
+
+        // Flip IsExposed directly on the address row — simulates the result
+        // of a prior round where this address's script was announced.
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<WalletDbContext>();
+            var utxo = await db.Utxos.Include(u => u.Address).SingleAsync(u => u.Id == utxoId);
+            utxo.Address.IsExposed = true;
+            await db.SaveChangesAsync();
+        }
+
+        var after = await client.GetFromJsonAsync<JsonElement>("/api/dashboard/utxos");
+        var afterRow = after.EnumerateArray().Single(u => u.GetProperty("id").GetInt32() == utxoId);
+        Assert.True(afterRow.GetProperty("isAddressExposed").GetBoolean());
+
+        var detail = await client.GetFromJsonAsync<JsonElement>($"/api/coin-control/utxo/{utxoId}");
+        Assert.True(detail.GetProperty("isAddressExposed").GetBoolean());
     }
 }
