@@ -906,6 +906,25 @@
             </section>
 
             <section>
+                <h2>Sweep (Send All Funds)</h2>
+                <div class="send-form" style="border:1px solid var(--red);border-radius:6px;padding:12px;background:rgba(255,100,100,0.05)">
+                    <p style="color:var(--red);font-size:12px;margin-bottom:10px">
+                        <strong>&#9888; Danger Zone.</strong> Sweep transfers ALL spendable funds (excluding frozen UTXOs) to a single destination, minus fees. Use for wallet migration or emergency exits.
+                    </p>
+                    <div class="field">
+                        <label>Destination Address</label>
+                        <input type="text" id="sweepDest" class="wide" placeholder="bc1q...">
+                    </div>
+                    <div class="field">
+                        <label>Fee Rate (sat/vB)</label>
+                        <input type="number" id="sweepFeeRate" class="narrow" value="2">
+                    </div>
+                    <button class="send-btn" onclick="initiateSweep()" style="background:var(--red);color:#fff">Preview Sweep</button>
+                </div>
+                <div id="sweepPreview" style="display:none;margin-top:12px;padding:12px;background:var(--surface);border-radius:6px;border:1px solid var(--border)"></div>
+            </section>
+
+            <section>
                 <h2>Address Book</h2>
                 <ul class="address-book-list" id="addressBookList">
                     <li class="empty">Loading...</li>
@@ -1887,6 +1906,64 @@
             if (data && data.totalBalanceSats > 0) {
                 document.getElementById('sendAmount').value = data.totalBalanceSats;
                 updateBtcEquiv();
+            }
+        }
+
+        // Holds the most recent sweep preview so confirmSweep() can act on it.
+        let pendingSweep = null;
+
+        // Step 1: ask the backend to build the sweep PSBT and show the preview.
+        // We do NOT broadcast anything here — user must still confirm.
+        async function initiateSweep() {
+            const destination = document.getElementById('sweepDest').value.trim();
+            const feeRateSatPerVb = parseInt(document.getElementById('sweepFeeRate').value) || 2;
+            if (!destination) { showToast('Destination required', 'warning'); return; }
+
+            try {
+                const res = await fetch('/api/dashboard/sweep', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ destination, feeRateSatPerVb })
+                });
+                const data = await res.json();
+                if (!res.ok) { showToast(typeof data === 'string' ? data : (data.detail || 'Sweep failed'), 'error'); return; }
+
+                pendingSweep = data;
+                const preview = document.getElementById('sweepPreview');
+                preview.style.display = 'block';
+                preview.innerHTML = `
+                    <h3 style="margin-top:0;color:var(--red)">&#9888; Sweep Preview</h3>
+                    <div class="info-grid" style="display:grid;grid-template-columns:auto 1fr;gap:6px 16px;font-size:13px">
+                        <span class="label">Destination</span><span class="truncate">${esc(data.destination)}</span>
+                        <span class="label">Inputs</span><span>${data.inputCount} UTXO(s)</span>
+                        <span class="label">Total input</span><span>${(data.totalInputSat / 1e8).toFixed(8)} BTC (${data.totalInputSat.toLocaleString()} sat)</span>
+                        <span class="label">Fee</span><span>${data.feeSat.toLocaleString()} sat</span>
+                        <span class="label" style="color:var(--red)">Will send</span><span style="color:var(--red);font-weight:bold">${data.sendAmountBtc.toFixed(8)} BTC (${data.sendAmountSat.toLocaleString()} sat)</span>
+                    </div>
+                    <p style="color:var(--yellow);font-size:12px;margin-top:10px">${esc(data.warning)}</p>
+                    <div id="sweepConfirmArea" style="margin-top:12px"></div>
+                `;
+                renderSweepConfirmation();
+            } catch (err) { showToast('Sweep failed: ' + err.message, 'error'); }
+        }
+
+        function renderSweepConfirmation() {
+            const area = document.getElementById('sweepConfirmArea');
+            if (!area) return;
+            area.innerHTML = `<button class="send-btn" style="background:var(--red);color:#fff" onclick="confirmSweep()">Confirm Sweep &amp; Copy PSBT</button>`;
+        }
+
+        // Final step: user has confirmed. Copy PSBT to clipboard and give them
+        // a path forward (sign externally, then broadcast via the PSBT endpoint).
+        async function confirmSweep() {
+            if (!pendingSweep) { showToast('No pending sweep', 'warning'); return; }
+            const copied = await navigator.clipboard.writeText(pendingSweep.psbt)
+                .then(() => true).catch(() => false);
+            if (copied) {
+                showToast(`PSBT copied to clipboard. Sign externally and broadcast via PSBT endpoint.`, 'success');
+            } else {
+                console.log('Sweep PSBT:', pendingSweep.psbt);
+                showToast('PSBT logged to console (clipboard unavailable). Sign externally and broadcast.', 'warning');
             }
         }
 

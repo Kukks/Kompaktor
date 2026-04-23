@@ -335,6 +335,82 @@ app.MapPost("/api/dashboard/plan-send", async (WalletDbContext db, HttpContext c
     }
 }).WithTags("Dashboard");
 
+// Sweep: send all available funds to a destination (minus fees)
+app.MapPost("/api/dashboard/sweep", async (WalletDbContext db, HttpContext ctx) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.BadRequest("No wallet found");
+
+    var body = await ctx.Request.ReadFromJsonAsync<SweepRequest>();
+    if (body is null || string.IsNullOrWhiteSpace(body.Destination))
+        return Results.BadRequest("Destination required");
+
+    try
+    {
+        var destination = BitcoinAddress.Create(body.Destination, network);
+        var feeRate = new FeeRate(Money.Satoshis(body.FeeRateSatPerVb > 0 ? body.FeeRateSatPerVb : 2), 1);
+
+        // Get all spendable UTXOs
+        var utxos = await db.Utxos
+            .Include(u => u.Address)
+            .ThenInclude(a => a.Account)
+            .Where(u => u.Address.Account.WalletId == wallet.Id)
+            .Where(u => u.SpentByTxId == null && !u.IsFrozen)
+            .Where(u => u.ConfirmedHeight != null || u.IsCoinJoinOutput)
+            .ToListAsync();
+
+        if (utxos.Count == 0)
+            return Results.BadRequest("No spendable UTXOs available");
+
+        var totalSat = utxos.Sum(u => u.AmountSat);
+
+        // Build transaction spending all UTXOs to destination
+        var coins = utxos.Select(u => new Coin(
+            new OutPoint(uint256.Parse(u.TxId), u.OutputIndex),
+            new TxOut(Money.Satoshis(u.AmountSat), new Script(u.ScriptPubKey))
+        )).ToArray();
+
+        var builder = network.CreateTransactionBuilder();
+        builder.AddCoins(coins);
+        builder.SendAllRemaining(destination.ScriptPubKey);
+        builder.SendEstimatedFees(feeRate);
+        builder.OptInRBF = true;
+
+        var tx = builder.BuildTransaction(sign: false);
+        var fee = builder.EstimateFees(tx, feeRate);
+        var sendAmount = totalSat - fee.Satoshi;
+
+        if (sendAmount <= 546)
+            return Results.BadRequest($"After fees ({fee.Satoshi} sat), remaining amount ({sendAmount} sat) is below dust limit");
+
+        // Create PSBT for signing
+        var psbt = PSBT.FromTransaction(tx, network);
+        for (int i = 0; i < tx.Inputs.Count; i++)
+        {
+            var coin = coins.FirstOrDefault(c => c.Outpoint == tx.Inputs[i].PrevOut);
+            if (coin is not null)
+                psbt.Inputs[i].WitnessUtxo = coin.TxOut;
+        }
+
+        return Results.Ok(new
+        {
+            txHex = tx.ToHex(),
+            psbt = psbt.ToBase64(),
+            inputCount = coins.Length,
+            totalInputSat = totalSat,
+            feeSat = fee.Satoshi,
+            sendAmountSat = sendAmount,
+            sendAmountBtc = sendAmount / 100_000_000.0,
+            destination = destination.ToString(),
+            warning = "This sends ALL wallet funds. Review carefully before signing."
+        });
+    }
+    catch (Exception ex)
+    {
+        return Results.BadRequest($"Sweep failed: {ex.Message}");
+    }
+}).WithTags("Dashboard");
+
 app.MapGet("/api/dashboard/transactions", async (WalletDbContext db) =>
 {
     var wallet = await db.Wallets.FirstOrDefaultAsync();
@@ -1943,3 +2019,4 @@ record WebhookCreateRequest(string Url, string? EventFilter = null);
 record VerifyBackupRequest(string Passphrase, VerifyBackupAnswer[] Answers);
 record VerifyBackupAnswer(int Position, string Word);
 record FeeBumpRequest(string TxId, long NewFeeRateSatPerVb);
+record SweepRequest(string Destination, long FeeRateSatPerVb = 2);
