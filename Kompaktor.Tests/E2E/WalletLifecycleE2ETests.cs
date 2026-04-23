@@ -686,6 +686,89 @@ public class WalletLifecycleE2ETests
     }
 
     [Fact]
+    public async Task Send_flow_signs_broadcasts_and_marks_utxo_spent()
+    {
+        // End-to-end send: seed a UTXO, call /dashboard/send with the right
+        // passphrase, verify the tx reaches the blockchain backend and the
+        // source UTXO is marked spent.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "correct-pw" });
+
+        var utxoId = await SeedUtxoAsync(factory, client, amountSat: 200_000, tag: 0x44);
+        var beforeBroadcastCount = factory.Blockchain.BroadcastedTransactions.Count;
+
+        var receive = await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address");
+        var dest = receive.GetProperty("address").GetString()!;
+
+        var sendResp = await client.PostAsJsonAsync("/api/dashboard/send", new
+        {
+            Destination = dest,
+            AmountSat = 50_000,
+            FeeRateSatPerVb = 2,
+            Strategy = "PrivacyFirst",
+            Passphrase = "correct-pw"
+        });
+        Assert.Equal(HttpStatusCode.OK, sendResp.StatusCode);
+        var send = await sendResp.Content.ReadFromJsonAsync<JsonElement>();
+        var broadcastTxId = send.GetProperty("txId").GetString()!;
+        Assert.True(send.GetProperty("feeSat").GetInt64() > 0);
+
+        // The fake backend saw exactly one more broadcast.
+        Assert.Equal(beforeBroadcastCount + 1, factory.Blockchain.BroadcastedTransactions.Count);
+        Assert.Equal(broadcastTxId,
+            factory.Blockchain.BroadcastedTransactions[^1].GetHash().ToString());
+
+        // Source UTXO is now marked spent by the broadcast txid.
+        var detail = await client.GetFromJsonAsync<JsonElement>($"/api/coin-control/utxo/{utxoId}");
+        Assert.True(detail.GetProperty("isSpent").GetBoolean());
+        Assert.Equal(broadcastTxId, detail.GetProperty("spentByTxId").GetString());
+    }
+
+    [Fact]
+    public async Task Send_with_wrong_passphrase_returns_bad_request()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "real-pw" });
+
+        await SeedUtxoAsync(factory, client, amountSat: 100_000, tag: 0x45);
+
+        var receive = await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address");
+        var dest = receive.GetProperty("address").GetString()!;
+        var before = factory.Blockchain.BroadcastedTransactions.Count;
+
+        var resp = await client.PostAsJsonAsync("/api/dashboard/send", new
+        {
+            Destination = dest,
+            AmountSat = 10_000,
+            FeeRateSatPerVb = 2,
+            Passphrase = "WRONG"
+        });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+
+        // And nothing was broadcast — the wrong passphrase should fail before
+        // the transaction ever reaches the backend.
+        Assert.Equal(before, factory.Blockchain.BroadcastedTransactions.Count);
+    }
+
+    [Fact]
+    public async Task Send_without_passphrase_returns_bad_request()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.PostAsJsonAsync("/api/dashboard/send", new
+        {
+            Destination = "bcrt1qsomewhere",
+            AmountSat = 1000,
+            Passphrase = ""
+        });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
     public async Task Plan_send_returns_inputs_outputs_and_fee_for_valid_plan()
     {
         // This is the preview that the UI uses before calling /dashboard/send,
