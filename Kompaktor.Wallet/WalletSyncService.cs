@@ -196,11 +196,14 @@ public class WalletSyncService : IAsyncDisposable
             catch { /* Best effort unsubscribe */ }
         }
 
-        if (_monitoringCts is not null)
+        // Atomically claim the CTS so we can't race with a second StopMonitoringAsync
+        // or with the framework disposing the underlying stoppingToken.
+        var cts = Interlocked.Exchange(ref _monitoringCts, null);
+        if (cts is not null)
         {
-            await _monitoringCts.CancelAsync();
-            _monitoringCts.Dispose();
-            _monitoringCts = null;
+            try { await cts.CancelAsync(); }
+            catch (ObjectDisposedException) { /* already disposed — cancellation no-op */ }
+            cts.Dispose();
         }
     }
 
