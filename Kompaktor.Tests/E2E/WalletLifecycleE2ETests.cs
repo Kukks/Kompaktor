@@ -2002,6 +2002,103 @@ public class WalletLifecycleE2ETests
         Assert.Equal(JsonValueKind.Null, resp.GetProperty("totalBalanceFiat").ValueKind);
     }
 
+    [Fact]
+    public async Task Transactions_empty_wallet_returns_empty_array()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.GetFromJsonAsync<JsonElement>("/api/dashboard/transactions");
+        Assert.Equal(JsonValueKind.Array, resp.ValueKind);
+        Assert.Equal(0, resp.GetArrayLength());
+    }
+
+    [Fact]
+    public async Task Transactions_returns_received_entries_with_expected_shape()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        await SeedUtxoAsync(factory, client, amountSat: 123_456, tag: 0x91);
+
+        var resp = await client.GetFromJsonAsync<JsonElement>("/api/dashboard/transactions");
+        Assert.Equal(1, resp.GetArrayLength());
+        var row = resp[0];
+        Assert.False(string.IsNullOrEmpty(row.GetProperty("txId").GetString()));
+        Assert.Equal(123_456L, row.GetProperty("amountSat").GetInt64());
+        Assert.Equal(0.00123456, row.GetProperty("amountBtc").GetDouble(), 8);
+        Assert.Equal(1, row.GetProperty("utxoCount").GetInt32());
+        Assert.False(row.GetProperty("isSpent").GetBoolean());
+        Assert.Equal("received", row.GetProperty("type").GetString());
+    }
+
+    [Fact]
+    public async Task Transactions_paginates_with_skip_and_take()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        await SeedUtxoAsync(factory, client, amountSat: 10_000, tag: 0x92);
+        await SeedUtxoAsync(factory, client, amountSat: 20_000, tag: 0x93);
+        await SeedUtxoAsync(factory, client, amountSat: 30_000, tag: 0x94);
+
+        var all = await client.GetFromJsonAsync<JsonElement>("/api/dashboard/transactions");
+        Assert.Equal(3, all.GetArrayLength());
+
+        var firstOnly = await client.GetFromJsonAsync<JsonElement>(
+            "/api/dashboard/transactions?take=1");
+        Assert.Equal(1, firstOnly.GetArrayLength());
+
+        var skipTwo = await client.GetFromJsonAsync<JsonElement>(
+            "/api/dashboard/transactions?skip=2");
+        Assert.Equal(1, skipTwo.GetArrayLength());
+
+        var skipAll = await client.GetFromJsonAsync<JsonElement>(
+            "/api/dashboard/transactions?skip=10");
+        Assert.Equal(0, skipAll.GetArrayLength());
+    }
+
+    [Fact]
+    public async Task Transactions_confirmed_filter_separates_confirmed_from_unconfirmed()
+    {
+        // SeedUtxoAsync always stages with Confirmations=1, so all seeded
+        // rows count as confirmed. Filter semantics: confirmed=true keeps them,
+        // confirmed=false returns empty.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        await SeedUtxoAsync(factory, client, amountSat: 50_000, tag: 0x95);
+
+        var confirmed = await client.GetFromJsonAsync<JsonElement>(
+            "/api/dashboard/transactions?confirmed=true");
+        Assert.Equal(1, confirmed.GetArrayLength());
+
+        var unconfirmed = await client.GetFromJsonAsync<JsonElement>(
+            "/api/dashboard/transactions?confirmed=false");
+        Assert.Equal(0, unconfirmed.GetArrayLength());
+    }
+
+    [Fact]
+    public async Task Transactions_take_is_clamped_to_upper_bound()
+    {
+        // take=9999 must not 500 — the endpoint clamps to its max (500)
+        // and still returns whatever rows exist.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        await SeedUtxoAsync(factory, client, amountSat: 9_000, tag: 0x96);
+
+        var resp = await client.GetAsync("/api/dashboard/transactions?take=9999");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var body = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(1, body.GetArrayLength());
+    }
+
     /// <summary>
     /// Stages a single confirmed UTXO on the fake backend against a fresh wallet
     /// receive address. Returns the DB-assigned utxoId once the wallet has

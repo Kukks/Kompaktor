@@ -448,40 +448,50 @@ app.MapPost("/api/dashboard/sweep", async (WalletDbContext db, HttpContext ctx) 
     }
 }).WithTags("Dashboard");
 
-app.MapGet("/api/dashboard/transactions", async (WalletDbContext db) =>
+app.MapGet("/api/dashboard/transactions", async (
+    WalletDbContext db, int? skip, int? take, bool? confirmed) =>
 {
     var wallet = await db.Wallets.FirstOrDefaultAsync();
     if (wallet is null) return Results.Ok(Array.Empty<object>());
 
-    // Get all UTXOs (spent and unspent) to build transaction history
-    var utxos = await db.Utxos
-        .Include(u => u.Address)
-        .ThenInclude(a => a.Account)
-        .Where(u => u.Address.Account.WalletId == wallet.Id)
-        .OrderByDescending(u => u.ConfirmedHeight)
-        .Take(100)
+    var pageSize = Math.Clamp(take ?? 100, 1, 500);
+    var pageSkip = Math.Max(skip ?? 0, 0);
+
+    var baseQuery = db.Utxos
+        .Where(u => u.Address.Account.WalletId == wallet.Id);
+
+    if (confirmed == true)
+        baseQuery = baseQuery.Where(u => u.ConfirmedHeight != null);
+    else if (confirmed == false)
+        baseQuery = baseQuery.Where(u => u.ConfirmedHeight == null);
+
+    // Paginate at the transaction level, not the UTXO level, so a tx with
+    // many outputs doesn't crowd out other txs from the page.
+    var txGroups = await baseQuery
+        .GroupBy(u => u.TxId)
+        .Select(g => new
+        {
+            TxId = g.Key,
+            AmountSat = g.Sum(u => u.AmountSat),
+            MaxHeight = g.Max(u => u.ConfirmedHeight),
+            AnySpent = g.Any(u => u.SpentByTxId != null),
+            UtxoCount = g.Count()
+        })
+        .OrderByDescending(x => x.MaxHeight)
+        .Skip(pageSkip)
+        .Take(pageSize)
         .ToListAsync();
 
-    // Group by transaction
-    var txGroups = utxos.GroupBy(u => u.TxId).Select(g =>
+    return Results.Ok(txGroups.Select(g => new
     {
-        var received = g.Sum(u => u.AmountSat);
-        var isSpent = g.Any(u => u.SpentByTxId != null);
-        var firstUtxo = g.First();
-
-        return new
-        {
-            txId = g.Key,
-            amountSat = received,
-            amountBtc = received / 100_000_000.0,
-            confirmedHeight = firstUtxo.ConfirmedHeight,
-            isSpent,
-            utxoCount = g.Count(),
-            type = firstUtxo.SpentByTxId != null ? "spent" : "received"
-        };
-    }).ToList();
-
-    return Results.Ok(txGroups);
+        txId = g.TxId,
+        amountSat = g.AmountSat,
+        amountBtc = g.AmountSat / 100_000_000.0,
+        confirmedHeight = g.MaxHeight,
+        isSpent = g.AnySpent,
+        utxoCount = g.UtxoCount,
+        type = g.AnySpent ? "spent" : "received"
+    }));
 }).WithTags("Dashboard");
 
 // Transaction detail: all UTXOs we own that this tx touched, plus labels,
