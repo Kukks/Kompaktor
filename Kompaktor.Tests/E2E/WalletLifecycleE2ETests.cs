@@ -1789,6 +1789,98 @@ public class WalletLifecycleE2ETests
         Assert.Empty(resp.EnumerateArray());
     }
 
+    [Fact]
+    public async Task Receive_create_returns_bip21_uri_with_amount_and_label()
+    {
+        // Modern-wallet receive flow: create an inbound payment request, get
+        // back a BIP21 URI encoding address + amount (+ kompaktor key for
+        // the interactive-payment extension).
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.PostAsJsonAsync("/api/payments/receive", new
+        {
+            AmountSat = 250_000L,
+            Label = "invoice-101",
+            ExpiryMinutes = 30
+        });
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var body = await resp.Content.ReadFromJsonAsync<JsonElement>();
+
+        Assert.Equal(250_000L, body.GetProperty("amountSat").GetInt64());
+        Assert.Equal("invoice-101", body.GetProperty("label").GetString());
+        Assert.Equal("Inbound", body.GetProperty("direction").GetString());
+
+        var uri = body.GetProperty("bip21Uri").GetString()!;
+        Assert.StartsWith("bitcoin:", uri);
+        Assert.Contains("amount=0.00250000", uri);
+
+        // The payment must appear in the main /api/payments list.
+        var list = await client.GetFromJsonAsync<JsonElement>("/api/payments");
+        Assert.Single(list.EnumerateArray());
+    }
+
+    [Fact]
+    public async Task Receive_create_rejects_zero_amount()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.PostAsJsonAsync("/api/payments/receive", new
+        {
+            AmountSat = 0L,
+            Label = "bad"
+        });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Receive_create_without_wallet_returns_bad_request()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        var resp = await client.PostAsJsonAsync("/api/payments/receive", new
+        {
+            AmountSat = 10_000L
+        });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Payment_qr_endpoint_returns_svg_for_known_payment()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var create = await client.PostAsJsonAsync("/api/payments/receive", new
+        {
+            AmountSat = 50_000L,
+            Label = "qr-test"
+        });
+        var id = (await create.Content.ReadFromJsonAsync<JsonElement>())
+            .GetProperty("id").GetString()!;
+
+        var qr = await client.GetAsync($"/api/payments/{id}/qr");
+        Assert.Equal(HttpStatusCode.OK, qr.StatusCode);
+        Assert.Equal("image/svg+xml", qr.Content.Headers.ContentType?.MediaType);
+        var svg = await qr.Content.ReadAsStringAsync();
+        Assert.StartsWith("<svg", svg);
+    }
+
+    [Fact]
+    public async Task Payment_qr_returns_not_found_for_unknown_id()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        var resp = await client.GetAsync("/api/payments/does-not-exist/qr");
+        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+    }
+
     /// <summary>
     /// Stages a single confirmed UTXO on the fake backend against a fresh wallet
     /// receive address. Returns the DB-assigned utxoId once the wallet has
