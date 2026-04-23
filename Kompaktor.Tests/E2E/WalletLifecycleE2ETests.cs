@@ -1,6 +1,9 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using Kompaktor.Blockchain;
+using NBitcoin;
+using NBitcoin.DataEncoders;
 using Xunit;
 
 namespace Kompaktor.Tests.E2E;
@@ -629,5 +632,93 @@ public class WalletLifecycleE2ETests
             "/api/payments/search?limit=2&skip=2");
         Assert.Equal(3, page2.GetProperty("total").GetInt32());
         Assert.Single(page2.GetProperty("items").EnumerateArray());
+    }
+
+    [Fact]
+    public async Task Transaction_detail_returns_received_utxo_from_seeded_backend()
+    {
+        // Drives the receive pipeline end-to-end: stage a UTXO on the fake
+        // backend, let the background sync service pick it up, then assert
+        // the tx-detail endpoint surfaces it with the right amounts.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var receive = await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address");
+        var scriptHex = receive.GetProperty("scriptHex").GetString()!;
+        var script = new Script(Encoders.Hex.DecodeData(scriptHex));
+
+        // Wait for the background sync service to attach and start monitoring.
+        // Until it's monitoring, staged UTXOs won't be observed.
+        await WaitForMonitoringAsync(client);
+
+        // Deterministic fake txid — 32 bytes of a recognizable pattern.
+        var txIdBytes = new byte[32];
+        for (var i = 0; i < 32; i++) txIdBytes[i] = (byte)(0xA0 + (i % 16));
+        var fakeTxId = new uint256(txIdBytes);
+
+        var outPoint = new OutPoint(fakeTxId, 0);
+        var txOut = new TxOut(Money.Satoshis(50_000), script);
+        factory.Blockchain.StageUtxo(new UtxoInfo(outPoint, txOut, Confirmations: 1, IsCoinBase: false));
+
+        // Fire both arrival paths — the notification handler and a forced resync.
+        // Either one should pick up the staged UTXO; both together remove timing flake.
+        factory.Blockchain.RaiseAddressNotification(script, fakeTxId, factory.Blockchain.BlockHeight);
+        await client.PostAsync("/api/wallet/resync", null);
+
+        var detail = await WaitForTxDetailAsync(client, fakeTxId.ToString());
+
+        Assert.Equal(50_000, detail.GetProperty("receivedSats").GetInt64());
+        Assert.Equal(0, detail.GetProperty("spentSats").GetInt64());
+        Assert.Equal(50_000, detail.GetProperty("netSats").GetInt64());
+
+        var outputs = detail.GetProperty("receivedOutputs").EnumerateArray().ToArray();
+        Assert.Single(outputs);
+        Assert.Equal(50_000, outputs[0].GetProperty("amountSat").GetInt64());
+        Assert.Equal(0, outputs[0].GetProperty("vout").GetInt32());
+        Assert.Equal(
+            receive.GetProperty("address").GetString(),
+            outputs[0].GetProperty("address").GetString());
+
+        // No inputs were ours, so spentInputs must be empty.
+        Assert.Empty(detail.GetProperty("spentInputs").EnumerateArray());
+    }
+
+    /// <summary>
+    /// Polls /api/wallet/sync-status until the background service reports
+    /// monitoring=true, or throws after the timeout. Startup races the
+    /// hosted service's 1s pre-delay and 5s wallet-detection loop, so we
+    /// need a window comfortably larger than that.
+    /// </summary>
+    private static async Task WaitForMonitoringAsync(HttpClient client, int timeoutSeconds = 20)
+    {
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(timeoutSeconds);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            var status = await client.GetFromJsonAsync<JsonElement>("/api/wallet/sync-status");
+            if (status.GetProperty("monitoring").GetBoolean()) return;
+            await Task.Delay(250);
+        }
+        throw new TimeoutException("Background sync never reached monitoring=true.");
+    }
+
+    /// <summary>
+    /// Polls the tx-detail endpoint until it returns 200, or throws after
+    /// the timeout. Used after staging a UTXO — the async notification
+    /// handler and/or forced resync need a moment to persist to the DB.
+    /// </summary>
+    private static async Task<JsonElement> WaitForTxDetailAsync(
+        HttpClient client, string txId, int timeoutSeconds = 15)
+    {
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(timeoutSeconds);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            var resp = await client.GetAsync($"/api/dashboard/transactions/{txId}");
+            if (resp.StatusCode == HttpStatusCode.OK)
+                return await resp.Content.ReadFromJsonAsync<JsonElement>();
+            await Task.Delay(250);
+        }
+        throw new TimeoutException($"Tx detail for {txId} never became available.");
     }
 }
