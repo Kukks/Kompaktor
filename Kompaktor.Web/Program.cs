@@ -257,7 +257,8 @@ app.MapGet("/api/dashboard/privacy-summary", async (WalletDbContext db) =>
 
 app.MapGet("/api/dashboard/coinjoins", async (WalletDbContext db) =>
 {
-    var records = await db.CoinJoinRecords
+    // SQLite's EF Core provider can't ORDER BY DateTimeOffset — pull then sort in memory.
+    var records = (await db.CoinJoinRecords.ToListAsync())
         .OrderByDescending(r => r.CreatedAt)
         .Take(50)
         .Select(r => new
@@ -273,7 +274,7 @@ app.MapGet("/api/dashboard/coinjoins", async (WalletDbContext db) =>
             participantCount = r.ParticipantCount,
             createdAt = r.CreatedAt
         })
-        .ToListAsync();
+        .ToList();
 
     return Results.Ok(records);
 }).WithTags("Dashboard");
@@ -1071,8 +1072,10 @@ app.MapGet("/api/payments", async (WalletDbContext db) =>
     var wallet = await db.Wallets.FirstOrDefaultAsync();
     if (wallet is null) return Results.Ok(Array.Empty<object>());
 
-    var payments = await db.PendingPayments
-        .Where(p => p.WalletId == wallet.Id)
+    // SQLite's EF Core provider can't ORDER BY DateTimeOffset — pull then sort in memory.
+    var payments = (await db.PendingPayments
+            .Where(p => p.WalletId == wallet.Id)
+            .ToListAsync())
         .OrderByDescending(p => p.CreatedAt)
         .Take(50)
         .Select(p => new
@@ -1083,7 +1086,7 @@ app.MapGet("/api/payments", async (WalletDbContext db) =>
             p.Label, p.CompletedTxId, p.ProofJson, p.RetryCount, p.MaxRetries,
             p.CreatedAt, p.CompletedAt, p.ExpiresAt
         })
-        .ToListAsync();
+        .ToList();
 
     return Results.Ok(payments);
 }).WithTags("Payments");
@@ -1358,10 +1361,11 @@ app.MapGet("/api/payments/export", async (WalletDbContext db) =>
     var wallet = await db.Wallets.FirstOrDefaultAsync();
     if (wallet is null) return Results.Ok("No wallet");
 
-    var payments = await db.PendingPayments
-        .Where(p => p.WalletId == wallet.Id)
+    var payments = (await db.PendingPayments
+            .Where(p => p.WalletId == wallet.Id)
+            .ToListAsync())
         .OrderByDescending(p => p.CreatedAt)
-        .ToListAsync();
+        .ToList();
 
     var csv = new System.Text.StringBuilder();
     csv.AppendLine("Id,Direction,AmountSat,AmountBtc,Destination,Status,Interactive,Urgent,Retries,Label,TxId,CreatedAt,CompletedAt,ExpiresAt");
@@ -1380,8 +1384,9 @@ app.MapGet("/api/webhooks", async (WalletDbContext db) =>
     var wallet = await db.Wallets.FirstOrDefaultAsync();
     if (wallet is null) return Results.Ok(Array.Empty<object>());
 
-    var webhooks = await db.PaymentWebhooks
-        .Where(w => w.WalletId == wallet.Id)
+    var webhooks = (await db.PaymentWebhooks
+            .Where(w => w.WalletId == wallet.Id)
+            .ToListAsync())
         .OrderByDescending(w => w.CreatedAt)
         .Select(w => new
         {
@@ -1391,7 +1396,7 @@ app.MapGet("/api/webhooks", async (WalletDbContext db) =>
             eventFilter = w.EventFilter,
             createdAt = w.CreatedAt
         })
-        .ToListAsync();
+        .ToList();
 
     return Results.Ok(webhooks);
 }).WithTags("Webhooks");
@@ -1479,11 +1484,12 @@ app.MapGet("/api/address-book", async (WalletDbContext db) =>
     var wallet = await db.Wallets.FirstOrDefaultAsync();
     if (wallet is null) return Results.Ok(Array.Empty<object>());
 
-    var entries = await db.AddressBook
+    var entries = (await db.AddressBook
         .Where(a => a.WalletId == wallet.Id)
+        .ToListAsync())
         .OrderByDescending(a => a.CreatedAt)
         .Select(a => new { a.Id, a.Label, a.Address, a.CreatedAt })
-        .ToListAsync();
+        .ToList();
 
     return Results.Ok(entries);
 }).WithTags("AddressBook");

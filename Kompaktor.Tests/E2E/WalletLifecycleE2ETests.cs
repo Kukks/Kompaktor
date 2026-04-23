@@ -402,6 +402,87 @@ public class WalletLifecycleE2ETests
     }
 
     [Fact]
+    public async Task Payments_list_returns_seeded_payments()
+    {
+        // Regression: /api/payments previously hit a SQLite "DateTimeOffset in ORDER BY"
+        // error whenever the wallet had any payments. Empty-wallet tests masked it.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+        var receive = await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address");
+        var addr = receive.GetProperty("address").GetString()!;
+
+        await client.PostAsJsonAsync("/api/payments/send", new
+        {
+            Destination = addr,
+            AmountSat = 1234,
+            Label = "regression-check"
+        });
+
+        var payments = await client.GetFromJsonAsync<JsonElement>("/api/payments");
+        var items = payments.EnumerateArray().ToArray();
+        Assert.Single(items);
+        Assert.Equal("regression-check", items[0].GetProperty("label").GetString());
+    }
+
+    [Fact]
+    public async Task Address_book_full_lifecycle_add_list_delete()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        // Grab a real regtest address.
+        var receive = await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address");
+        var addr = receive.GetProperty("address").GetString()!;
+
+        // Empty list to start.
+        var empty = await client.GetFromJsonAsync<JsonElement>("/api/address-book");
+        Assert.Empty(empty.EnumerateArray());
+
+        // Add an entry.
+        var added = await client.PostAsJsonAsync("/api/address-book", new
+        {
+            Label = "Alice",
+            Address = addr
+        });
+        Assert.Equal(HttpStatusCode.OK, added.StatusCode);
+        var entry = await added.Content.ReadFromJsonAsync<JsonElement>();
+        var entryId = entry.GetProperty("id").GetInt32();
+
+        // List should now contain it.
+        var listed = await client.GetFromJsonAsync<JsonElement>("/api/address-book");
+        var items = listed.EnumerateArray().ToArray();
+        Assert.Single(items);
+        Assert.Equal("Alice", items[0].GetProperty("label").GetString());
+
+        // Duplicate add should be rejected.
+        var dup = await client.PostAsJsonAsync("/api/address-book", new
+        {
+            Label = "Alice Again",
+            Address = addr
+        });
+        Assert.Equal(HttpStatusCode.BadRequest, dup.StatusCode);
+
+        // Garbage address rejected.
+        var bad = await client.PostAsJsonAsync("/api/address-book", new
+        {
+            Label = "Bob",
+            Address = "not-a-real-address"
+        });
+        Assert.Equal(HttpStatusCode.BadRequest, bad.StatusCode);
+
+        // Delete works.
+        var del = await client.DeleteAsync($"/api/address-book/{entryId}");
+        Assert.Equal(HttpStatusCode.OK, del.StatusCode);
+
+        var afterDelete = await client.GetFromJsonAsync<JsonElement>("/api/address-book");
+        Assert.Empty(afterDelete.EnumerateArray());
+    }
+
+    [Fact]
     public async Task Payments_search_respects_limit_and_skip()
     {
         await using var factory = new KompaktorWebFactory();
