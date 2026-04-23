@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Text.Json;
 using System.Threading.RateLimiting;
 using QRCoder;
 using Kompaktor.Behaviors;
@@ -1034,6 +1035,61 @@ app.MapPost("/api/wallet/test-tor", async (HttpContext ctx) =>
         latencyMs = result.LatencyMs,
         authMethod = result.AuthMethod
     });
+}).WithTags("Wallet");
+
+// Probes whether a Kompaktor coordinator URL is reachable and responds
+// to the /api/rounds endpoint. Lets the UI validate a custom coordinator
+// *before* the user commits their passphrase and starts mixing. Clearnet
+// only — users can separately validate Tor with /api/wallet/test-tor.
+app.MapPost("/api/wallet/test-coordinator", async (HttpContext ctx) =>
+{
+    var body = await ctx.Request.ReadFromJsonAsync<CoordinatorTestRequest>();
+    if (body is null || string.IsNullOrWhiteSpace(body.Url))
+        return Results.Ok(new { reachable = false, error = "missing url" });
+
+    if (!Uri.TryCreate(body.Url.Trim(), UriKind.Absolute, out var baseUri))
+        return Results.Ok(new { reachable = false, error = "invalid url" });
+
+    if (baseUri.Scheme is not ("http" or "https"))
+        return Results.Ok(new { reachable = false, error = "scheme must be http or https" });
+
+    using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+    var probeUri = new Uri(baseUri, "/api/rounds");
+    var sw = System.Diagnostics.Stopwatch.StartNew();
+    try
+    {
+        using var resp = await http.GetAsync(probeUri, ctx.RequestAborted);
+        sw.Stop();
+        if (!resp.IsSuccessStatusCode)
+            return Results.Ok(new { reachable = false, latencyMs = sw.ElapsedMilliseconds, error = $"HTTP {(int)resp.StatusCode}" });
+
+        // Best-effort round count — a healthy coordinator returns a JSON
+        // array even if empty. Any parse failure still counts as reachable
+        // (the endpoint answered) so the user knows the URL is live.
+        int? roundCount = null;
+        try
+        {
+            var payload = await resp.Content.ReadFromJsonAsync<JsonElement>(ctx.RequestAborted);
+            if (payload.ValueKind == JsonValueKind.Array)
+                roundCount = payload.GetArrayLength();
+        }
+        catch { /* body not JSON or shape differs — reachability still holds */ }
+
+        return Results.Ok(new
+        {
+            reachable = true,
+            latencyMs = sw.ElapsedMilliseconds,
+            roundCount
+        });
+    }
+    catch (TaskCanceledException)
+    {
+        return Results.Ok(new { reachable = false, error = "timeout" });
+    }
+    catch (HttpRequestException ex)
+    {
+        return Results.Ok(new { reachable = false, error = ex.Message });
+    }
 }).WithTags("Wallet");
 
 // Get receive address
@@ -2856,6 +2912,7 @@ record WalletSettingsUpdateRequest(
     string? TorSocksHost = null,
     int? TorSocksPort = null);
 record TorTestRequest(string? Host = null, int? Port = null);
+record CoordinatorTestRequest(string? Url = null);
 
 /// <summary>
 /// Result of a SOCKS5 greeting probe against a Tor daemon (or anything

@@ -680,6 +680,8 @@
                 <div class="mixing-toggle" id="mixingToggle" onclick="toggleMixing()"></div>
                 <span id="mixingLabel" style="font-size:13px;color:var(--text-muted)">Off</span>
                 <input type="text" class="mixing-pass-input" id="mixingCoordUrl" placeholder="Coordinator URL (leave blank for local)" style="display:none;width:250px">
+                <button id="mixingCoordTest" class="send-btn" style="display:none;padding:4px 8px;font-size:11px" onclick="testCoordinator()" title="Check the coordinator URL is reachable before starting">Test</button>
+                <span id="mixingCoordStatus" style="display:none;font-size:11px"></span>
                 <input type="text" class="mixing-pass-input" id="mixingTorHost" placeholder="Tor SOCKS host (e.g. 127.0.0.1:9050)" style="display:none;width:200px" title="Enable Tor stream isolation for mixing privacy">
                 <label id="mixingFastRemixLabel" style="display:none;font-size:12px;color:var(--text-muted);cursor:pointer" title="Re-use unconfirmed coinjoin outputs for faster back-to-back mixing"><input type="checkbox" id="mixingFastRemix"> Fast re-mix</label>
                 <input type="password" class="mixing-pass-input" id="mixingPass" placeholder="Passphrase" onkeydown="if(event.key==='Enter')confirmStartMixing()" style="display:none">
@@ -2673,11 +2675,16 @@
             } else {
                 // Show coordinator URL, Tor, and passphrase inputs
                 const urlInput = document.getElementById('mixingCoordUrl');
+                const coordTest = document.getElementById('mixingCoordTest');
+                const coordStatus = document.getElementById('mixingCoordStatus');
                 const torInput = document.getElementById('mixingTorHost');
                 const fastRemixLabel = document.getElementById('mixingFastRemixLabel');
                 const passInput = document.getElementById('mixingPass');
                 const showing = passInput.style.display !== 'none';
                 urlInput.style.display = showing ? 'none' : '';
+                coordTest.style.display = showing ? 'none' : '';
+                coordStatus.style.display = showing ? 'none' : '';
+                if (showing) coordStatus.textContent = '';
                 torInput.style.display = showing ? 'none' : '';
                 fastRemixLabel.style.display = showing ? 'none' : '';
                 passInput.style.display = showing ? 'none' : '';
@@ -2732,6 +2739,10 @@
             document.getElementById('mixingPass').style.display = 'none';
             document.getElementById('mixingPass').value = '';
             document.getElementById('mixingCoordUrl').style.display = 'none';
+            document.getElementById('mixingCoordTest').style.display = 'none';
+            const statusEl = document.getElementById('mixingCoordStatus');
+            statusEl.style.display = 'none';
+            statusEl.textContent = '';
             document.getElementById('mixingTorHost').style.display = 'none';
             document.getElementById('mixingFastRemixLabel').style.display = 'none';
             // Request notification permission so we can alert on round completion
@@ -3570,6 +3581,36 @@
         function toggleTorFields() {
             const enabled = document.getElementById('settTorEnabled').checked;
             document.getElementById('torFields').style.display = enabled ? 'flex' : 'none';
+        }
+
+        // Probe the coordinator URL before mixing starts so the user sees
+        // "reachable" / reason-for-failure before committing their passphrase.
+        // Empty URL means "use the local coordinator" — no probe needed.
+        async function testCoordinator() {
+            const url = document.getElementById('mixingCoordUrl').value.trim();
+            const statusEl = document.getElementById('mixingCoordStatus');
+            statusEl.style.display = '';
+            if (!url) {
+                statusEl.innerHTML = '<span style="color:var(--text-muted)">(local, no probe needed)</span>';
+                return;
+            }
+            statusEl.innerHTML = '<span style="color:var(--text-muted)">Testing...</span>';
+            try {
+                const res = await fetch('/api/wallet/test-coordinator', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url })
+                });
+                const data = await res.json();
+                if (data.reachable) {
+                    const rounds = data.roundCount != null ? `, ${data.roundCount} rounds` : '';
+                    statusEl.innerHTML = `<span style="color:var(--green)">&#10003; OK (${data.latencyMs}ms${rounds})</span>`;
+                } else {
+                    statusEl.innerHTML = `<span style="color:var(--red)">&#10007; ${esc(data.error || 'unreachable')}</span>`;
+                }
+            } catch (e) {
+                statusEl.innerHTML = `<span style="color:var(--red)">&#10007; ${esc(e.message)}</span>`;
+            }
         }
 
         async function testTorConnection() {

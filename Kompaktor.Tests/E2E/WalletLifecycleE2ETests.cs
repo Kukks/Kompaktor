@@ -3703,6 +3703,64 @@ public class WalletLifecycleE2ETests
     }
 
     [Fact]
+    public async Task Coordinator_probe_rejects_missing_url()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        var resp = await client.PostAsJsonAsync("/api/wallet/test-coordinator", new { Url = "" });
+        resp.EnsureSuccessStatusCode();
+        var body = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.False(body.GetProperty("reachable").GetBoolean());
+        Assert.Equal("missing url", body.GetProperty("error").GetString());
+    }
+
+    [Fact]
+    public async Task Coordinator_probe_rejects_bad_scheme()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        var resp = await client.PostAsJsonAsync("/api/wallet/test-coordinator", new { Url = "ftp://example.com" });
+        var body = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.False(body.GetProperty("reachable").GetBoolean());
+        Assert.Contains("scheme", body.GetProperty("error").GetString()!);
+    }
+
+    [Fact]
+    public async Task Coordinator_probe_rejects_malformed_url()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        var resp = await client.PostAsJsonAsync("/api/wallet/test-coordinator", new { Url = "not a url" });
+        var body = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.False(body.GetProperty("reachable").GetBoolean());
+        Assert.Equal("invalid url", body.GetProperty("error").GetString());
+    }
+
+    [Fact]
+    public async Task Coordinator_probe_reports_unreachable_on_dead_port()
+    {
+        // Bind+release a loopback port so we have a guaranteed-dead port,
+        // identical to the Tor-unreachable test pattern. The probe should
+        // surface a specific failure (timeout or connection-refused), not
+        // just a generic error.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+        listener.Start();
+        var deadPort = ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
+        listener.Stop();
+
+        var resp = await client.PostAsJsonAsync("/api/wallet/test-coordinator", new { Url = $"http://127.0.0.1:{deadPort}" });
+        var body = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.False(body.GetProperty("reachable").GetBoolean());
+        Assert.False(string.IsNullOrWhiteSpace(body.GetProperty("error").GetString()));
+    }
+
+    [Fact]
     public async Task Mixing_status_exposes_round_timestamps_starting_null()
     {
         // lastRoundCompletedAt / lastSuccessfulRoundAt are the signals the UI
