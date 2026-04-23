@@ -153,6 +153,15 @@ public class WalletSyncBackgroundService : BackgroundService
 
     public override async Task StopAsync(CancellationToken cancellationToken)
     {
+        // base.StopAsync signals stoppingToken and awaits ExecuteAsync — we
+        // must do that FIRST so any in-flight FullSyncAsync on the shared
+        // scope/DbContext has a chance to observe cancellation and unwind.
+        // Previously we disposed the scope before awaiting ExecuteAsync,
+        // which let SQLite see active statements at close time and surface
+        // the "unable to delete/modify user-function due to active
+        // statements" error on CI runs with slow schedulers.
+        await base.StopAsync(cancellationToken);
+
         if (_syncService is not null)
         {
             await _syncService.DisposeAsync();
@@ -162,7 +171,5 @@ public class WalletSyncBackgroundService : BackgroundService
 
         _scope?.Dispose();
         _scope = null;
-
-        await base.StopAsync(cancellationToken);
     }
 }

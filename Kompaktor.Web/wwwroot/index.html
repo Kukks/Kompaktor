@@ -2596,7 +2596,7 @@
             }
         }
 
-        function toggleMixing() {
+        async function toggleMixing() {
             if (mixingRunning) {
                 stopMixing();
             } else {
@@ -2610,7 +2610,19 @@
                 torInput.style.display = showing ? 'none' : '';
                 fastRemixLabel.style.display = showing ? 'none' : '';
                 passInput.style.display = showing ? 'none' : '';
-                if (!showing) passInput.focus();
+                if (!showing) {
+                    // Pre-fill Tor with persisted settings so users don't
+                    // retype what they already saved. Leaving the field
+                    // cleared still works — the backend falls back to the
+                    // saved value when it's omitted.
+                    const saved = await fetchJson('/api/wallet/settings');
+                    if (saved && saved.torEnabled && !torInput.value) {
+                        const host = saved.torSocksHost || '127.0.0.1';
+                        const port = saved.torSocksPort || 9050;
+                        torInput.value = `${host}:${port}`;
+                    }
+                    passInput.focus();
+                }
             }
         }
 
