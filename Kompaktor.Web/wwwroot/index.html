@@ -2133,16 +2133,60 @@
             datalist.innerHTML = entries.map(e =>
                 `<option value="${esc(e.address)}">${esc(e.label)}</option>`
             ).join('');
-            list.innerHTML = entries.map(e => `<li>
-                <div>
+            list.innerHTML = entries.map(e => `<li data-ab-id="${e.id}" data-ab-label="${esc(e.label)}" data-ab-addr="${esc(e.address)}">
+                <div class="ab-view">
                     <span class="ab-label">${esc(e.label)}</span>
                     <span class="ab-addr">${esc(e.address)}</span>
                 </div>
                 <div class="ab-actions">
                     <button class="ab-use-btn" onclick="useAddress('${esc(e.address)}')">Use</button>
+                    <button onclick="editAddressBookEntry(${e.id})">Edit</button>
                     <button class="ab-del-btn" onclick="deleteAddressBookEntry(${e.id})">Remove</button>
                 </div>
             </li>`).join('');
+        }
+
+        function editAddressBookEntry(id) {
+            const row = document.querySelector(`li[data-ab-id="${id}"]`);
+            if (!row) return;
+            const currentLabel = row.dataset.abLabel || '';
+            const currentAddr = row.dataset.abAddr || '';
+            row.innerHTML = `
+                <div class="ab-edit" style="display:flex;flex-direction:column;gap:4px;flex:1">
+                    <input type="text" id="ab-edit-label-${id}" value="${esc(currentLabel)}" placeholder="Label" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:3px;font-size:13px">
+                    <input type="text" id="ab-edit-addr-${id}" value="${esc(currentAddr)}" placeholder="Address" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:3px;font-size:13px;font-family:'SFMono-Regular',Consolas,monospace">
+                </div>
+                <div class="ab-actions">
+                    <button onclick="saveAddressBookEntry(${id})">Save</button>
+                    <button onclick="loadAddressBook()">Cancel</button>
+                </div>`;
+            const labelEl = document.getElementById(`ab-edit-label-${id}`);
+            if (labelEl) { labelEl.focus(); labelEl.select(); }
+        }
+
+        async function saveAddressBookEntry(id) {
+            const labelEl = document.getElementById(`ab-edit-label-${id}`);
+            const addrEl = document.getElementById(`ab-edit-addr-${id}`);
+            if (!labelEl || !addrEl) return;
+            const label = labelEl.value.trim();
+            const address = addrEl.value.trim();
+            if (!label || !address) {
+                showToast('Label and address required', 'error');
+                return;
+            }
+            const res = await fetch(`/api/address-book/${id}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ label, address })
+            });
+            if (!res.ok) {
+                const data = await res.json().catch(() => null);
+                const msg = typeof data === 'string' ? data : (data?.detail || 'Failed to update entry');
+                showToast(msg, 'error');
+                return;
+            }
+            showToast('Address book entry updated', 'success');
+            await loadAddressBook();
         }
 
         async function addAddressBookEntry() {

@@ -4732,4 +4732,118 @@ public class WalletLifecycleE2ETests
             .Select(w => w.GetString() ?? "").ToList();
         Assert.Contains(warnings, w => w.Contains("frozen", StringComparison.OrdinalIgnoreCase));
     }
+
+    [Fact]
+    public async Task Address_book_edit_updates_label_and_address()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        // /api/wallet/receive-address always returns the same fresh address
+        // until it's actually used, so we generate distinct regtest addresses
+        // locally. The address book only validates well-formedness, not
+        // ownership — so arbitrary valid regtest addresses are fine.
+        var first = new Key().PubKey.GetAddress(ScriptPubKeyType.Segwit, Network.RegTest).ToString();
+        var second = new Key().PubKey.GetAddress(ScriptPubKeyType.Segwit, Network.RegTest).ToString();
+        Assert.NotEqual(first, second);
+
+        var added = await client.PostAsJsonAsync("/api/address-book",
+            new { Label = "Alice", Address = first });
+        var entryId = (await added.Content.ReadFromJsonAsync<JsonElement>())
+            .GetProperty("id").GetInt32();
+
+        // Rename only — same address must be allowed through the dupe guard.
+        var renamed = await client.PutAsJsonAsync($"/api/address-book/{entryId}",
+            new { Label = "Alice (renamed)", Address = first });
+        Assert.Equal(HttpStatusCode.OK, renamed.StatusCode);
+        var renamedBody = await renamed.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("Alice (renamed)", renamedBody.GetProperty("label").GetString());
+        Assert.Equal(first, renamedBody.GetProperty("address").GetString());
+
+        // Swap to a different address.
+        var swapped = await client.PutAsJsonAsync($"/api/address-book/{entryId}",
+            new { Label = "Bob", Address = second });
+        Assert.Equal(HttpStatusCode.OK, swapped.StatusCode);
+
+        var listed = await client.GetFromJsonAsync<JsonElement>("/api/address-book");
+        var items = listed.EnumerateArray().ToArray();
+        Assert.Single(items);
+        Assert.Equal("Bob", items[0].GetProperty("label").GetString());
+        Assert.Equal(second, items[0].GetProperty("address").GetString());
+    }
+
+    [Fact]
+    public async Task Address_book_edit_returns_404_for_missing_entry()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+        var addr = new Key().PubKey.GetAddress(ScriptPubKeyType.Segwit, Network.RegTest).ToString();
+
+        var resp = await client.PutAsJsonAsync("/api/address-book/999999",
+            new { Label = "Ghost", Address = addr });
+        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Address_book_edit_rejects_duplicate_address_on_other_entry()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var addrA = new Key().PubKey.GetAddress(ScriptPubKeyType.Segwit, Network.RegTest).ToString();
+        var addrB = new Key().PubKey.GetAddress(ScriptPubKeyType.Segwit, Network.RegTest).ToString();
+
+        var aliceResp = await client.PostAsJsonAsync("/api/address-book",
+            new { Label = "Alice", Address = addrA });
+        var aliceId = (await aliceResp.Content.ReadFromJsonAsync<JsonElement>())
+            .GetProperty("id").GetInt32();
+
+        await client.PostAsJsonAsync("/api/address-book",
+            new { Label = "Bob", Address = addrB });
+
+        // Trying to rewrite Alice's address to Bob's address should collide.
+        var collide = await client.PutAsJsonAsync($"/api/address-book/{aliceId}",
+            new { Label = "Alice", Address = addrB });
+        Assert.Equal(HttpStatusCode.BadRequest, collide.StatusCode);
+    }
+
+    [Fact]
+    public async Task Address_book_edit_rejects_invalid_address_and_empty_fields()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+        var addr = new Key().PubKey.GetAddress(ScriptPubKeyType.Segwit, Network.RegTest).ToString();
+
+        var added = await client.PostAsJsonAsync("/api/address-book",
+            new { Label = "Alice", Address = addr });
+        var entryId = (await added.Content.ReadFromJsonAsync<JsonElement>())
+            .GetProperty("id").GetInt32();
+
+        var badAddr = await client.PutAsJsonAsync($"/api/address-book/{entryId}",
+            new { Label = "Alice", Address = "not-a-real-address" });
+        Assert.Equal(HttpStatusCode.BadRequest, badAddr.StatusCode);
+
+        var emptyLabel = await client.PutAsJsonAsync($"/api/address-book/{entryId}",
+            new { Label = "   ", Address = addr });
+        Assert.Equal(HttpStatusCode.BadRequest, emptyLabel.StatusCode);
+
+        var emptyAddr = await client.PutAsJsonAsync($"/api/address-book/{entryId}",
+            new { Label = "Alice", Address = "" });
+        Assert.Equal(HttpStatusCode.BadRequest, emptyAddr.StatusCode);
+
+        // Original entry unchanged after all the rejected edits.
+        var listed = await client.GetFromJsonAsync<JsonElement>("/api/address-book");
+        var items = listed.EnumerateArray().ToArray();
+        Assert.Single(items);
+        Assert.Equal("Alice", items[0].GetProperty("label").GetString());
+        Assert.Equal(addr, items[0].GetProperty("address").GetString());
+    }
 }

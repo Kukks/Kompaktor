@@ -2388,6 +2388,33 @@ app.MapPost("/api/address-book", async (WalletDbContext db, HttpContext ctx) =>
     return Results.Ok(new { entry.Id, entry.Label, entry.Address });
 }).WithTags("AddressBook");
 
+app.MapPut("/api/address-book/{entryId}", async (int entryId, WalletDbContext db, HttpContext ctx) =>
+{
+    var entry = await db.AddressBook.FindAsync(entryId);
+    if (entry is null) return Results.NotFound();
+
+    var body = await ctx.Request.ReadFromJsonAsync<AddressBookRequest>();
+    if (body is null || string.IsNullOrWhiteSpace(body.Address) || string.IsNullOrWhiteSpace(body.Label))
+        return Results.BadRequest("Label and address required");
+
+    try { BitcoinAddress.Create(body.Address.Trim(), network); }
+    catch { return Results.BadRequest("Invalid Bitcoin address"); }
+
+    // If the address is changing, make sure no *other* entry in the same
+    // wallet already owns it. Keeping the same address on the same row
+    // (pure rename) must still be allowed.
+    var newAddress = body.Address.Trim();
+    var collision = await db.AddressBook.AnyAsync(a =>
+        a.WalletId == entry.WalletId && a.Id != entry.Id && a.Address == newAddress);
+    if (collision) return Results.BadRequest("Address already in address book");
+
+    entry.Label = body.Label.Trim();
+    entry.Address = newAddress;
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new { entry.Id, entry.Label, entry.Address });
+}).WithTags("AddressBook");
+
 app.MapDelete("/api/address-book/{entryId}", async (int entryId, WalletDbContext db) =>
 {
     var entry = await db.AddressBook.FindAsync(entryId);
