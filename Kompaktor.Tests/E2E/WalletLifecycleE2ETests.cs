@@ -772,6 +772,65 @@ public class WalletLifecycleE2ETests
     }
 
     [Fact]
+    public async Task Export_mnemonic_requires_passphrase()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        // Empty passphrase body → 400 "Passphrase required".
+        var resp = await client.PostAsJsonAsync("/api/wallet/export-mnemonic", new { Passphrase = "" });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Export_mnemonic_rejects_wrong_passphrase()
+    {
+        // A wrong passphrase must not leak anything. The CryptographicException
+        // from MnemonicEncryption.Decrypt is caught and converted to 400.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "correct-horse" });
+
+        var resp = await client.PostAsJsonAsync(
+            "/api/wallet/export-mnemonic", new { Passphrase = "battery-staple" });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Export_mnemonic_returns_12_or_24_words_with_correct_passphrase()
+    {
+        // Happy path: correct passphrase must return the seed mnemonic plus
+        // a word count matching the BIP39 standard (12 or 24 words).
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.PostAsJsonAsync("/api/wallet/export-mnemonic", new { Passphrase = "pw" });
+        resp.EnsureSuccessStatusCode();
+
+        var body = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        var mnemonic = body.GetProperty("mnemonic").GetString()!;
+        var wordCount = body.GetProperty("wordCount").GetInt32();
+
+        var actualWords = mnemonic.Split(' ');
+        Assert.Equal(actualWords.Length, wordCount);
+        Assert.Contains(wordCount, new[] { 12, 15, 18, 21, 24 });
+    }
+
+    [Fact]
+    public async Task Export_mnemonic_returns_400_when_no_wallet()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        // No /api/wallet/create call — the endpoint should return 400 rather
+        // than 500 or leak any crypto state.
+        var resp = await client.PostAsJsonAsync("/api/wallet/export-mnemonic", new { Passphrase = "pw" });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
     public async Task Transaction_detail_returns_received_utxo_from_seeded_backend()
     {
         // Drives the receive pipeline end-to-end: stage a UTXO on the fake
