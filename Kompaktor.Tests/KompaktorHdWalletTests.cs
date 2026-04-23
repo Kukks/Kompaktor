@@ -102,6 +102,41 @@ public class KompaktorHdWalletTests : IDisposable
     }
 
     [Fact]
+    public async Task GetCoins_ExcludesFrozenUtxos()
+    {
+        // Regression: freezing a UTXO is the user's explicit "do not spend"
+        // signal. It was respected by the scoring-based selector but leaked
+        // through the wallet's raw GetCoins() — which the scoring adapter
+        // falls back to when scoring fails, and which any non-mixing caller
+        // hits directly. A frozen UTXO must never surface as a spendable coin.
+        var wallet = await KompaktorHdWallet.CreateAsync(_db, _network, "Test", Passphrase);
+        var walletEntity = _db.Wallets.Include(w => w.Accounts).ThenInclude(a => a.Addresses).Single();
+        var address = walletEntity.Accounts[0].Addresses[0];
+
+        _db.Utxos.Add(new UtxoEntity
+        {
+            TxId = "aaa1230000000000000000000000000000000000000000000000000000000000",
+            OutputIndex = 0, AddressId = address.Id,
+            AmountSat = 100000, ScriptPubKey = address.ScriptPubKey,
+            ConfirmedHeight = 100,
+            IsFrozen = false
+        });
+        _db.Utxos.Add(new UtxoEntity
+        {
+            TxId = "bbb4560000000000000000000000000000000000000000000000000000000000",
+            OutputIndex = 0, AddressId = address.Id,
+            AmountSat = 77777, ScriptPubKey = address.ScriptPubKey,
+            ConfirmedHeight = 100,
+            IsFrozen = true
+        });
+        _db.SaveChanges();
+
+        var coins = await wallet.GetCoins();
+        Assert.Single(coins);
+        Assert.Equal(Money.Satoshis(100000), coins[0].Amount);
+    }
+
+    [Fact]
     public async Task MarkScriptsExposed_SetsFlag()
     {
         var wallet = await KompaktorHdWallet.CreateAsync(_db, _network, "Test", Passphrase);

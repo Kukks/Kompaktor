@@ -267,6 +267,7 @@ public class KompaktorHdWallet : IKompaktorWalletInterface
             .Include(u => u.Address)
             .ThenInclude(a => a.Account)
             .Where(u => u.SpentByTxId == null)
+            .Where(u => !u.IsFrozen)
             .Where(u => u.Address.Account.Wallet.Id == WalletId);
 
         if (AllowUnconfirmedCoinjoinReuse)
