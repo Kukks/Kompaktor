@@ -1069,6 +1069,35 @@ public class WalletLifecycleE2ETests
     }
 
     [Fact]
+    public async Task Receive_qr_returns_svg_payload_for_fresh_wallet()
+    {
+        // The receive flow hands users an SVG to scan. The endpoint must work
+        // on a brand-new wallet (fresh addresses available) and return real
+        // SVG markup rather than the `No fresh addresses available` error.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.GetAsync("/api/wallet/receive-qr");
+        resp.EnsureSuccessStatusCode();
+        Assert.Equal("image/svg+xml", resp.Content.Headers.ContentType?.MediaType);
+
+        var body = await resp.Content.ReadAsStringAsync();
+        Assert.Contains("<svg", body, StringComparison.Ordinal);
+        Assert.Contains("</svg>", body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Receive_qr_without_wallet_returns_bad_request()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        var resp = await client.GetAsync("/api/wallet/receive-qr");
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
     public async Task Transaction_detail_returns_received_utxo_from_seeded_backend()
     {
         // Drives the receive pipeline end-to-end: stage a UTXO on the fake
