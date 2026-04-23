@@ -1624,6 +1624,49 @@ app.MapPost("/api/dashboard/broadcast-psbt", async (WalletDbContext db, IBlockch
     }
 }).WithTags("Dashboard");
 
+// Quick client-side address validation against the coordinator's network.
+// Used by the send form to give immediate feedback as the user pastes.
+app.MapGet("/api/dashboard/validate-address", (string address) =>
+{
+    if (string.IsNullOrWhiteSpace(address))
+        return Results.Ok(new { valid = false, reason = "empty" });
+
+    try
+    {
+        var addr = BitcoinAddress.Create(address.Trim(), network);
+        var script = addr.ScriptPubKey;
+        string type = script switch
+        {
+            var s when s.IsScriptType(ScriptType.Taproot) => "P2TR",
+            var s when s.IsScriptType(ScriptType.Witness) => "P2WPKH",
+            var s when s.IsScriptType(ScriptType.P2SH) => "P2SH",
+            _ => "Other"
+        };
+        return Results.Ok(new { valid = true, type, network = network.Name });
+    }
+    catch (FormatException)
+    {
+        // Might be valid for a different network — try parsing leniently
+        foreach (var net in new[] { Network.Main, Network.TestNet, Network.RegTest })
+        {
+            if (net == network) continue;
+            try
+            {
+                _ = BitcoinAddress.Create(address.Trim(), net);
+                return Results.Ok(new
+                {
+                    valid = false,
+                    reason = "wrong_network",
+                    detectedNetwork = net.Name,
+                    expectedNetwork = network.Name
+                });
+            }
+            catch { /* keep trying */ }
+        }
+        return Results.Ok(new { valid = false, reason = "invalid" });
+    }
+}).WithTags("Dashboard");
+
 // Fee estimation for send form
 app.MapGet("/api/dashboard/fee-estimates", async (IBlockchainBackend chain) =>
 {

@@ -949,8 +949,8 @@
                     <div style="flex:1;min-width:280px;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:16px">
                         <h3 style="font-size:14px;margin-bottom:12px">Send Payment</h3>
                         <div class="field" style="margin-bottom:8px">
-                            <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;display:block;margin-bottom:4px">Destination</label>
-                            <input type="text" id="payDest" placeholder="bc1q... or bitcoin: URI" list="addressBookSuggestions" oninput="parsePaymentBip21(this.value)" style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:4px;font-size:13px;font-family:'SFMono-Regular',Consolas,monospace">
+                            <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;display:block;margin-bottom:4px">Destination <span id="payDestValid" style="text-transform:none;font-size:11px;margin-left:6px"></span></label>
+                            <input type="text" id="payDest" placeholder="bc1q... or bitcoin: URI" list="addressBookSuggestions" oninput="parsePaymentBip21(this.value); scheduleAddressValidation(this.value)" style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:4px;font-size:13px;font-family:'SFMono-Regular',Consolas,monospace">
                         </div>
                         <div style="display:flex;gap:8px;margin-bottom:8px">
                             <div class="field" style="flex:1">
@@ -2842,6 +2842,35 @@
         function copyPaymentUri() {
             const uri = document.getElementById('recvBip21').textContent;
             navigator.clipboard.writeText(uri).then(() => showToast('URI copied', 'info'));
+        }
+
+        let _addrValidateTimer = null;
+        function scheduleAddressValidation(raw) {
+            clearTimeout(_addrValidateTimer);
+            const badge = document.getElementById('payDestValid');
+            if (!badge) return;
+            // If the input is a BIP21 URI, the parser above will have pushed the
+            // cleaned address into #payDest by the time the debounced call runs.
+            _addrValidateTimer = setTimeout(() => validateAddressDisplay(raw), 300);
+        }
+        async function validateAddressDisplay() {
+            const badge = document.getElementById('payDestValid');
+            const dest = document.getElementById('payDest').value.trim();
+            if (!badge) return;
+            if (!dest) { badge.textContent = ''; return; }
+            try {
+                const res = await fetch('/api/dashboard/validate-address?address=' + encodeURIComponent(dest));
+                const data = await res.json();
+                if (data.valid) {
+                    badge.innerHTML = `<span style="color:var(--green)">✓ ${esc(data.type)}</span>`;
+                } else if (data.reason === 'wrong_network') {
+                    badge.innerHTML = `<span style="color:var(--red)">✗ wrong network (${esc(data.detectedNetwork)} vs ${esc(data.expectedNetwork)})</span>`;
+                } else {
+                    badge.innerHTML = `<span style="color:var(--red)">✗ invalid</span>`;
+                }
+            } catch {
+                badge.textContent = '';
+            }
         }
 
         function parsePaymentBip21(value) {
