@@ -3542,6 +3542,15 @@
             }
         }
 
+        function updateBackupWarning(isVerified) {
+            const badge = document.getElementById('backupVerifiedBadge');
+            const notDone = document.getElementById('backupVerifyNotDone');
+            const done = document.getElementById('backupVerifyDone');
+            if (badge) badge.style.display = isVerified ? '' : 'none';
+            if (notDone) notDone.style.display = isVerified ? 'none' : '';
+            if (done) done.style.display = isVerified ? '' : 'none';
+        }
+
         async function deleteWallet() {
             const passEl = document.getElementById('deleteWalletPass');
             const confirmEl = document.getElementById('deleteWalletConfirm');
