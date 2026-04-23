@@ -686,6 +686,49 @@ public class WalletLifecycleE2ETests
     }
 
     [Fact]
+    public async Task Transactions_export_returns_csv_for_wallet_activity()
+    {
+        // Tax / accounting flow: user downloads a CSV of their on-chain activity.
+        // Verifies seeded receive shows up as a "received" row with the right
+        // amounts and that header + content-type match what a spreadsheet expects.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        // Before any UTXOs, the export is just the header row.
+        var emptyResp = await client.GetAsync("/api/dashboard/transactions/export");
+        Assert.Equal(HttpStatusCode.OK, emptyResp.StatusCode);
+        Assert.Equal("text/csv", emptyResp.Content.Headers.ContentType?.MediaType);
+        var emptyCsv = await emptyResp.Content.ReadAsStringAsync();
+        Assert.StartsWith("TxId,Direction,ReceivedSats,SpentSats,NetSats,", emptyCsv);
+        // Only header — no data rows.
+        Assert.Single(emptyCsv.Trim('\r', '\n').Split('\n'));
+
+        // Seed a 77k-sat UTXO and confirm the export now has a "received" row.
+        var utxoId = await SeedUtxoAsync(factory, client, amountSat: 77_000, tag: 0x55);
+
+        var resp = await client.GetAsync("/api/dashboard/transactions/export");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var csv = await resp.Content.ReadAsStringAsync();
+
+        var lines = csv.Trim('\r', '\n').Split('\n').Select(l => l.Trim('\r')).ToArray();
+        Assert.Equal(2, lines.Length);
+        var dataRow = lines[1];
+        var cols = dataRow.Split(',');
+        // TxId, Direction, ReceivedSats, SpentSats, NetSats, ReceivedBtc, SpentBtc, NetBtc, ConfirmedHeight, IsCoinJoin, Notes
+        Assert.Equal("received", cols[1]);
+        Assert.Equal("77000", cols[2]);
+        Assert.Equal("0", cols[3]);
+        Assert.Equal("77000", cols[4]);
+        Assert.Equal("false", cols[9]);
+
+        // Sanity: the utxoId returned by the seeder exists and has the expected
+        // amount — this guards against a future seed helper regression.
+        var detail = await client.GetFromJsonAsync<JsonElement>($"/api/coin-control/utxo/{utxoId}");
+        Assert.Equal(77_000, detail.GetProperty("amountSat").GetInt64());
+    }
+
+    [Fact]
     public async Task Coin_control_freeze_and_unfreeze_round_trip()
     {
         await using var factory = new KompaktorWebFactory();

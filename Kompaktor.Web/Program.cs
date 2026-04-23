@@ -538,6 +538,79 @@ app.MapGet("/api/dashboard/transactions/{txId}", async (string txId, WalletDbCon
     });
 }).WithTags("Dashboard");
 
+// CSV export of the wallet's full transaction history. Intended for
+// tax/accounting — one row per tx we participated in (either as output
+// recipient, input spender, or both).
+app.MapGet("/api/dashboard/transactions/export", async (WalletDbContext db) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null)
+        return Results.Text("TxId,Direction,ReceivedSats,SpentSats,NetSats,ReceivedBtc,SpentBtc,NetBtc,ConfirmedHeight,IsCoinJoin,Notes\n",
+            "text/csv", System.Text.Encoding.UTF8);
+
+    var utxos = await db.Utxos
+        .Include(u => u.Address).ThenInclude(a => a.Account)
+        .Where(u => u.Address.Account.WalletId == wallet.Id)
+        .ToListAsync();
+
+    var allTxIds = new HashSet<string>();
+    foreach (var u in utxos)
+    {
+        allTxIds.Add(u.TxId);
+        if (u.SpentByTxId is not null) allTxIds.Add(u.SpentByTxId);
+    }
+
+    var coinjoinTxIds = (await db.CoinJoinRecords
+            .Where(c => c.TransactionId != null && allTxIds.Contains(c.TransactionId))
+            .Select(c => c.TransactionId!)
+            .ToListAsync())
+        .ToHashSet();
+
+    var allTxIdsAsStrings = allTxIds.ToList();
+    var notesByTxId = (await db.Labels
+            .Where(l => l.EntityType == "Transaction" && allTxIdsAsStrings.Contains(l.EntityId))
+            .ToListAsync())
+        .GroupBy(l => l.EntityId)
+        .ToDictionary(g => g.Key, g => string.Join("; ", g.Select(l => l.Text)));
+
+    var csv = new System.Text.StringBuilder();
+    csv.AppendLine("TxId,Direction,ReceivedSats,SpentSats,NetSats,ReceivedBtc,SpentBtc,NetBtc,ConfirmedHeight,IsCoinJoin,Notes");
+
+    // Sort txids by the best "time" signal we have — max confirmed height of any
+    // touched UTXO. Unconfirmed (null height) sort last as 0.
+    var rows = allTxIds
+        .Select(txId =>
+        {
+            var received = utxos.Where(u => u.TxId == txId).Sum(u => u.AmountSat);
+            var spent = utxos.Where(u => u.SpentByTxId == txId).Sum(u => u.AmountSat);
+            var net = received - spent;
+            var direction = (received, spent) switch
+            {
+                ( > 0, > 0) => "self",
+                ( > 0, 0) => "received",
+                (0, > 0) => "sent",
+                _ => "unknown"
+            };
+            var height = utxos
+                .Where(u => u.TxId == txId || u.SpentByTxId == txId)
+                .Max(u => u.ConfirmedHeight) ?? 0;
+            var isCoinJoin = coinjoinTxIds.Contains(txId);
+            var notes = notesByTxId.GetValueOrDefault(txId, "").Replace("\"", "\"\"");
+            return (txId, direction, received, spent, net, height, isCoinJoin, notes);
+        })
+        .OrderByDescending(r => r.height)
+        .ThenBy(r => r.txId);
+
+    foreach (var r in rows)
+    {
+        csv.AppendLine($"{r.txId},{r.direction},{r.received},{r.spent},{r.net}," +
+                       $"{r.received / 100_000_000.0:F8},{r.spent / 100_000_000.0:F8},{r.net / 100_000_000.0:F8}," +
+                       $"{r.height},{(r.isCoinJoin ? "true" : "false")},\"{r.notes}\"");
+    }
+
+    return Results.Text(csv.ToString(), "text/csv", System.Text.Encoding.UTF8);
+}).WithTags("Dashboard");
+
 // Attach a free-text note to a transaction. Notes are user-private — they never
 // leave the local DB and are not broadcast to the network.
 app.MapPost("/api/dashboard/transactions/{txId}/note", async (
