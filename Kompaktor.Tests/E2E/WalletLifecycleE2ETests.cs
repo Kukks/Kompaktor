@@ -2099,6 +2099,113 @@ public class WalletLifecycleE2ETests
         Assert.Equal(1, body.GetArrayLength());
     }
 
+    [Fact]
+    public async Task Wallet_export_returns_400_when_no_wallet()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        var resp = await client.GetAsync("/api/wallet/export");
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Wallet_export_shape_for_empty_wallet()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var body = await client.GetFromJsonAsync<JsonElement>("/api/wallet/export");
+        Assert.Equal(1, body.GetProperty("version").GetInt32());
+        Assert.True(body.TryGetProperty("exportedAt", out _));
+        Assert.Equal("RegTest", body.GetProperty("wallet").GetProperty("network").GetString());
+        Assert.Empty(body.GetProperty("labels").EnumerateArray());
+        Assert.Empty(body.GetProperty("addressBook").EnumerateArray());
+        Assert.Empty(body.GetProperty("coinjoinHistory").EnumerateArray());
+    }
+
+    [Fact]
+    public async Task Wallet_export_includes_address_book_entries()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var receive = await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address");
+        var addr = receive.GetProperty("address").GetString()!;
+
+        var added = await client.PostAsJsonAsync("/api/address-book",
+            new { Label = "Carol", Address = addr });
+        Assert.Equal(HttpStatusCode.OK, added.StatusCode);
+
+        var body = await client.GetFromJsonAsync<JsonElement>("/api/wallet/export");
+        var entries = body.GetProperty("addressBook").EnumerateArray().ToArray();
+        Assert.Single(entries);
+        Assert.Equal("Carol", entries[0].GetProperty("label").GetString());
+        Assert.Equal(addr, entries[0].GetProperty("address").GetString());
+    }
+
+    [Fact]
+    public async Task Wallet_import_adds_address_book_entries_from_payload()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        // Grab a real regtest address from the wallet to use as the imported one.
+        var receive = await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address");
+        var addr = receive.GetProperty("address").GetString()!;
+
+        var import = await client.PostAsJsonAsync("/api/wallet/import", new
+        {
+            addressBook = new[] { new { label = "Dave", address = addr } }
+        });
+        Assert.Equal(HttpStatusCode.OK, import.StatusCode);
+        var body = await import.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(1, body.GetProperty("addressBookImported").GetInt32());
+
+        var listed = await client.GetFromJsonAsync<JsonElement>("/api/address-book");
+        var items = listed.EnumerateArray().ToArray();
+        Assert.Single(items);
+        Assert.Equal("Dave", items[0].GetProperty("label").GetString());
+    }
+
+    [Fact]
+    public async Task Wallet_import_skips_existing_entries_on_second_run()
+    {
+        // Idempotency: re-importing the same payload counts zero duplicates added,
+        // so users can safely sync from multiple devices without creating dupes.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var receive = await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address");
+        var addr = receive.GetProperty("address").GetString()!;
+        var payload = new
+        {
+            addressBook = new[] { new { label = "Eve", address = addr } }
+        };
+
+        var first = await client.PostAsJsonAsync("/api/wallet/import", payload);
+        var firstBody = await first.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(1, firstBody.GetProperty("addressBookImported").GetInt32());
+
+        var second = await client.PostAsJsonAsync("/api/wallet/import", payload);
+        var secondBody = await second.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(0, secondBody.GetProperty("addressBookImported").GetInt32());
+    }
+
+    [Fact]
+    public async Task Wallet_import_returns_400_when_no_wallet()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        var resp = await client.PostAsJsonAsync("/api/wallet/import", new { addressBook = Array.Empty<object>() });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
     /// <summary>
     /// Stages a single confirmed UTXO on the fake backend against a fresh wallet
     /// receive address. Returns the DB-assigned utxoId once the wallet has
