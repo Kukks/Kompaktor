@@ -831,6 +831,74 @@ public class WalletLifecycleE2ETests
     }
 
     [Fact]
+    public async Task Dashboard_events_stream_emits_connected_and_payments_events()
+    {
+        // SSE endpoint /api/dashboard/events is the dashboard's live update channel.
+        // Connect, read the mandatory "connected" heartbeat, then trigger a
+        // payments-channel publish (via /api/payments/receive) and confirm the
+        // subscriber gets a "payments" event.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        // Important: ResponseHeadersRead keeps the stream open instead of
+        // buffering the whole response (which would deadlock on an SSE feed).
+        using var req = new HttpRequestMessage(HttpMethod.Get, "/api/dashboard/events");
+        using var resp = await client.SendAsync(req, HttpCompletionOption.ResponseHeadersRead);
+        resp.EnsureSuccessStatusCode();
+        Assert.StartsWith("text/event-stream", resp.Content.Headers.ContentType!.ToString());
+
+        using var stream = await resp.Content.ReadAsStreamAsync();
+        using var reader = new StreamReader(stream);
+
+        // The endpoint writes the initial heartbeat immediately on connect.
+        var first = await ReadNextEventAsync(reader, timeoutSeconds: 5);
+        Assert.Equal("connected", first);
+
+        // Trigger a payments-channel publish and confirm the SSE feed receives it.
+        // Other channels (utxos, rounds, wallet) can publish concurrently from
+        // background services, so we scan forward until we see the one we care
+        // about rather than insisting it be the very next event.
+        var publishTask = Task.Run(async () =>
+        {
+            await Task.Delay(100);
+            await client.PostAsJsonAsync("/api/payments/receive", new { AmountSat = 5_000, Label = "sse-probe" });
+        });
+
+        await ReadUntilEventAsync(reader, "payments", timeoutSeconds: 10);
+        await publishTask;
+    }
+
+    // Read `event: <name>` from an SSE stream. Skips blank lines and `data:` lines.
+    private static async Task<string> ReadNextEventAsync(StreamReader reader, int timeoutSeconds)
+    {
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
+        while (!cts.IsCancellationRequested)
+        {
+            var line = await reader.ReadLineAsync(cts.Token);
+            if (line is null) throw new IOException("SSE stream closed unexpectedly.");
+            if (line.StartsWith("event:", StringComparison.Ordinal))
+                return line["event:".Length..].Trim();
+        }
+        throw new TimeoutException($"No SSE event seen within {timeoutSeconds}s.");
+    }
+
+    // Drain an SSE stream until we see the requested event name (or time out).
+    private static async Task ReadUntilEventAsync(StreamReader reader, string eventName, int timeoutSeconds)
+    {
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
+        while (!cts.IsCancellationRequested)
+        {
+            var line = await reader.ReadLineAsync(cts.Token);
+            if (line is null) throw new IOException("SSE stream closed unexpectedly.");
+            if (line.StartsWith("event:", StringComparison.Ordinal) &&
+                line["event:".Length..].Trim() == eventName)
+                return;
+        }
+        throw new TimeoutException($"SSE event '{eventName}' not seen within {timeoutSeconds}s.");
+    }
+
+    [Fact]
     public async Task Transaction_detail_returns_received_utxo_from_seeded_backend()
     {
         // Drives the receive pipeline end-to-end: stage a UTXO on the fake
