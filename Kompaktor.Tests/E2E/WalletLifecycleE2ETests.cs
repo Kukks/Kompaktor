@@ -2206,6 +2206,97 @@ public class WalletLifecycleE2ETests
         Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
     }
 
+    [Fact]
+    public async Task Privacy_distribution_empty_wallet_returns_zero_totals()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.GetFromJsonAsync<JsonElement>("/api/dashboard/privacy-distribution");
+        Assert.Equal(0, resp.GetProperty("totalUtxos").GetInt32());
+
+        var tiers = resp.GetProperty("tiers").EnumerateArray().ToArray();
+        Assert.NotEmpty(tiers);
+        foreach (var t in tiers)
+        {
+            Assert.Equal(0, t.GetProperty("count").GetInt32());
+            Assert.Equal(0L, t.GetProperty("amountSat").GetInt64());
+            Assert.False(string.IsNullOrWhiteSpace(t.GetProperty("tier").GetString()));
+            Assert.False(string.IsNullOrWhiteSpace(t.GetProperty("color").GetString()));
+        }
+    }
+
+    [Fact]
+    public async Task Privacy_distribution_new_utxo_appears_in_some_tier()
+    {
+        // A freshly-received UTXO should surface in the distribution and
+        // sum to its full amountSat across the tiers. We don't hard-code
+        // which tier it lands in — the scoring heuristic defines that.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        await SeedUtxoAsync(factory, client, amountSat: 75_000, tag: 0xA1);
+
+        // Sanity: the UTXO IS visible to the dashboard UTXO endpoint.
+        var utxos = await client.GetFromJsonAsync<JsonElement>("/api/dashboard/utxos");
+        Assert.Equal(1, utxos.GetArrayLength());
+
+        var resp = await client.GetFromJsonAsync<JsonElement>("/api/dashboard/privacy-distribution");
+        Assert.Equal(1, resp.GetProperty("totalUtxos").GetInt32());
+
+        var tiers = resp.GetProperty("tiers").EnumerateArray().ToArray();
+        Assert.Equal(1, tiers.Sum(t => t.GetProperty("count").GetInt32()));
+        Assert.Equal(75_000L, tiers.Sum(t => t.GetProperty("amountSat").GetInt64()));
+    }
+
+    [Fact]
+    public async Task Privacy_recommendations_empty_wallet_prompts_to_fund()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.GetFromJsonAsync<JsonElement>("/api/dashboard/privacy-recommendations");
+        var recs = resp.GetProperty("recommendations").EnumerateArray().ToArray();
+        Assert.Single(recs);
+        Assert.Equal("No UTXOs", recs[0].GetProperty("title").GetString());
+        Assert.Equal("info", recs[0].GetProperty("priority").GetString());
+    }
+
+    [Fact]
+    public async Task Privacy_recommendations_flag_unmixed_and_auto_mix_off()
+    {
+        // With a freshly-received UTXO and the auto-mixer OFF, the endpoint
+        // should surface both the "unmixed UTXOs" recommendation AND the
+        // "Auto-Mix Not Running" high-priority nag. Together they steer
+        // users toward enabling the mixer.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        await SeedUtxoAsync(factory, client, amountSat: 100_000, tag: 0xA2);
+
+        var resp = await client.GetFromJsonAsync<JsonElement>("/api/dashboard/privacy-recommendations");
+        var recs = resp.GetProperty("recommendations").EnumerateArray()
+            .Select(r => r.GetProperty("title").GetString()!)
+            .ToArray();
+
+        Assert.Contains(recs, t => t.Contains("Unmixed UTXO", StringComparison.Ordinal));
+        Assert.Contains(recs, t => t == "Auto-Mix Not Running");
+    }
+
+    [Fact]
+    public async Task Privacy_recommendations_no_wallet_returns_empty()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        var resp = await client.GetFromJsonAsync<JsonElement>("/api/dashboard/privacy-recommendations");
+        Assert.Empty(resp.GetProperty("recommendations").EnumerateArray());
+    }
+
     /// <summary>
     /// Stages a single confirmed UTXO on the fake backend against a fresh wallet
     /// receive address. Returns the DB-assigned utxoId once the wallet has
