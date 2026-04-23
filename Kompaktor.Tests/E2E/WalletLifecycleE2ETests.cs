@@ -1233,6 +1233,58 @@ public class WalletLifecycleE2ETests
     }
 
     [Fact]
+    public async Task Scheduled_payment_can_be_cancelled_before_activation()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+        var addr = (await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address"))
+            .GetProperty("address").GetString()!;
+
+        var created = await (await client.PostAsJsonAsync("/api/payments/send", new
+        {
+            Destination = addr,
+            AmountSat = 77_000L,
+            ScheduledAt = DateTimeOffset.UtcNow.AddHours(6).ToUnixTimeSeconds()
+        })).Content.ReadFromJsonAsync<JsonElement>();
+        var paymentId = created.GetProperty("id").GetString()!;
+
+        // Delete the scheduled payment — it's still dormant, so cancellation must succeed.
+        var cancel = await client.DeleteAsync($"/api/payments/{paymentId}");
+        Assert.Equal(HttpStatusCode.OK, cancel.StatusCode);
+        var cancelBody = await cancel.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("cancelled", cancelBody.GetProperty("status").GetString());
+
+        // Status endpoint should now report the cancelled (Failed) terminal state
+        // and ActivateScheduledPaymentsAsync must never flip it back to Pending.
+        var status = await client.GetFromJsonAsync<JsonElement>($"/api/payments/{paymentId}/status");
+        Assert.Equal("Failed", status.GetProperty("status").GetString());
+    }
+
+    [Fact]
+    public async Task Cancel_unknown_payment_returns_not_found()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.DeleteAsync("/api/payments/nonexistent-id");
+        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Cancel_without_wallet_returns_bad_request()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        // no wallet
+
+        var resp = await client.DeleteAsync("/api/payments/anything");
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
     public async Task Scheduled_payment_appears_in_payments_list_with_scheduledAt()
     {
         await using var factory = new KompaktorWebFactory();
