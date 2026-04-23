@@ -3834,6 +3834,158 @@ public class WalletLifecycleE2ETests
     }
 
     [Fact]
+    public async Task Webhook_redeliver_creates_new_delivery_row()
+    {
+        // A webhook receiver may have been down when the original event fired.
+        // The operator-facing redeliver must produce a fresh attempt — and a
+        // fresh row regardless of whether the target responds — so the history
+        // tab visibly records the retry attempt.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        // Bind+release a loopback port so POST refuses immediately.
+        var probe = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+        probe.Start();
+        var deadPort = ((System.Net.IPEndPoint)probe.LocalEndpoint).Port;
+        probe.Stop();
+
+        int webhookId;
+        int deliveryId;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<WalletDbContext>();
+            var wallet = await db.Wallets.FirstAsync();
+
+            var webhook = new PaymentWebhookEntity
+            {
+                WalletId = wallet.Id,
+                Url = $"http://127.0.0.1:{deadPort}/hook",
+                Secret = "s"
+            };
+            db.PaymentWebhooks.Add(webhook);
+
+            var payment = new PendingPaymentEntity
+            {
+                WalletId = wallet.Id,
+                Direction = "Outbound",
+                AmountSat = 25_000L,
+                Destination = "bcrt1test",
+                Status = "Completed"
+            };
+            db.PendingPayments.Add(payment);
+            await db.SaveChangesAsync();
+
+            var delivery = new WebhookDeliveryEntity
+            {
+                WebhookId = webhook.Id,
+                PaymentId = payment.Id,
+                EventType = "Completed",
+                HttpStatusCode = 0,
+                Success = false,
+                ErrorMessage = "initial failure"
+            };
+            db.WebhookDeliveries.Add(delivery);
+            await db.SaveChangesAsync();
+            webhookId = webhook.Id;
+            deliveryId = delivery.Id;
+        }
+
+        var resp = await client.PostAsync($"/api/webhooks/{webhookId}/deliveries/{deliveryId}/redeliver", null);
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var body = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        // Redeliver rows are always new — id differs from the originating one.
+        Assert.NotEqual(deliveryId, body.GetProperty("id").GetInt32());
+        // Unbound port: the POST fails, but we still recorded the attempt.
+        Assert.False(body.GetProperty("success").GetBoolean());
+        Assert.Equal("Completed", body.GetProperty("eventType").GetString());
+    }
+
+    [Fact]
+    public async Task Webhook_redeliver_rejects_unknown_webhook()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.PostAsync("/api/webhooks/9999/deliveries/1/redeliver", null);
+        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Webhook_redeliver_rejects_delivery_from_different_webhook()
+    {
+        // Prevents a caller from resending a delivery by aiming it at a webhook
+        // that does not own it — the (webhookId, deliveryId) pair must match.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        int otherWebhookId;
+        int deliveryId;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<WalletDbContext>();
+            var wallet = await db.Wallets.FirstAsync();
+
+            var w1 = new PaymentWebhookEntity { WalletId = wallet.Id, Url = "http://a/", Secret = "s" };
+            var w2 = new PaymentWebhookEntity { WalletId = wallet.Id, Url = "http://b/", Secret = "s" };
+            db.PaymentWebhooks.AddRange(w1, w2);
+            var payment = new PendingPaymentEntity
+            {
+                WalletId = wallet.Id, Direction = "Outbound", AmountSat = 1, Destination = "x"
+            };
+            db.PendingPayments.Add(payment);
+            await db.SaveChangesAsync();
+
+            var d = new WebhookDeliveryEntity { WebhookId = w1.Id, PaymentId = payment.Id, EventType = "Completed" };
+            db.WebhookDeliveries.Add(d);
+            await db.SaveChangesAsync();
+            otherWebhookId = w2.Id;
+            deliveryId = d.Id;
+        }
+
+        var resp = await client.PostAsync($"/api/webhooks/{otherWebhookId}/deliveries/{deliveryId}/redeliver", null);
+        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Webhook_redeliver_returns_410_when_payment_gone()
+    {
+        // If the originating payment was purged (e.g. wallet reset), the
+        // redeliver request cannot reconstruct state — surface that distinctly
+        // from a plain 404 so the UI can tell the user *why* retry failed.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        int webhookId;
+        int deliveryId;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<WalletDbContext>();
+            var wallet = await db.Wallets.FirstAsync();
+            var webhook = new PaymentWebhookEntity { WalletId = wallet.Id, Url = "http://x/", Secret = "s" };
+            db.PaymentWebhooks.Add(webhook);
+            await db.SaveChangesAsync();
+
+            var delivery = new WebhookDeliveryEntity
+            {
+                WebhookId = webhook.Id,
+                PaymentId = "payment-that-was-deleted",
+                EventType = "Completed"
+            };
+            db.WebhookDeliveries.Add(delivery);
+            await db.SaveChangesAsync();
+            webhookId = webhook.Id;
+            deliveryId = delivery.Id;
+        }
+
+        var resp = await client.PostAsync($"/api/webhooks/{webhookId}/deliveries/{deliveryId}/redeliver", null);
+        Assert.Equal(HttpStatusCode.Gone, resp.StatusCode);
+    }
+
+    [Fact]
     public async Task Mixing_status_exposes_round_timestamps_starting_null()
     {
         // lastRoundCompletedAt / lastSuccessfulRoundAt are the signals the UI

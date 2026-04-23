@@ -2060,6 +2060,42 @@ app.MapGet("/api/webhooks/{webhookId}/deliveries", async (int webhookId, WalletD
     return Results.Ok(deliveries);
 }).WithTags("Webhooks");
 
+// Manually retry a past delivery. Sends a fresh POST to the same webhook using the
+// payment's current state with the original event type — we don't persist the original
+// payload, so this is "replay the event against current state" rather than "replay the
+// exact bytes". Useful when a receiver was down; lets operators recover without waiting
+// for the payment to change state again.
+app.MapPost("/api/webhooks/{webhookId}/deliveries/{deliveryId}/redeliver",
+    async (int webhookId, int deliveryId, WalletDbContext db) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.BadRequest("No wallet found");
+
+    var webhook = await db.PaymentWebhooks.FindAsync(webhookId);
+    if (webhook is null || webhook.WalletId != wallet.Id) return Results.NotFound();
+
+    var delivery = await db.WebhookDeliveries.FindAsync(deliveryId);
+    if (delivery is null || delivery.WebhookId != webhookId) return Results.NotFound();
+
+    var payment = await db.PendingPayments.FindAsync(delivery.PaymentId);
+    if (payment is null || payment.WalletId != wallet.Id)
+        return Results.StatusCode(410); // Gone — payment no longer exists
+
+    var svc = new PaymentWebhookService(db, wallet.Id);
+    var fresh = await svc.RedeliverAsync(webhook, payment, delivery.EventType);
+
+    return Results.Ok(new
+    {
+        id = fresh.Id,
+        paymentId = fresh.PaymentId,
+        eventType = fresh.EventType,
+        httpStatusCode = fresh.HttpStatusCode,
+        success = fresh.Success,
+        errorMessage = fresh.ErrorMessage,
+        timestamp = fresh.Timestamp
+    });
+}).WithTags("Webhooks");
+
 // Address book CRUD
 app.MapGet("/api/address-book", async (WalletDbContext db) =>
 {

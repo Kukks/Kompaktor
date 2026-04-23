@@ -42,6 +42,23 @@ public class PaymentWebhookService
         }
     }
 
+    /// <summary>
+    /// Force a single delivery attempt to a specific webhook, bypassing the active/event-filter
+    /// checks. Used by the manual redeliver endpoint — the user is explicitly asking to resend,
+    /// so we honour that even if the webhook was paused or the filter changed since the original.
+    /// The payload reflects the payment's CURRENT state with the ORIGINAL event type (we don't
+    /// store the original JSON body).
+    /// </summary>
+    public async Task<WebhookDeliveryEntity> RedeliverAsync(
+        PaymentWebhookEntity webhook, PendingPaymentEntity payment, string eventType)
+    {
+        await DeliverToWebhookAsync(webhook, payment, eventType);
+        return await _db.WebhookDeliveries
+            .Where(d => d.WebhookId == webhook.Id && d.PaymentId == payment.Id)
+            .OrderByDescending(d => d.Id)
+            .FirstAsync();
+    }
+
     private async Task DeliverToWebhookAsync(
         PaymentWebhookEntity webhook, PendingPaymentEntity payment, string eventType)
     {

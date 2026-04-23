@@ -3804,19 +3804,39 @@
             if (existing) existing.remove();
             const row = document.createElement('tr');
             row.id = 'deliveryRow';
+            row.dataset.webhookId = webhookId;
             row.innerHTML = `<td colspan="5" style="padding:8px">
                 <div style="max-height:200px;overflow-y:auto;font-size:12px">
-                    <table style="width:100%"><thead><tr><th>Event</th><th>Status</th><th>Time</th><th>Error</th></tr></thead>
+                    <table style="width:100%"><thead><tr><th>Event</th><th>Status</th><th>Time</th><th>Error</th><th></th></tr></thead>
                     <tbody>${deliveries.map(d => `<tr>
                         <td>${d.eventType}</td>
                         <td style="color:${d.success ? 'var(--green)' : 'var(--red)'}">${d.success ? d.httpStatusCode : 'Failed'}</td>
                         <td>${formatDate(d.timestamp)}</td>
                         <td style="max-width:150px;overflow:hidden;text-overflow:ellipsis" title="${d.errorMessage || ''}">${d.errorMessage || '-'}</td>
+                        <td><button class="refresh-btn" onclick="redeliverWebhook(${webhookId}, ${d.id}, this)" style="font-size:11px;padding:2px 8px">Resend</button></td>
                     </tr>`).join('')}</tbody></table>
                 </div>
                 <button class="refresh-btn" onclick="this.closest('tr').remove()" style="font-size:11px;padding:2px 8px;margin-top:4px">Close</button>
             </td>`;
             body.appendChild(row);
+        }
+
+        async function redeliverWebhook(webhookId, deliveryId, btn) {
+            btn.disabled = true;
+            btn.textContent = '...';
+            try {
+                const res = await fetch(`/api/webhooks/${webhookId}/deliveries/${deliveryId}/redeliver`, { method: 'POST' });
+                if (res.status === 410) { showToast('Payment no longer exists — cannot redeliver', 'warning'); return; }
+                if (!res.ok) { showToast('Redeliver failed', 'warning'); return; }
+                const fresh = await res.json();
+                showToast(fresh.success ? `Delivered: HTTP ${fresh.httpStatusCode}` : `Failed: ${fresh.errorMessage || 'HTTP ' + fresh.httpStatusCode}`, fresh.success ? 'success' : 'warning');
+                showDeliveries(webhookId);
+            } catch (err) {
+                showToast('Redeliver failed: ' + err.message, 'warning');
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Resend';
+            }
         }
 
         // Keyboard shortcuts
