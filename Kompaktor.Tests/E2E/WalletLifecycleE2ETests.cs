@@ -3190,10 +3190,12 @@ public class WalletLifecycleE2ETests
     /// <summary>
     /// Polls /api/wallet/sync-status until the background service reports
     /// monitoring=true, or throws after the timeout. Startup races the
-    /// hosted service's 1s pre-delay and 5s wallet-detection loop, so we
-    /// need a window comfortably larger than that.
+    /// hosted service's 1s pre-delay, a FullSync pass, and StartMonitoring —
+    /// CI runners are slow enough that 20s wasn't consistently sufficient, so
+    /// the default was bumped to 45s (the service-side polling interval was
+    /// also shrunk from 5s to 500ms to make fresh-wallet pickup fast).
     /// </summary>
-    private static async Task WaitForMonitoringAsync(HttpClient client, int timeoutSeconds = 20)
+    private static async Task WaitForMonitoringAsync(HttpClient client, int timeoutSeconds = 45)
     {
         var deadline = DateTimeOffset.UtcNow.AddSeconds(timeoutSeconds);
         while (DateTimeOffset.UtcNow < deadline)

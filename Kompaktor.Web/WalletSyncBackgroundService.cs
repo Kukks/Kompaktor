@@ -62,10 +62,13 @@ public class WalletSyncBackgroundService : BackgroundService
         if (wallet is null)
         {
             _logger.LogInformation("No wallet found — sync service will wait for wallet creation");
-            // Wait for a wallet to be created (check every 5 seconds)
+            // Poll quickly so a just-created wallet picks up monitoring within
+            // a second rather than waiting a full 5s polling interval. The DB
+            // round-trip is cheap (SQLite, local file) so polling at 500ms is
+            // inexpensive even when the wallet is never created.
             while (!stoppingToken.IsCancellationRequested)
             {
-                await Task.Delay(5000, stoppingToken);
+                await Task.Delay(500, stoppingToken);
                 wallet = await db.Wallets.FirstOrDefaultAsync(stoppingToken);
                 if (wallet is not null) break;
             }
