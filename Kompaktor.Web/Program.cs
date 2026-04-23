@@ -966,7 +966,7 @@ app.MapGet("/api/wallet/settings", async (WalletDbContext db) =>
     return Results.Ok(new
     {
         mixingProfile = wallet.MixingProfile,
-        availableProfiles = MixingProfiles.All,
+        availableProfiles = MixingProfileCatalog.Names,
         torEnabled = wallet.TorEnabled,
         torSocksHost = wallet.TorSocksHost,
         torSocksPort = wallet.TorSocksPort
@@ -983,8 +983,8 @@ app.MapPost("/api/wallet/settings", async (WalletDbContext db, HttpContext ctx, 
 
     if (body.MixingProfile is not null)
     {
-        if (!MixingProfiles.IsValid(body.MixingProfile))
-            return Results.BadRequest($"Unknown mixingProfile. Allowed: {string.Join(", ", MixingProfiles.All)}");
+        if (!MixingProfileCatalog.IsValid(body.MixingProfile))
+            return Results.BadRequest($"Unknown mixingProfile. Allowed: {string.Join(", ", MixingProfileCatalog.Names)}");
         wallet.MixingProfile = body.MixingProfile;
     }
 
@@ -2639,6 +2639,25 @@ app.MapPost("/api/wallet/resync", (WalletSyncBackgroundService sync) =>
     return Results.Ok(new { status = "resync triggered" });
 }).WithTags("Wallet");
 
+// Mixing profile catalog — exposes the server's canonical preset list so
+// the UI and API consumers don't need to hardcode descriptions or knob
+// values. Each spec shows what the preset actually does.
+app.MapGet("/api/mixing/profiles", () =>
+{
+    return Results.Ok(new
+    {
+        @default = MixingProfileCatalog.Default,
+        profiles = MixingProfileCatalog.All.Select(p => new
+        {
+            name = p.Name,
+            description = p.Description,
+            consolidationThreshold = p.ConsolidationThreshold,
+            selfSendDelaySeconds = p.SelfSendDelaySeconds,
+            interactivePaymentsEnabled = p.InteractivePaymentsEnabled
+        })
+    });
+}).WithTags("Mixing");
+
 // Auto-mixing: start/stop/status
 app.MapGet("/api/mixing/status", (MixingManager mixer) =>
 {
@@ -2890,24 +2909,6 @@ internal static class TorReachability
             return new TorProbeResult(false, sw.ElapsedMilliseconds, null, ex.Message);
         }
     }
-}
-
-/// <summary>
-/// Named mixing presets. Each string is a stable identifier the UI can show
-/// and the server uses to pick a behavior-trait bundle in MixingManager.
-/// Adding a new preset here only requires extending <see cref="MixingManager"/>'s
-/// trait selector — no schema change.
-/// </summary>
-internal static class MixingProfiles
-{
-    public const string Balanced = "Balanced";
-    public const string PrivacyFocused = "PrivacyFocused";
-    public const string Consolidator = "Consolidator";
-    public const string Payments = "Payments";
-
-    public static readonly string[] All = [Balanced, PrivacyFocused, Consolidator, Payments];
-
-    public static bool IsValid(string profile) => Array.IndexOf(All, profile) >= 0;
 }
 
 namespace Kompaktor.Web

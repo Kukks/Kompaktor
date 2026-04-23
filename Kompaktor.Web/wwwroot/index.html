@@ -1220,10 +1220,6 @@
                         <div>
                             <label style="display:block;font-size:12px;color:var(--text-muted);margin-bottom:4px">Mixing profile</label>
                             <select id="mixProfile" onchange="updateProfileHint()" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:4px;font-size:13px;width:220px">
-                                <option value="Balanced">Balanced</option>
-                                <option value="PrivacyFocused">Privacy Focused</option>
-                                <option value="Consolidator">Consolidator</option>
-                                <option value="Payments">Payments</option>
                             </select>
                             <div id="mixProfileHint" style="font-size:11px;color:var(--text-muted);margin-top:6px;max-width:560px"></div>
                         </div>
@@ -3495,20 +3491,57 @@
             }
         }
 
-        // Settings: load wallet info
-        // Human-readable hints for each preset — kept here so the strings sit
-        // next to the UI rather than travelling through the API. The API only
-        // surfaces the name + validates the choice.
-        const profileDescriptions = {
-            Balanced: 'Default: 10 inputs/round, 30s self-send change delay, interactive payments on.',
-            PrivacyFocused: 'Smaller batches (5/round) and longer self-send delay so change does not reattach; interactive payments on.',
-            Consolidator: 'Aggressively pulls inputs (25/round) into fewer larger UTXOs; interactive payments off so they do not compete for slots.',
-            Payments: '5 inputs/round with interactive payment slots prioritised for outgoing peer-to-peer transfers.'
-        };
+        // Settings: load wallet info.
+        // Profile catalog is pulled from the server so knob values and
+        // descriptions stay in lockstep with what MixingManager actually
+        // applies. Cached after first fetch.
+        let profileCatalogCache = null;
 
-        function updateProfileHint() {
-            const profile = document.getElementById('mixProfile').value;
-            document.getElementById('mixProfileHint').textContent = profileDescriptions[profile] || '';
+        async function loadProfileCatalog() {
+            if (profileCatalogCache) return profileCatalogCache;
+            try {
+                const res = await fetch('/api/mixing/profiles');
+                if (!res.ok) return null;
+                profileCatalogCache = await res.json();
+                return profileCatalogCache;
+            } catch {
+                return null;
+            }
+        }
+
+        // Convert a camelCase preset name into something humans can read in
+        // the <option> label (e.g. PrivacyFocused → "Privacy Focused").
+        function humanizeProfileName(name) {
+            return name.replace(/([a-z])([A-Z])/g, '$1 $2');
+        }
+
+        async function populateProfileSelect(selectedName) {
+            const sel = document.getElementById('mixProfile');
+            if (!sel) return;
+            const catalog = await loadProfileCatalog();
+            if (!catalog) return;
+            sel.innerHTML = '';
+            for (const p of catalog.profiles) {
+                const opt = document.createElement('option');
+                opt.value = p.name;
+                opt.textContent = humanizeProfileName(p.name);
+                sel.appendChild(opt);
+            }
+            if (selectedName) sel.value = selectedName;
+        }
+
+        async function updateProfileHint() {
+            const profileEl = document.getElementById('mixProfile');
+            const hintEl = document.getElementById('mixProfileHint');
+            if (!profileEl || !hintEl) return;
+            const catalog = await loadProfileCatalog();
+            if (!catalog) { hintEl.textContent = ''; return; }
+            const spec = catalog.profiles.find(p => p.name === profileEl.value);
+            if (!spec) { hintEl.textContent = ''; return; }
+            // Render description + structured knobs so the user sees both
+            // intent (description) and effect (exact values).
+            const knobs = `${spec.consolidationThreshold} inputs/round · ${spec.selfSendDelaySeconds}s self-send delay · interactive payments ${spec.interactivePaymentsEnabled ? 'on' : 'off'}`;
+            hintEl.innerHTML = `${esc(spec.description)}<br><span style="color:var(--text-muted);font-size:10px">${esc(knobs)}</span>`;
         }
 
         function toggleTorFields() {
@@ -3543,8 +3576,10 @@
             if (!data) return;
             const profileEl = document.getElementById('mixProfile');
             if (profileEl) {
-                profileEl.value = data.mixingProfile || 'Balanced';
-                updateProfileHint();
+                // Populate options from the server catalog so new presets
+                // appear without a UI release. Populate first, then select.
+                await populateProfileSelect(data.mixingProfile || 'Balanced');
+                await updateProfileHint();
             }
             const torEl = document.getElementById('settTorEnabled');
             if (torEl) torEl.checked = !!data.torEnabled;

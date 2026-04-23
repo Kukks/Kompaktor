@@ -189,8 +189,9 @@ public class MixingManager : IAsyncDisposable
 
     /// <summary>
     /// Maps a named mixing preset onto the concrete list of behavior traits
-    /// the coinjoin client runs. Keeping this out-of-line makes it easy to
-    /// add a new preset without touching the start flow.
+    /// the coinjoin client runs. Reads spec values from
+    /// <see cref="MixingProfileCatalog"/> so parameters stay authoritative
+    /// in one place.
     /// </summary>
     private static List<KompaktorClientBaseBehaviorTrait> BuildTraitsForProfile(
         string profile,
@@ -198,51 +199,21 @@ public class MixingManager : IAsyncDisposable
         WalletPaymentManager paymentManager,
         KompaktorMessagingApi messagingApi)
     {
-        // These knobs deliberately diverge per profile so users see the
-        // preset *doing something* rather than being cosmetic.
-        return profile switch
+        var spec = MixingProfileCatalog.Get(profile);
+
+        var traits = new List<KompaktorClientBaseBehaviorTrait>
         {
-            // Privacy-focused: smaller consolidation target (fewer inputs per
-            // round = more rounds = more unlinkability), longer self-send
-            // delay so change doesn't immediately reattach.
-            "PrivacyFocused" =>
-            [
-                new ConsolidationBehaviorTrait(5),
-                new SelfSendChangeBehaviorTrait(wallet.GetChangeScript, TimeSpan.FromSeconds(60)),
-                new InteractivePaymentSenderBehaviorTrait(paymentManager, messagingApi),
-                new InteractivePaymentReceiverBehaviorTrait(paymentManager, messagingApi)
-            ],
-
-            // Consolidator: aggressively pull inputs into one round so the
-            // wallet ends up with fewer, larger UTXOs. Interactive payments
-            // off since they compete for slots with consolidation goals.
-            "Consolidator" =>
-            [
-                new ConsolidationBehaviorTrait(25),
-                new SelfSendChangeBehaviorTrait(wallet.GetChangeScript, TimeSpan.FromSeconds(30)),
-            ],
-
-            // Payments: interactive-payment heavy workflow. Consolidation
-            // kept conservative so coin-selection doesn't steal slots from
-            // outgoing payments queued by the user.
-            "Payments" =>
-            [
-                new ConsolidationBehaviorTrait(5),
-                new SelfSendChangeBehaviorTrait(wallet.GetChangeScript, TimeSpan.FromSeconds(30)),
-                new InteractivePaymentSenderBehaviorTrait(paymentManager, messagingApi),
-                new InteractivePaymentReceiverBehaviorTrait(paymentManager, messagingApi)
-            ],
-
-            // Balanced (default) and any unknown string fall through to the
-            // historical trait bundle — safe for rollback.
-            _ =>
-            [
-                new ConsolidationBehaviorTrait(10),
-                new SelfSendChangeBehaviorTrait(wallet.GetChangeScript, TimeSpan.FromSeconds(30)),
-                new InteractivePaymentSenderBehaviorTrait(paymentManager, messagingApi),
-                new InteractivePaymentReceiverBehaviorTrait(paymentManager, messagingApi)
-            ],
+            new ConsolidationBehaviorTrait(spec.ConsolidationThreshold),
+            new SelfSendChangeBehaviorTrait(wallet.GetChangeScript, TimeSpan.FromSeconds(spec.SelfSendDelaySeconds)),
         };
+
+        if (spec.InteractivePaymentsEnabled)
+        {
+            traits.Add(new InteractivePaymentSenderBehaviorTrait(paymentManager, messagingApi));
+            traits.Add(new InteractivePaymentReceiverBehaviorTrait(paymentManager, messagingApi));
+        }
+
+        return traits;
     }
 
     public async Task<string> StopAsync()
@@ -300,5 +271,88 @@ public class MixingManager : IAsyncDisposable
             await _service.DisposeAsync();
             _service = null;
         }
+    }
+}
+
+/// <summary>
+/// Structured description of a named mixing preset. Surfaced verbatim over
+/// the HTTP API so clients (dashboard UI, API consumers) don't need to
+/// duplicate the values. Adding a new knob means adding a property here
+/// and consuming it in <see cref="MixingManager"/>.BuildTraitsForProfile.
+/// </summary>
+public sealed record MixingProfileSpec(
+    string Name,
+    int ConsolidationThreshold,
+    int SelfSendDelaySeconds,
+    bool InteractivePaymentsEnabled,
+    string Description);
+
+/// <summary>
+/// Canonical list of mixing presets. The single source of truth for both
+/// trait construction and the /api/mixing/profiles endpoint.
+/// </summary>
+public static class MixingProfileCatalog
+{
+    public const string Default = "Balanced";
+
+    public static readonly IReadOnlyList<MixingProfileSpec> All = new MixingProfileSpec[]
+    {
+        new(
+            "Balanced",
+            ConsolidationThreshold: 10,
+            SelfSendDelaySeconds: 30,
+            InteractivePaymentsEnabled: true,
+            Description: "Default: 10 inputs/round, 30s self-send change delay, interactive payments on."),
+
+        // Privacy-focused: smaller consolidation target (fewer inputs per
+        // round = more rounds = more unlinkability), longer self-send delay
+        // so change doesn't immediately reattach.
+        new(
+            "PrivacyFocused",
+            ConsolidationThreshold: 5,
+            SelfSendDelaySeconds: 60,
+            InteractivePaymentsEnabled: true,
+            Description: "Smaller batches (5/round) and longer self-send delay so change does not reattach; interactive payments on."),
+
+        // Consolidator: aggressively pull inputs into one round so the
+        // wallet ends up with fewer, larger UTXOs. Interactive payments
+        // off since they compete for slots with consolidation goals.
+        new(
+            "Consolidator",
+            ConsolidationThreshold: 25,
+            SelfSendDelaySeconds: 30,
+            InteractivePaymentsEnabled: false,
+            Description: "Aggressively pulls inputs (25/round) into fewer larger UTXOs; interactive payments off so they do not compete for slots."),
+
+        // Payments: interactive-payment heavy workflow. Consolidation
+        // kept conservative so coin-selection doesn't steal slots from
+        // outgoing payments queued by the user.
+        new(
+            "Payments",
+            ConsolidationThreshold: 5,
+            SelfSendDelaySeconds: 30,
+            InteractivePaymentsEnabled: true,
+            Description: "5 inputs/round with interactive payment slots prioritised for outgoing peer-to-peer transfers."),
+    };
+
+    public static readonly IReadOnlyList<string> Names = All.Select(p => p.Name).ToArray();
+
+    public static bool IsValid(string name) => All.Any(p => p.Name == name);
+
+    /// <summary>
+    /// Returns the spec for a named preset, falling back to the default when
+    /// the name is unknown or empty. Never throws — keeps the start path
+    /// resilient to wallet-setting drift.
+    /// </summary>
+    public static MixingProfileSpec Get(string? name)
+    {
+        if (!string.IsNullOrWhiteSpace(name))
+        {
+            foreach (var spec in All)
+            {
+                if (spec.Name == name) return spec;
+            }
+        }
+        return All.First(p => p.Name == Default);
     }
 }

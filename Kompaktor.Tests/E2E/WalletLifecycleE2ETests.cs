@@ -3645,4 +3645,60 @@ public class WalletLifecycleE2ETests
         })).Content.ReadFromJsonAsync<JsonElement>();
         Assert.Equal(10, created.GetProperty("maxRetries").GetInt32());
     }
+
+    [Fact]
+    public async Task Mixing_profile_catalog_is_exposed_with_structured_details()
+    {
+        // The UI used to hardcode one-liners per preset. Now the server is the
+        // source of truth, so the catalog endpoint must expose knob values and
+        // descriptions clients can render directly.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        var resp = await client.GetFromJsonAsync<JsonElement>("/api/mixing/profiles");
+
+        Assert.Equal("Balanced", resp.GetProperty("default").GetString());
+
+        var profiles = resp.GetProperty("profiles").EnumerateArray().ToArray();
+        // Presets documented in MixingProfileCatalog — fail loudly if the list
+        // drifts so whoever adds one has to update the test intentionally.
+        var names = profiles.Select(p => p.GetProperty("name").GetString()).ToArray();
+        Assert.Equal(new[] { "Balanced", "PrivacyFocused", "Consolidator", "Payments" }, names);
+
+        // Every spec must carry the four knobs the UI now reads.
+        foreach (var p in profiles)
+        {
+            Assert.False(string.IsNullOrWhiteSpace(p.GetProperty("description").GetString()));
+            Assert.True(p.GetProperty("consolidationThreshold").GetInt32() > 0);
+            Assert.True(p.GetProperty("selfSendDelaySeconds").GetInt32() > 0);
+            // JSON booleans; ensure the property exists and is the right kind.
+            var ipe = p.GetProperty("interactivePaymentsEnabled");
+            Assert.True(ipe.ValueKind == JsonValueKind.True || ipe.ValueKind == JsonValueKind.False);
+        }
+
+        // Spot-check the two most divergent presets so a regression in the
+        // catalog values (not just the shape) is caught.
+        var consolidator = profiles.Single(p => p.GetProperty("name").GetString() == "Consolidator");
+        Assert.Equal(25, consolidator.GetProperty("consolidationThreshold").GetInt32());
+        Assert.False(consolidator.GetProperty("interactivePaymentsEnabled").GetBoolean());
+
+        var privacy = profiles.Single(p => p.GetProperty("name").GetString() == "PrivacyFocused");
+        Assert.Equal(60, privacy.GetProperty("selfSendDelaySeconds").GetInt32());
+        Assert.True(privacy.GetProperty("interactivePaymentsEnabled").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Mixing_profile_catalog_survives_with_no_wallet()
+    {
+        // The catalog is static server config — it should answer even before
+        // the user has created a wallet, so the UI can render the picker on
+        // first load without chicken-and-egg ordering.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        var resp = await client.GetAsync("/api/mixing/profiles");
+        resp.EnsureSuccessStatusCode();
+        var body = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(body.GetProperty("profiles").GetArrayLength() >= 1);
+    }
 }
