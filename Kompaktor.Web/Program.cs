@@ -1053,6 +1053,83 @@ app.MapPost("/api/wallet/rename", async (WalletDbContext db, HttpContext ctx, Da
     return Results.Ok(new { renamed = true, name = wallet.Name });
 }).WithTags("Wallet");
 
+// Sign an arbitrary message with a wallet-owned address, producing a
+// BIP-322 Simple signature. Typical use: attest control of an address
+// (e.g. exchange proof-of-ownership) without broadcasting a transaction.
+// The address must already belong to this wallet.
+app.MapPost("/api/wallet/sign-message", async (
+    WalletDbContext db, HttpContext ctx, Network network) =>
+{
+    var body = await ctx.Request.ReadFromJsonAsync<SignMessageRequest>();
+    if (body is null) return Results.BadRequest("Invalid request");
+    if (string.IsNullOrWhiteSpace(body.Address))
+        return Results.BadRequest("Address required");
+    if (body.Message is null)
+        return Results.BadRequest("Message required");
+    if (string.IsNullOrWhiteSpace(body.Passphrase))
+        return Results.BadRequest("Passphrase required to unlock the signing key");
+
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.BadRequest("No wallet found");
+
+    KompaktorHdWallet hdWallet;
+    try
+    {
+        hdWallet = await KompaktorHdWallet.OpenAsync(db, wallet.Id, network, body.Passphrase);
+    }
+    catch (System.Security.Cryptography.CryptographicException)
+    {
+        return Results.BadRequest("Passphrase is incorrect");
+    }
+
+    try
+    {
+        var signature = await hdWallet.SignMessageAsync(body.Address, body.Message);
+        return Results.Ok(new { address = body.Address, message = body.Message, signature });
+    }
+    catch (ArgumentException ex)
+    {
+        return Results.BadRequest(ex.Message);
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(ex.Message);
+    }
+}).WithTags("Wallet");
+
+// Stateless BIP-322 signature verification. No wallet context is needed,
+// so the caller can verify signatures for any address (wallet-owned or not).
+app.MapPost("/api/message/verify", (HttpContext ctx, Network network) =>
+{
+    return HandleVerify(ctx, network);
+}).WithTags("Wallet");
+
+static async Task<IResult> HandleVerify(HttpContext ctx, Network network)
+{
+    var body = await ctx.Request.ReadFromJsonAsync<VerifyMessageRequest>();
+    if (body is null) return Results.BadRequest("Invalid request");
+    if (string.IsNullOrWhiteSpace(body.Address))
+        return Results.BadRequest("Address required");
+    if (body.Message is null)
+        return Results.BadRequest("Message required");
+    if (string.IsNullOrWhiteSpace(body.Signature))
+        return Results.BadRequest("Signature required");
+
+    BitcoinAddress address;
+    try { address = BitcoinAddress.Create(body.Address, network); }
+    catch (FormatException) { return Results.BadRequest("Invalid address for this network"); }
+
+    NBitcoin.BIP322.BIP322Signature sig;
+    try { sig = NBitcoin.BIP322.BIP322Signature.Parse(body.Signature, network); }
+    catch { return Results.BadRequest("Signature is not a valid BIP-322 base64 payload"); }
+
+    bool valid;
+    try { valid = address.VerifyBIP322(body.Message, sig); }
+    catch { valid = false; }
+
+    return Results.Ok(new { valid });
+}
+
 // Wallet-level preferences for auto-mixing (profile + Tor).
 // These are the defaults /api/mixing/start falls back to when the caller
 // omits CoordinatorUrl / TorSocks* fields.
@@ -3092,6 +3169,8 @@ record PassphraseRequest(string Passphrase);
 record ChangePassphraseRequest(string CurrentPassphrase, string NewPassphrase);
 record RenameWalletRequest(string Name);
 record DeleteWalletRequest(string Passphrase, string Confirmation);
+record SignMessageRequest(string Address, string Message, string Passphrase);
+record VerifyMessageRequest(string Address, string Message, string Signature);
 record RestoreRequest(string Mnemonic, string Passphrase, string? Name = null);
 record CreateWalletRequest(string Passphrase, string? Name = null, int? WordCount = null);
 record MixingStartRequest(string Passphrase, string? CoordinatorUrl = null, string? TorSocksHost = null, int? TorSocksPort = null, bool AllowUnconfirmedCoinjoinReuse = false, string? Profile = null);

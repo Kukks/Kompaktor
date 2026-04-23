@@ -304,6 +304,41 @@ public class KompaktorHdWallet : IKompaktorWalletInterface
         return (BIP322Signature.Full)BIP322Signature.FromPSBT(psbt, SignatureType.Full);
     }
 
+    /// <summary>
+    /// Signs an arbitrary message with the private key for a wallet-owned
+    /// address, producing a BIP-322 Simple signature suitable for proving
+    /// control of the address (e.g. exchange attestations). The address must
+    /// already exist in the wallet.
+    /// </summary>
+    public async Task<string> SignMessageAsync(string addressStr, string message, CancellationToken ct = default)
+    {
+        if (_masterKey is null) throw new InvalidOperationException("Wallet is locked");
+        if (string.IsNullOrEmpty(addressStr)) throw new ArgumentException("Address required", nameof(addressStr));
+        ArgumentNullException.ThrowIfNull(message);
+
+        BitcoinAddress address;
+        try { address = BitcoinAddress.Create(addressStr, _network); }
+        catch (FormatException) { throw new ArgumentException("Invalid address for this network", nameof(addressStr)); }
+
+        var scriptBytes = address.ScriptPubKey.ToBytes();
+        var rows = await _db.Addresses
+            .Include(a => a.Account)
+            .Where(a => a.Account.Wallet.Id == WalletId)
+            .ToListAsync(ct);
+        var match = rows.FirstOrDefault(a => a.ScriptPubKey.SequenceEqual(scriptBytes));
+        if (match is null)
+            throw new InvalidOperationException("Address is not part of this wallet");
+
+        var coinType = _network == Network.Main ? 0 : 1;
+        var fullPath = new KeyPath($"m/{match.Account.Purpose}'/{coinType}'/{match.Account.AccountIndex}'/{match.KeyPath}");
+        var key = _masterKey.Derive(fullPath).PrivateKey;
+
+        var psbt = address.CreateBIP322PSBT(message);
+        psbt = psbt.SignWithKeys(key);
+        var sig = BIP322Signature.FromPSBT(psbt, SignatureType.Simple);
+        return sig.ToBase64();
+    }
+
     public async Task<WitScript> GenerateWitness(Coin coin, Transaction tx, IEnumerable<Coin> txCoins, CancellationToken ct = default)
     {
         if (_masterKey is null) throw new InvalidOperationException("Wallet is locked");

@@ -1296,6 +1296,34 @@
                 </div>
             </section>
 
+            <section>
+                <h2>Sign &amp; Verify Message</h2>
+                <div style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:16px">
+                    <p style="color:var(--text-muted);font-size:13px;margin-bottom:12px">Prove control of a wallet address by signing a message (BIP-322). Useful for exchange attestations and off-chain proofs. The address must belong to this wallet.</p>
+                    <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:16px">
+                        <input type="text" id="signMsgAddress" placeholder="Wallet address (bcrt1...)" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:4px;font-size:13px;max-width:520px">
+                        <textarea id="signMsgMessage" rows="3" placeholder="Message to sign" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:4px;font-size:13px;max-width:520px;resize:vertical"></textarea>
+                        <input type="password" id="signMsgPass" placeholder="Passphrase" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:4px;font-size:13px;width:200px">
+                        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                            <button class="send-btn" onclick="signMessage()">Sign</button>
+                            <span id="signMsgStatus" style="font-size:12px"></span>
+                        </div>
+                        <textarea id="signMsgResult" rows="3" readonly placeholder="Signature (base64)" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:4px;font-size:12px;max-width:520px;display:none;font-family:monospace"></textarea>
+                    </div>
+                    <hr style="border:none;border-top:1px solid var(--border);margin:12px 0">
+                    <p style="color:var(--text-muted);font-size:13px;margin-bottom:8px">Verify a BIP-322 signature against an address and message. Works for any address — not just wallet-owned ones.</p>
+                    <div style="display:flex;flex-direction:column;gap:8px">
+                        <input type="text" id="verifyMsgAddress" placeholder="Address" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:4px;font-size:13px;max-width:520px">
+                        <textarea id="verifyMsgMessage" rows="2" placeholder="Message" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:4px;font-size:13px;max-width:520px;resize:vertical"></textarea>
+                        <textarea id="verifyMsgSignature" rows="2" placeholder="Signature (base64)" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:4px;font-size:12px;max-width:520px;resize:vertical;font-family:monospace"></textarea>
+                        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                            <button class="send-btn" onclick="verifyMessage()">Verify</button>
+                            <span id="verifyMsgStatus" style="font-size:12px"></span>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
             <section id="backupVerifySection">
                 <h2>Verify Backup <span id="backupVerifiedBadge" style="display:none;font-size:12px;background:var(--green);color:#000;padding:2px 8px;border-radius:10px;margin-left:8px">Verified</span></h2>
                 <div style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:16px">
@@ -3537,6 +3565,67 @@
                 input.value = '';
                 document.getElementById('settWalletName').textContent = data.name;
                 if (data.renamed) showToast(`Wallet renamed to "${data.name}"`, 'success');
+            } catch (err) {
+                status.innerHTML = `<span style="color:var(--red)">Failed: ${esc(err.message)}</span>`;
+            }
+        }
+
+        async function signMessage() {
+            const addrEl = document.getElementById('signMsgAddress');
+            const msgEl = document.getElementById('signMsgMessage');
+            const passEl = document.getElementById('signMsgPass');
+            const status = document.getElementById('signMsgStatus');
+            const resultEl = document.getElementById('signMsgResult');
+            const address = addrEl.value.trim();
+            const message = msgEl.value;
+            const passphrase = passEl.value;
+            if (!address || !message || !passphrase) { status.innerHTML = '<span style="color:var(--red)">Address, message, and passphrase required</span>'; return; }
+            status.innerHTML = '<span style="color:var(--yellow)">Signing...</span>';
+            resultEl.style.display = 'none';
+            try {
+                const res = await fetch('/api/wallet/sign-message', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ address, message, passphrase })
+                });
+                const data = await res.json();
+                if (!res.ok) {
+                    status.innerHTML = `<span style="color:var(--red)">${esc(typeof data === 'string' ? data : data.detail || JSON.stringify(data))}</span>`;
+                    return;
+                }
+                status.innerHTML = '<span style="color:var(--green)">Signed</span>';
+                resultEl.value = data.signature;
+                resultEl.style.display = '';
+                passEl.value = '';
+            } catch (err) {
+                status.innerHTML = `<span style="color:var(--red)">Failed: ${esc(err.message)}</span>`;
+            }
+        }
+
+        async function verifyMessage() {
+            const addrEl = document.getElementById('verifyMsgAddress');
+            const msgEl = document.getElementById('verifyMsgMessage');
+            const sigEl = document.getElementById('verifyMsgSignature');
+            const status = document.getElementById('verifyMsgStatus');
+            const address = addrEl.value.trim();
+            const message = msgEl.value;
+            const signature = sigEl.value.trim();
+            if (!address || !message || !signature) { status.innerHTML = '<span style="color:var(--red)">Address, message, and signature required</span>'; return; }
+            status.innerHTML = '<span style="color:var(--yellow)">Verifying...</span>';
+            try {
+                const res = await fetch('/api/message/verify', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ address, message, signature })
+                });
+                const data = await res.json();
+                if (!res.ok) {
+                    status.innerHTML = `<span style="color:var(--red)">${esc(typeof data === 'string' ? data : data.detail || JSON.stringify(data))}</span>`;
+                    return;
+                }
+                status.innerHTML = data.valid
+                    ? '<span style="color:var(--green)">Signature is valid</span>'
+                    : '<span style="color:var(--red)">Signature is INVALID</span>';
             } catch (err) {
                 status.innerHTML = `<span style="color:var(--red)">Failed: ${esc(err.message)}</span>`;
             }
