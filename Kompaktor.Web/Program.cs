@@ -1827,13 +1827,26 @@ app.MapPost("/api/dashboard/send", async (WalletDbContext db, IBlockchainBackend
 
         // Broadcast
         var txId = await chain.BroadcastAsync(tx);
+        var txIdStr = txId.ToString();
 
-        // Mark UTXOs as spent and record the transaction
+        // Record the raw transaction so /api/dashboard/fee-bump and detail
+        // endpoints can find it by txid later.
+        if (!await db.Transactions.AnyAsync(t => t.Id == txIdStr))
+        {
+            db.Transactions.Add(new TransactionEntity
+            {
+                Id = txIdStr,
+                RawHex = tx.ToHex(),
+                Timestamp = DateTimeOffset.UtcNow
+            });
+        }
+
+        // Mark UTXOs as spent
         foreach (var coin in plan.InputCoins)
         {
             var utxo = await db.Utxos.FirstOrDefaultAsync(u =>
                 u.TxId == coin.Outpoint.Hash.ToString() && u.OutputIndex == (int)coin.Outpoint.N);
-            if (utxo is not null) utxo.SpentByTxId = txId.ToString();
+            if (utxo is not null) utxo.SpentByTxId = txIdStr;
         }
         await db.SaveChangesAsync();
 
@@ -1842,7 +1855,7 @@ app.MapPost("/api/dashboard/send", async (WalletDbContext db, IBlockchainBackend
 
         return Results.Ok(new
         {
-            txId = txId.ToString(),
+            txId = txIdStr,
             feeSat = plan.EstimatedFee.Satoshi,
             inputCount = plan.InputCoins.Length,
             outputCount = tx.Outputs.Count

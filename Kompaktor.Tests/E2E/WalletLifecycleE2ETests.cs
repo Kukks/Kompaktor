@@ -769,6 +769,104 @@ public class WalletLifecycleE2ETests
     }
 
     [Fact]
+    public async Task Fee_bump_returns_psbt_with_higher_fee_than_original()
+    {
+        // End-to-end RBF: send a tx (always signals RBF via WalletTransactionBuilder),
+        // then call /dashboard/fee-bump with a higher fee rate. The endpoint should
+        // produce an unsigned PSBT for external signing with more fee than the original.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        await SeedUtxoAsync(factory, client, amountSat: 300_000, tag: 0x51);
+
+        var receive = await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address");
+        var dest = receive.GetProperty("address").GetString()!;
+
+        var send = await (await client.PostAsJsonAsync("/api/dashboard/send", new
+        {
+            Destination = dest,
+            AmountSat = 50_000,
+            FeeRateSatPerVb = 2,
+            Passphrase = "pw"
+        })).Content.ReadFromJsonAsync<JsonElement>();
+        var originalTxId = send.GetProperty("txId").GetString()!;
+        var originalFee = send.GetProperty("feeSat").GetInt64();
+
+        // Bump: 20 sat/vb is an order of magnitude higher than the original 2 sat/vb,
+        // so the result must carry more fee.
+        var bumpResp = await client.PostAsJsonAsync("/api/dashboard/fee-bump", new
+        {
+            TxId = originalTxId,
+            NewFeeRateSatPerVb = 20
+        });
+        var bumpRespBody = await bumpResp.Content.ReadAsStringAsync();
+        Assert.True(bumpResp.StatusCode == HttpStatusCode.OK,
+            $"Expected 200 OK, got {bumpResp.StatusCode}. Body: {bumpRespBody}");
+
+        var bump = await bumpResp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(originalTxId, bump.GetProperty("originalTxId").GetString());
+        Assert.False(string.IsNullOrWhiteSpace(bump.GetProperty("bumpedPsbt").GetString()));
+        Assert.Equal(20, bump.GetProperty("newFeeRateSatPerVb").GetInt64());
+        Assert.True(bump.GetProperty("inputCount").GetInt32() >= 1);
+        Assert.True(bump.GetProperty("outputCount").GetInt32() >= 1);
+        Assert.True(bump.GetProperty("estimatedFeeSat").GetInt64() > originalFee,
+            $"Bumped fee ({bump.GetProperty("estimatedFeeSat").GetInt64()}) should exceed original fee ({originalFee}).");
+    }
+
+    [Fact]
+    public async Task Fee_bump_unknown_tx_returns_bad_request()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.PostAsJsonAsync("/api/dashboard/fee-bump", new
+        {
+            TxId = new string('a', 64),
+            NewFeeRateSatPerVb = 10
+        });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Fee_bump_rejects_missing_txid_or_zero_fee_rate()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var missingTx = await client.PostAsJsonAsync("/api/dashboard/fee-bump", new
+        {
+            TxId = "",
+            NewFeeRateSatPerVb = 10
+        });
+        Assert.Equal(HttpStatusCode.BadRequest, missingTx.StatusCode);
+
+        var zeroFee = await client.PostAsJsonAsync("/api/dashboard/fee-bump", new
+        {
+            TxId = new string('b', 64),
+            NewFeeRateSatPerVb = 0
+        });
+        Assert.Equal(HttpStatusCode.BadRequest, zeroFee.StatusCode);
+    }
+
+    [Fact]
+    public async Task Fee_bump_without_wallet_returns_bad_request()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        // no wallet created
+
+        var resp = await client.PostAsJsonAsync("/api/dashboard/fee-bump", new
+        {
+            TxId = new string('c', 64),
+            NewFeeRateSatPerVb = 10
+        });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
     public async Task Plan_send_returns_inputs_outputs_and_fee_for_valid_plan()
     {
         // This is the preview that the UI uses before calling /dashboard/send,
