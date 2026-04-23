@@ -1881,6 +1881,83 @@ public class WalletLifecycleE2ETests
         Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
     }
 
+    [Fact]
+    public async Task Validate_address_parses_bip21_uri_with_amount_label_and_message()
+    {
+        // When the user pastes a full BIP21 URI, validate-address should
+        // recognise the `bitcoin:` scheme, extract amount/label/message, and
+        // still validate the bare address against the configured network.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var bareAddress = (await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address"))
+            .GetProperty("address").GetString()!;
+
+        var uri = $"bitcoin:{bareAddress}?amount=0.00250000&label=invoice%20101&message=Thanks!";
+        var resp = await client.GetFromJsonAsync<JsonElement>(
+            $"/api/dashboard/validate-address?address={Uri.EscapeDataString(uri)}");
+
+        Assert.True(resp.GetProperty("valid").GetBoolean());
+        Assert.Equal(bareAddress, resp.GetProperty("address").GetString());
+        Assert.Equal(250_000L, resp.GetProperty("amountSat").GetInt64());
+        Assert.Equal("invoice 101", resp.GetProperty("label").GetString());
+        Assert.Equal("Thanks!", resp.GetProperty("message").GetString());
+    }
+
+    [Fact]
+    public async Task Validate_address_accepts_bip21_uri_without_query_params()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var bare = (await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address"))
+            .GetProperty("address").GetString()!;
+
+        var uri = $"bitcoin:{bare}";
+        var resp = await client.GetFromJsonAsync<JsonElement>(
+            $"/api/dashboard/validate-address?address={Uri.EscapeDataString(uri)}");
+
+        Assert.True(resp.GetProperty("valid").GetBoolean());
+        Assert.Equal(bare, resp.GetProperty("address").GetString());
+        Assert.Equal(JsonValueKind.Null, resp.GetProperty("amountSat").ValueKind);
+    }
+
+    [Fact]
+    public async Task Validate_address_bip21_uri_with_empty_address_is_invalid()
+    {
+        // A URI that parses as `bitcoin:` with just `?amount=…` and no address
+        // must report invalid (or specifically `empty`), never accidentally
+        // validate against the amount string.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        var resp = await client.GetFromJsonAsync<JsonElement>(
+            "/api/dashboard/validate-address?address=" + Uri.EscapeDataString("bitcoin:?amount=0.001"));
+        Assert.False(resp.GetProperty("valid").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Validate_address_bip21_uri_with_invalid_amount_still_validates_address()
+    {
+        // An unparseable amount must not reject the URI — address is what the
+        // form needs to validate. The server simply drops amountSat.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var bare = (await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address"))
+            .GetProperty("address").GetString()!;
+
+        var uri = $"bitcoin:{bare}?amount=not-a-number";
+        var resp = await client.GetFromJsonAsync<JsonElement>(
+            $"/api/dashboard/validate-address?address={Uri.EscapeDataString(uri)}");
+
+        Assert.True(resp.GetProperty("valid").GetBoolean());
+        Assert.Equal(JsonValueKind.Null, resp.GetProperty("amountSat").ValueKind);
+    }
+
     /// <summary>
     /// Stages a single confirmed UTXO on the fake backend against a fresh wallet
     /// receive address. Returns the DB-assigned utxoId once the wallet has

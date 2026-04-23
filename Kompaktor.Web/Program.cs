@@ -1964,14 +1964,61 @@ app.MapPost("/api/dashboard/broadcast-psbt", async (WalletDbContext db, IBlockch
 
 // Quick client-side address validation against the coordinator's network.
 // Used by the send form to give immediate feedback as the user pastes.
+// Accepts a raw address OR a BIP21 `bitcoin:` URI — when a URI is supplied,
+// the parsed amount/label/message are returned alongside validation.
 app.MapGet("/api/dashboard/validate-address", (string address) =>
 {
     if (string.IsNullOrWhiteSpace(address))
         return Results.Ok(new { valid = false, reason = "empty" });
 
+    var input = address.Trim();
+    string? parsedAmountBtc = null;
+    long? parsedAmountSat = null;
+    string? parsedLabel = null;
+    string? parsedMessage = null;
+    string addressOnly = input;
+
+    if (input.StartsWith("bitcoin:", StringComparison.OrdinalIgnoreCase))
+    {
+        var afterScheme = input.Substring("bitcoin:".Length);
+        var qIdx = afterScheme.IndexOf('?');
+        addressOnly = qIdx >= 0 ? afterScheme.Substring(0, qIdx) : afterScheme;
+        if (qIdx >= 0)
+        {
+            var query = afterScheme.Substring(qIdx + 1);
+            foreach (var pair in query.Split('&', StringSplitOptions.RemoveEmptyEntries))
+            {
+                var eq = pair.IndexOf('=');
+                if (eq <= 0) continue;
+                var key = Uri.UnescapeDataString(pair.Substring(0, eq)).ToLowerInvariant();
+                var val = Uri.UnescapeDataString(pair.Substring(eq + 1));
+                switch (key)
+                {
+                    case "amount":
+                        parsedAmountBtc = val;
+                        if (decimal.TryParse(val, System.Globalization.NumberStyles.Float,
+                                System.Globalization.CultureInfo.InvariantCulture, out var btc) && btc > 0)
+                        {
+                            parsedAmountSat = (long)Math.Round(btc * 100_000_000m);
+                        }
+                        break;
+                    case "label":
+                        parsedLabel = val;
+                        break;
+                    case "message":
+                        parsedMessage = val;
+                        break;
+                }
+            }
+        }
+        addressOnly = addressOnly.Trim();
+        if (string.IsNullOrEmpty(addressOnly))
+            return Results.Ok(new { valid = false, reason = "empty" });
+    }
+
     try
     {
-        var addr = BitcoinAddress.Create(address.Trim(), network);
+        var addr = BitcoinAddress.Create(addressOnly, network);
         var script = addr.ScriptPubKey;
         string type = script switch
         {
@@ -1980,7 +2027,17 @@ app.MapGet("/api/dashboard/validate-address", (string address) =>
             var s when s.IsScriptType(ScriptType.P2SH) => "P2SH",
             _ => "Other"
         };
-        return Results.Ok(new { valid = true, type, network = network.Name });
+        return Results.Ok(new
+        {
+            valid = true,
+            type,
+            network = network.Name,
+            address = addressOnly,
+            amountBtc = parsedAmountBtc,
+            amountSat = parsedAmountSat,
+            label = parsedLabel,
+            message = parsedMessage
+        });
     }
     catch (FormatException)
     {
@@ -1990,7 +2047,7 @@ app.MapGet("/api/dashboard/validate-address", (string address) =>
             if (net == network) continue;
             try
             {
-                _ = BitcoinAddress.Create(address.Trim(), net);
+                _ = BitcoinAddress.Create(addressOnly, net);
                 return Results.Ok(new
                 {
                     valid = false,
