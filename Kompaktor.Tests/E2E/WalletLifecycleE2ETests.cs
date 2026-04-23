@@ -1069,6 +1069,37 @@ public class WalletLifecycleE2ETests
     }
 
     [Fact]
+    public async Task Health_endpoint_reports_healthy_without_wallet()
+    {
+        // /health is the deployment liveness probe — must be reachable without
+        // any wallet state, since monitoring hits it before first user signup.
+        // It's the one endpoint that cannot depend on DB data.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        var resp = await client.GetFromJsonAsync<JsonElement>("/health");
+        Assert.Equal("healthy", resp.GetProperty("status").GetString());
+        Assert.Equal("RegTest", resp.GetProperty("network").GetString());
+        // Don't pin activeRounds to 0 — the coordinator bootstraps its own
+        // round on startup in the in-process harness. Just ensure it's a
+        // non-negative int so a negative value (corrupt state) fails loud.
+        Assert.True(resp.GetProperty("activeRounds").GetInt32() >= 0);
+        // Timestamp must be fresh so kubernetes/docker health probes can
+        // detect a stuck/cached response. The project's JSON helper
+        // serializes DateTimeOffset as a Unix timestamp (seconds or ms),
+        // not an ISO string — read it as a number.
+        var tsProp = resp.GetProperty("timestamp");
+        Assert.Equal(JsonValueKind.Number, tsProp.ValueKind);
+        var unixTs = tsProp.GetInt64();
+        // Try seconds first, then milliseconds, depending on which the
+        // converter picked for this value.
+        var ts = unixTs > 10_000_000_000
+            ? DateTimeOffset.FromUnixTimeMilliseconds(unixTs)
+            : DateTimeOffset.FromUnixTimeSeconds(unixTs);
+        Assert.True((DateTimeOffset.UtcNow - ts).Duration() < TimeSpan.FromMinutes(1));
+    }
+
+    [Fact]
     public async Task Receive_qr_returns_svg_payload_for_fresh_wallet()
     {
         // The receive flow hands users an SVG to scan. The endpoint must work
