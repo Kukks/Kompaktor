@@ -1958,6 +1958,50 @@ public class WalletLifecycleE2ETests
         Assert.Equal(JsonValueKind.Null, resp.GetProperty("amountSat").ValueKind);
     }
 
+    [Fact]
+    public async Task Summary_includes_fiat_rate_and_total_when_fiat_query_provided()
+    {
+        // FakePriceService publishes usd=65000 and eur=60000. Request usd
+        // fiat; the summary should echo the rate and compute the fiat total
+        // alongside the sat/BTC balances.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.GetFromJsonAsync<JsonElement>("/api/dashboard/summary?fiat=usd");
+        Assert.Equal("usd", resp.GetProperty("fiatCurrency").GetString());
+        Assert.Equal(65_000m, resp.GetProperty("fiatRate").GetDecimal());
+        // Empty wallet — BTC is 0 so fiat is 0 too (not null).
+        Assert.Equal(0m, resp.GetProperty("totalBalanceFiat").GetDecimal());
+    }
+
+    [Fact]
+    public async Task Summary_without_fiat_query_returns_null_fiat_fields()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.GetFromJsonAsync<JsonElement>("/api/dashboard/summary");
+        Assert.Equal(JsonValueKind.Null, resp.GetProperty("fiatCurrency").ValueKind);
+        Assert.Equal(JsonValueKind.Null, resp.GetProperty("fiatRate").ValueKind);
+        Assert.Equal(JsonValueKind.Null, resp.GetProperty("totalBalanceFiat").ValueKind);
+    }
+
+    [Fact]
+    public async Task Summary_unknown_fiat_returns_null_rate_without_error()
+    {
+        // Graceful degradation: an unsupported currency doesn't 500 — it just
+        // returns null fiat fields so the UI can fall back to "—".
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.GetFromJsonAsync<JsonElement>("/api/dashboard/summary?fiat=xrp");
+        Assert.Equal(JsonValueKind.Null, resp.GetProperty("fiatRate").ValueKind);
+        Assert.Equal(JsonValueKind.Null, resp.GetProperty("totalBalanceFiat").ValueKind);
+    }
+
     /// <summary>
     /// Stages a single confirmed UTXO on the fake backend against a fresh wallet
     /// receive address. Returns the DB-assigned utxoId once the wallet has

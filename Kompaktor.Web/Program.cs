@@ -171,15 +171,33 @@ app.UseStaticFiles();
 app.MapKompaktorEndpoints();
 
 // Map wallet dashboard API
-app.MapGet("/api/dashboard/summary", async (WalletDbContext db) =>
+app.MapGet("/api/dashboard/summary", async (
+    WalletDbContext db, IPriceService prices, string? fiat, CancellationToken ct) =>
 {
-    var wallets = await db.Wallets.CountAsync();
+    var wallets = await db.Wallets.CountAsync(ct);
     var unspent = db.Utxos.Where(u => u.SpentByTxId == null);
-    var utxos = await unspent.CountAsync();
-    var totalSats = await unspent.SumAsync(u => u.AmountSat);
-    var confirmedSats = await unspent.Where(u => u.ConfirmedHeight != null).SumAsync(u => u.AmountSat);
-    var unconfirmedSats = await unspent.Where(u => u.ConfirmedHeight == null).SumAsync(u => u.AmountSat);
-    var coinjoins = await db.CoinJoinRecords.CountAsync();
+    var utxos = await unspent.CountAsync(ct);
+    var totalSats = await unspent.SumAsync(u => u.AmountSat, ct);
+    var confirmedSats = await unspent.Where(u => u.ConfirmedHeight != null).SumAsync(u => u.AmountSat, ct);
+    var unconfirmedSats = await unspent.Where(u => u.ConfirmedHeight == null).SumAsync(u => u.AmountSat, ct);
+    var coinjoins = await db.CoinJoinRecords.CountAsync(ct);
+
+    decimal? fiatRate = null;
+    string? fiatCurrency = null;
+    if (!string.IsNullOrWhiteSpace(fiat))
+    {
+        try
+        {
+            var snapshot = await prices.GetAsync(ct);
+            var key = fiat.ToLowerInvariant();
+            if (snapshot.Rates.TryGetValue(key, out var rate))
+            {
+                fiatRate = rate;
+                fiatCurrency = key;
+            }
+        }
+        catch { /* price service best-effort */ }
+    }
 
     return Results.Ok(new
     {
@@ -191,7 +209,13 @@ app.MapGet("/api/dashboard/summary", async (WalletDbContext db) =>
         confirmedBalanceBtc = confirmedSats / 100_000_000.0,
         unconfirmedBalanceSats = unconfirmedSats,
         unconfirmedBalanceBtc = unconfirmedSats / 100_000_000.0,
-        completedCoinjoins = coinjoins
+        completedCoinjoins = coinjoins,
+        fiatCurrency,
+        fiatRate,
+        totalBalanceFiat = fiatRate is null ? (decimal?)null
+            : Math.Round((decimal)(totalSats / 100_000_000.0) * fiatRate.Value, 2),
+        confirmedBalanceFiat = fiatRate is null ? (decimal?)null
+            : Math.Round((decimal)(confirmedSats / 100_000_000.0) * fiatRate.Value, 2)
     });
 }).WithTags("Dashboard");
 
