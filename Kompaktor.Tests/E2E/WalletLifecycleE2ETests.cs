@@ -2855,6 +2855,42 @@ public class WalletLifecycleE2ETests
         Assert.Equal(0, body.GetArrayLength());
     }
 
+    [Fact]
+    public async Task Sync_status_without_wallet_reports_idle_shape()
+    {
+        // The landing page polls /api/wallet/sync-status before the user has
+        // a wallet — the endpoint must succeed (not 400) and return a
+        // recognisable idle snapshot so the UI can render "waiting".
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        var status = await client.GetFromJsonAsync<JsonElement>("/api/wallet/sync-status");
+        Assert.False(status.GetProperty("syncing").GetBoolean());
+        Assert.False(status.GetProperty("monitoring").GetBoolean());
+        Assert.Equal(JsonValueKind.Null, status.GetProperty("lastSyncTime").ValueKind);
+        Assert.Equal(0, status.GetProperty("lastSyncUtxoCount").GetInt32());
+    }
+
+    [Fact]
+    public async Task Resync_endpoint_acknowledges_trigger_with_status_payload()
+    {
+        // POST /api/wallet/resync is fire-and-forget: it signals the hosted
+        // service and returns a status envelope rather than blocking for the
+        // sync to finish. The UI relies on a non-empty status string to show
+        // "Sync queued" feedback.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+        await WaitForMonitoringAsync(client);
+
+        var resp = await client.PostAsync("/api/wallet/resync", null);
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var body = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        var status = body.GetProperty("status").GetString();
+        Assert.False(string.IsNullOrWhiteSpace(status));
+        Assert.Contains(status, new[] { "resync triggered", "already syncing" });
+    }
+
     /// <summary>
     /// Stages a single confirmed UTXO on the fake backend against a fresh wallet
     /// receive address. Returns the DB-assigned utxoId once the wallet has
