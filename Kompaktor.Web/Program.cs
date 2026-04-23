@@ -2674,7 +2674,9 @@ app.MapGet("/api/mixing/status", (MixingManager mixer) =>
         allowUnconfirmedCoinjoinReuse = mixer.AllowUnconfirmedCoinjoinReuse,
         mixingOutpoints = mixer.ActiveMixingOutpoints,
         lastRoundStatus = mixer.LastRoundStatus,
-        lastRoundFailureReason = mixer.LastRoundFailureReason
+        lastRoundFailureReason = mixer.LastRoundFailureReason,
+        lastRoundCompletedAt = mixer.LastRoundCompletedAt,
+        lastSuccessfulRoundAt = mixer.LastSuccessfulRoundAt
     });
 }).WithTags("Mixing");
 

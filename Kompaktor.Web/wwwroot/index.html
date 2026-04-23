@@ -1452,6 +1452,24 @@
             return d.innerHTML;
         }
 
+        // Short relative-time formatter for tooltips and log lines.
+        // Accepts an ISO-8601 string or a unix-seconds number (the ASP.NET
+        // serializer emits DateTimeOffset as one or the other depending on
+        // options).
+        function timeSince(when) {
+            if (when == null) return 'unknown';
+            const then = typeof when === 'number' ? new Date(when * 1000) : new Date(when);
+            const secs = Math.max(0, Math.floor((Date.now() - then.getTime()) / 1000));
+            if (secs < 5) return 'just now';
+            if (secs < 60) return `${secs}s ago`;
+            const mins = Math.floor(secs / 60);
+            if (mins < 60) return `${mins}m ago`;
+            const hours = Math.floor(mins / 60);
+            if (hours < 24) return `${hours}h ${mins % 60}m ago`;
+            const days = Math.floor(hours / 24);
+            return `${days}d ${hours % 24}h ago`;
+        }
+
         function showToast(message, type = 'info') {
             const container = document.getElementById('toastContainer');
             const toast = document.createElement('div');
@@ -2636,7 +2654,12 @@
             } else if (data.running) {
                 dot.style.background = 'var(--yellow)';
                 lbl.textContent = 'Waiting for round';
-                ind.title = `Coordinator: ${data.coordinatorUrl || 'local'}\nWaiting for next round...`;
+                // Surface how long we've been idle so the user can tell a
+                // healthy wait from a stuck session. lastSuccessfulRoundAt
+                // and lastRoundCompletedAt are both nullable.
+                const lastSuccess = data.lastSuccessfulRoundAt ? timeSince(data.lastSuccessfulRoundAt) : 'never this session';
+                const lastAny = data.lastRoundCompletedAt ? timeSince(data.lastRoundCompletedAt) : 'none yet';
+                ind.title = `Coordinator: ${data.coordinatorUrl || 'local'}\nWaiting for next round...\nLast successful round: ${lastSuccess}\nLast round completed: ${lastAny}`;
             } else {
                 dot.style.background = 'var(--text-muted)';
                 lbl.textContent = 'Disconnected';

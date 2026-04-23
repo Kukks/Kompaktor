@@ -34,6 +34,20 @@ public class MixingManager : IAsyncDisposable
     public string? LastRoundFailureReason { get; private set; }
     public bool AllowUnconfirmedCoinjoinReuse { get; private set; }
 
+    /// <summary>
+    /// UTC timestamp of the most recent round completion (successful OR
+    /// failed). Lets the UI distinguish "mixing is stuck with no progress"
+    /// from "mixing is churning but all rounds fail".
+    /// </summary>
+    public DateTimeOffset? LastRoundCompletedAt { get; private set; }
+
+    /// <summary>
+    /// UTC timestamp of the most recent *successful* round. Null if the
+    /// manager has never produced a successful coinjoin in this process
+    /// lifetime.
+    /// </summary>
+    public DateTimeOffset? LastSuccessfulRoundAt { get; private set; }
+
     /// <summary>Named preset active for the currently running mixing session (or the last one to run).</summary>
     public string? ActiveProfile { get; private set; }
 
@@ -164,6 +178,8 @@ public class MixingManager : IAsyncDisposable
             LastRoundFailureReason = result.FailureReason == RoundFailureReason.None
                 ? null
                 : result.FailureReason.ToString();
+            LastRoundCompletedAt = DateTimeOffset.UtcNow;
+            if (result.Success) LastSuccessfulRoundAt = LastRoundCompletedAt;
 
             _eventBus.Publish("mixing");
             _eventBus.Publish("utxos");

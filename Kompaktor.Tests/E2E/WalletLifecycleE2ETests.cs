@@ -3701,4 +3701,21 @@ public class WalletLifecycleE2ETests
         var body = await resp.Content.ReadFromJsonAsync<JsonElement>();
         Assert.True(body.GetProperty("profiles").GetArrayLength() >= 1);
     }
+
+    [Fact]
+    public async Task Mixing_status_exposes_round_timestamps_starting_null()
+    {
+        // lastRoundCompletedAt / lastSuccessfulRoundAt are the signals the UI
+        // uses to surface "stuck" states. Before any round runs they must be
+        // present in the payload but null so clients can distinguish
+        // "never happened" from "happened at T". Driving a real round in-
+        // process requires a full coordinator+mining setup; the schema guard
+        // is enough to catch accidental removal.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        var resp = await client.GetFromJsonAsync<JsonElement>("/api/mixing/status");
+        Assert.Equal(JsonValueKind.Null, resp.GetProperty("lastRoundCompletedAt").ValueKind);
+        Assert.Equal(JsonValueKind.Null, resp.GetProperty("lastSuccessfulRoundAt").ValueKind);
+    }
 }
