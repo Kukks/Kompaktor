@@ -3804,13 +3804,29 @@
                 body.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text-muted)">No webhooks configured</td></tr>';
                 return;
             }
-            body.innerHTML = webhooks.map(w => `<tr>
-                <td style="max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${w.url}">${w.url}</td>
+            body.innerHTML = webhooks.map(w => `<tr${w.isActive === false ? ' style="opacity:0.5"' : ''}>
+                <td style="max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${w.url}">
+                    ${w.isActive === false ? '<span style="color:var(--yellow);font-size:10px;margin-right:6px">PAUSED</span>' : ''}${w.url}
+                </td>
                 <td>${w.eventFilter === '*' ? 'All' : w.eventFilter}</td>
                 <td>${formatDate(w.createdAt)}</td>
-                <td><button class="refresh-btn" onclick="showDeliveries(${w.id})" style="font-size:11px;padding:2px 8px">History</button></td>
+                <td><button class="refresh-btn" onclick="showDeliveries(${w.id})" style="font-size:11px;padding:2px 8px">History</button>
+                    <button class="refresh-btn" onclick="toggleWebhookActive(${w.id}, ${!(w.isActive === false)})" style="font-size:11px;padding:2px 8px;margin-left:4px">${w.isActive === false ? 'Resume' : 'Pause'}</button></td>
                 <td><button class="refresh-btn" onclick="deleteWebhook(${w.id})" style="font-size:11px;padding:2px 8px;color:var(--red)">Delete</button></td>
             </tr>`).join('');
+        }
+
+        async function toggleWebhookActive(id, currentlyActive) {
+            try {
+                const res = await fetch(`/api/webhooks/${id}`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ isActive: !currentlyActive })
+                });
+                if (!res.ok) { showToast('Update failed', 'warning'); return; }
+                showToast(currentlyActive ? 'Webhook paused' : 'Webhook resumed', 'info');
+                loadWebhooks();
+            } catch (err) { showToast('Failed: ' + err.message, 'warning'); }
         }
 
         async function createWebhook() {

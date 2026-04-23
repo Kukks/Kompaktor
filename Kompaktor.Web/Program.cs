@@ -2068,6 +2068,33 @@ app.MapDelete("/api/webhooks/{webhookId}", async (int webhookId, WalletDbContext
     return Results.Ok(new { deleted = true });
 }).WithTags("Webhooks");
 
+// Pause/resume a webhook without dropping its delivery history. Useful when a
+// receiver is being migrated or debugged — deleting would erase history and
+// force a new secret; toggling IsActive leaves everything in place.
+app.MapPatch("/api/webhooks/{webhookId}", async (int webhookId, WalletDbContext db, HttpContext ctx) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.BadRequest("No wallet found");
+
+    var webhook = await db.PaymentWebhooks.FindAsync(webhookId);
+    if (webhook is null || webhook.WalletId != wallet.Id) return Results.NotFound();
+
+    var body = await ctx.Request.ReadFromJsonAsync<WebhookUpdateRequest>();
+    if (body is null) return Results.BadRequest("Body required");
+
+    if (body.IsActive is bool active)
+        webhook.IsActive = active;
+
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        id = webhook.Id,
+        url = webhook.Url,
+        isActive = webhook.IsActive,
+        eventFilter = webhook.EventFilter
+    });
+}).WithTags("Webhooks");
+
 app.MapGet("/api/webhooks/{webhookId}/deliveries", async (int webhookId, WalletDbContext db) =>
 {
     var wallet = await db.Wallets.FirstOrDefaultAsync();
@@ -3000,6 +3027,7 @@ record CreatePaymentRequest(string Destination, long AmountSat, bool Interactive
 record BatchSendRequest(string Destination, long AmountSat, bool Interactive = true, bool Urgent = false, string? Label = null, int? ExpiryMinutes = null, DateTimeOffset? ScheduledAt = null, int? MaxRetries = null);
 record CreateReceiveRequest(long AmountSat, string? Label = null, int? ExpiryMinutes = null);
 record WebhookCreateRequest(string Url, string? EventFilter = null);
+record WebhookUpdateRequest(bool? IsActive = null);
 record VerifyBackupRequest(string Passphrase, VerifyBackupAnswer[] Answers);
 record VerifyBackupAnswer(int Position, string Word);
 record FeeBumpRequest(string TxId, long NewFeeRateSatPerVb);

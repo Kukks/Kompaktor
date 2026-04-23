@@ -3912,6 +3912,72 @@ public class WalletLifecycleE2ETests
     }
 
     [Fact]
+    public async Task Webhook_toggle_active_flips_flag_without_deleting()
+    {
+        // Pausing is the correct tool when a receiver is being debugged —
+        // deleting would erase delivery history and force a new secret on
+        // re-create. The toggle must persist and show up in the list.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var create = await (await client.PostAsJsonAsync("/api/webhooks",
+            new { Url = "https://example.com/hook" })).Content.ReadFromJsonAsync<JsonElement>();
+        var webhookId = create.GetProperty("id").GetInt32();
+
+        var pause = await client.PatchAsync($"/api/webhooks/{webhookId}",
+            JsonContent.Create(new { isActive = false }));
+        Assert.Equal(HttpStatusCode.OK, pause.StatusCode);
+        var pauseBody = await pause.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.False(pauseBody.GetProperty("isActive").GetBoolean());
+
+        var list = await client.GetFromJsonAsync<JsonElement>("/api/webhooks");
+        var entry = list.EnumerateArray().Single(e => e.GetProperty("id").GetInt32() == webhookId);
+        Assert.False(entry.GetProperty("isActive").GetBoolean());
+
+        var resume = await client.PatchAsync($"/api/webhooks/{webhookId}",
+            JsonContent.Create(new { isActive = true }));
+        Assert.Equal(HttpStatusCode.OK, resume.StatusCode);
+        var resumeBody = await resume.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(resumeBody.GetProperty("isActive").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Webhook_patch_rejects_unknown_webhook()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.PatchAsync("/api/webhooks/9999",
+            JsonContent.Create(new { isActive = false }));
+        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Webhook_patch_leaves_other_fields_untouched()
+    {
+        // The update body is a partial patch — omitted fields must not wipe
+        // existing values. This test proves eventFilter survives an isActive-
+        // only update.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var create = await (await client.PostAsJsonAsync("/api/webhooks",
+            new { Url = "https://example.com/hook", EventFilter = "Completed,Failed" }))
+            .Content.ReadFromJsonAsync<JsonElement>();
+        var webhookId = create.GetProperty("id").GetInt32();
+
+        await client.PatchAsync($"/api/webhooks/{webhookId}",
+            JsonContent.Create(new { isActive = false }));
+
+        var list = await client.GetFromJsonAsync<JsonElement>("/api/webhooks");
+        var entry = list.EnumerateArray().Single(e => e.GetProperty("id").GetInt32() == webhookId);
+        Assert.Equal("Completed,Failed", entry.GetProperty("eventFilter").GetString());
+    }
+
+    [Fact]
     public async Task Webhook_redeliver_creates_new_delivery_row()
     {
         // A webhook receiver may have been down when the original event fired.
