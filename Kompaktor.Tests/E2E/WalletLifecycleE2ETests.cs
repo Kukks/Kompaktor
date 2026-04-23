@@ -2891,6 +2891,147 @@ public class WalletLifecycleE2ETests
         Assert.Contains(status, new[] { "resync triggered", "already syncing" });
     }
 
+    [Fact]
+    public async Task Wallet_settings_without_wallet_returns_bad_request()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        var resp = await client.GetAsync("/api/wallet/settings");
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Wallet_settings_fresh_wallet_defaults_to_balanced_and_tor_off()
+    {
+        // A freshly created wallet must come up with a sane default profile
+        // and Tor disabled — so the very first /api/mixing/start call doesn't
+        // inadvertently route over a SOCKS proxy the user never configured.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.GetFromJsonAsync<JsonElement>("/api/wallet/settings");
+        Assert.Equal("Balanced", resp.GetProperty("mixingProfile").GetString());
+        Assert.False(resp.GetProperty("torEnabled").GetBoolean());
+        Assert.Equal(JsonValueKind.Null, resp.GetProperty("torSocksHost").ValueKind);
+        Assert.Equal(JsonValueKind.Null, resp.GetProperty("torSocksPort").ValueKind);
+
+        var profiles = resp.GetProperty("availableProfiles").EnumerateArray()
+            .Select(p => p.GetString()).ToArray();
+        Assert.Contains("Balanced", profiles);
+        Assert.Contains("PrivacyFocused", profiles);
+        Assert.Contains("Consolidator", profiles);
+        Assert.Contains("Payments", profiles);
+    }
+
+    [Fact]
+    public async Task Wallet_settings_post_persists_profile_and_tor_config()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var put = await client.PostAsJsonAsync("/api/wallet/settings", new
+        {
+            MixingProfile = "PrivacyFocused",
+            TorEnabled = true,
+            TorSocksHost = "127.0.0.1",
+            TorSocksPort = 9150
+        });
+        Assert.Equal(HttpStatusCode.OK, put.StatusCode);
+
+        var body = await put.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("PrivacyFocused", body.GetProperty("mixingProfile").GetString());
+        Assert.True(body.GetProperty("torEnabled").GetBoolean());
+
+        // Round-trip read — GET must reflect what POST just wrote.
+        var get = await client.GetFromJsonAsync<JsonElement>("/api/wallet/settings");
+        Assert.Equal("PrivacyFocused", get.GetProperty("mixingProfile").GetString());
+        Assert.Equal("127.0.0.1", get.GetProperty("torSocksHost").GetString());
+        Assert.Equal(9150, get.GetProperty("torSocksPort").GetInt32());
+    }
+
+    [Fact]
+    public async Task Wallet_settings_rejects_unknown_profile()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.PostAsJsonAsync("/api/wallet/settings", new
+        {
+            MixingProfile = "MadeUpProfile"
+        });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Wallet_settings_rejects_port_outside_valid_range()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.PostAsJsonAsync("/api/wallet/settings", new
+        {
+            TorSocksPort = 70_000 // > 65535
+        });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Wallet_settings_empty_host_string_clears_override()
+    {
+        // Empty string is the API's "revert to no override" sentinel — UIs
+        // can surface this as a "clear" button without needing a separate
+        // endpoint. We must not persist the empty string literally.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        await client.PostAsJsonAsync("/api/wallet/settings", new
+        {
+            TorSocksHost = "127.0.0.1"
+        });
+
+        var cleared = await client.PostAsJsonAsync("/api/wallet/settings", new
+        {
+            TorSocksHost = ""
+        });
+        Assert.Equal(HttpStatusCode.OK, cleared.StatusCode);
+
+        var get = await client.GetFromJsonAsync<JsonElement>("/api/wallet/settings");
+        Assert.Equal(JsonValueKind.Null, get.GetProperty("torSocksHost").ValueKind);
+    }
+
+    [Fact]
+    public async Task Mixing_status_reports_active_profile_after_start()
+    {
+        // Regression guard: before profile plumbing existed, status carried
+        // no profile field. We assert both the new field AND that the
+        // persisted wallet setting propagates to the running session when
+        // the start request omits an override.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+        await client.PostAsJsonAsync("/api/wallet/settings", new { MixingProfile = "Consolidator" });
+
+        try
+        {
+            var start = await client.PostAsJsonAsync("/api/mixing/start", new { Passphrase = "pw" });
+            Assert.Equal(HttpStatusCode.OK, start.StatusCode);
+
+            var status = await client.GetFromJsonAsync<JsonElement>("/api/mixing/status");
+            Assert.True(status.GetProperty("running").GetBoolean());
+            Assert.Equal("Consolidator", status.GetProperty("activeProfile").GetString());
+        }
+        finally
+        {
+            await client.PostAsync("/api/mixing/stop", null);
+        }
+    }
+
     /// <summary>
     /// Stages a single confirmed UTXO on the fake backend against a fresh wallet
     /// receive address. Returns the DB-assigned utxoId once the wallet has

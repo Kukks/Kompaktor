@@ -872,6 +872,67 @@ app.MapGet("/api/wallet/info", async (WalletDbContext db) =>
     });
 }).WithTags("Wallet");
 
+// Wallet-level preferences for auto-mixing (profile + Tor).
+// These are the defaults /api/mixing/start falls back to when the caller
+// omits CoordinatorUrl / TorSocks* fields.
+app.MapGet("/api/wallet/settings", async (WalletDbContext db) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.BadRequest("No wallet found");
+
+    return Results.Ok(new
+    {
+        mixingProfile = wallet.MixingProfile,
+        availableProfiles = MixingProfiles.All,
+        torEnabled = wallet.TorEnabled,
+        torSocksHost = wallet.TorSocksHost,
+        torSocksPort = wallet.TorSocksPort
+    });
+}).WithTags("Wallet");
+
+app.MapPost("/api/wallet/settings", async (WalletDbContext db, HttpContext ctx, DashboardEventBus bus) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.BadRequest("No wallet found");
+
+    var body = await ctx.Request.ReadFromJsonAsync<WalletSettingsUpdateRequest>();
+    if (body is null) return Results.BadRequest("Missing body");
+
+    if (body.MixingProfile is not null)
+    {
+        if (!MixingProfiles.IsValid(body.MixingProfile))
+            return Results.BadRequest($"Unknown mixingProfile. Allowed: {string.Join(", ", MixingProfiles.All)}");
+        wallet.MixingProfile = body.MixingProfile;
+    }
+
+    if (body.TorEnabled.HasValue) wallet.TorEnabled = body.TorEnabled.Value;
+
+    if (body.TorSocksHost is not null)
+    {
+        // Empty string clears the override so the server default applies again.
+        wallet.TorSocksHost = string.IsNullOrWhiteSpace(body.TorSocksHost) ? null : body.TorSocksHost.Trim();
+    }
+
+    if (body.TorSocksPort.HasValue)
+    {
+        var port = body.TorSocksPort.Value;
+        if (port != 0 && (port < 1 || port > 65_535))
+            return Results.BadRequest("torSocksPort must be between 1 and 65535 (or 0 to clear)");
+        wallet.TorSocksPort = port == 0 ? null : port;
+    }
+
+    await db.SaveChangesAsync();
+    bus.Publish("settings");
+
+    return Results.Ok(new
+    {
+        mixingProfile = wallet.MixingProfile,
+        torEnabled = wallet.TorEnabled,
+        torSocksHost = wallet.TorSocksHost,
+        torSocksPort = wallet.TorSocksPort
+    });
+}).WithTags("Wallet");
+
 // Get receive address
 app.MapGet("/api/wallet/receive-address", async (WalletDbContext db) =>
 {
@@ -2446,6 +2507,7 @@ app.MapGet("/api/mixing/status", (MixingManager mixer) =>
         activeRoundPhase = mixer.ActiveRoundPhase,
         activeRoundInputs = mixer.ActiveRoundInputCount,
         torEnabled = mixer.TorEnabled,
+        activeProfile = mixer.ActiveProfile,
         allowUnconfirmedCoinjoinReuse = mixer.AllowUnconfirmedCoinjoinReuse,
         mixingOutpoints = mixer.ActiveMixingOutpoints,
         lastRoundStatus = mixer.LastRoundStatus,
@@ -2453,7 +2515,7 @@ app.MapGet("/api/mixing/status", (MixingManager mixer) =>
     });
 }).WithTags("Mixing");
 
-app.MapPost("/api/mixing/start", async (MixingManager mixer, HttpContext ctx) =>
+app.MapPost("/api/mixing/start", async (MixingManager mixer, WalletDbContext db, HttpContext ctx) =>
 {
     var body = await ctx.Request.ReadFromJsonAsync<MixingStartRequest>();
     if (body is null || string.IsNullOrWhiteSpace(body.Passphrase))
@@ -2466,6 +2528,8 @@ app.MapPost("/api/mixing/start", async (MixingManager mixer, HttpContext ctx) =>
             ? new Uri(body.CoordinatorUrl)
             : new Uri($"{ctx.Request.Scheme}://localhost:{ctx.Connection.LocalPort}");
 
+        // Resolve Tor options. The request body wins; if the caller omitted
+        // them, fall back to the wallet's persisted preference.
         Kompaktor.TorOptions? torOptions = null;
         if (!string.IsNullOrWhiteSpace(body.TorSocksHost))
         {
@@ -2475,9 +2539,28 @@ app.MapPost("/api/mixing/start", async (MixingManager mixer, HttpContext ctx) =>
                 SocksPort = body.TorSocksPort ?? 9050
             };
         }
+        else
+        {
+            var walletEntity = await db.Wallets.FirstOrDefaultAsync();
+            if (walletEntity is { TorEnabled: true, TorSocksHost: { } savedHost } && !string.IsNullOrWhiteSpace(savedHost))
+            {
+                torOptions = new Kompaktor.TorOptions
+                {
+                    SocksHost = savedHost,
+                    SocksPort = walletEntity.TorSocksPort ?? 9050
+                };
+            }
+        }
 
-        var result = await mixer.StartAsync(body.Passphrase, coordinatorUri, torOptions, body.AllowUnconfirmedCoinjoinReuse);
-        return Results.Ok(new { status = result, coordinator = coordinatorUri.ToString(), torEnabled = torOptions is not null, allowUnconfirmedCoinjoinReuse = body.AllowUnconfirmedCoinjoinReuse });
+        var result = await mixer.StartAsync(body.Passphrase, coordinatorUri, torOptions, body.AllowUnconfirmedCoinjoinReuse, body.Profile);
+        return Results.Ok(new
+        {
+            status = result,
+            coordinator = coordinatorUri.ToString(),
+            torEnabled = torOptions is not null,
+            activeProfile = mixer.ActiveProfile,
+            allowUnconfirmedCoinjoinReuse = body.AllowUnconfirmedCoinjoinReuse
+        });
     }
     catch (Exception ex)
     {
@@ -2574,7 +2657,7 @@ record LabelRequest(string Text);
 record PassphraseRequest(string Passphrase);
 record RestoreRequest(string Mnemonic, string Passphrase, string? Name = null);
 record CreateWalletRequest(string Passphrase, string? Name = null, int? WordCount = null);
-record MixingStartRequest(string Passphrase, string? CoordinatorUrl = null, string? TorSocksHost = null, int? TorSocksPort = null, bool AllowUnconfirmedCoinjoinReuse = false);
+record MixingStartRequest(string Passphrase, string? CoordinatorUrl = null, string? TorSocksHost = null, int? TorSocksPort = null, bool AllowUnconfirmedCoinjoinReuse = false, string? Profile = null);
 record AddressBookRequest(string Label, string Address);
 record TransactionNoteRequest(string Text);
 record SendRequest(string Destination, long AmountSat, long FeeRateSatPerVb = 2, string Strategy = "PrivacyFirst", string Passphrase = "");
@@ -2587,6 +2670,29 @@ record VerifyBackupRequest(string Passphrase, VerifyBackupAnswer[] Answers);
 record VerifyBackupAnswer(int Position, string Word);
 record FeeBumpRequest(string TxId, long NewFeeRateSatPerVb);
 record SweepRequest(string Destination, long FeeRateSatPerVb = 2);
+record WalletSettingsUpdateRequest(
+    string? MixingProfile = null,
+    bool? TorEnabled = null,
+    string? TorSocksHost = null,
+    int? TorSocksPort = null);
+
+/// <summary>
+/// Named mixing presets. Each string is a stable identifier the UI can show
+/// and the server uses to pick a behavior-trait bundle in MixingManager.
+/// Adding a new preset here only requires extending <see cref="MixingManager"/>'s
+/// trait selector — no schema change.
+/// </summary>
+internal static class MixingProfiles
+{
+    public const string Balanced = "Balanced";
+    public const string PrivacyFocused = "PrivacyFocused";
+    public const string Consolidator = "Consolidator";
+    public const string Payments = "Payments";
+
+    public static readonly string[] All = [Balanced, PrivacyFocused, Consolidator, Payments];
+
+    public static bool IsValid(string profile) => Array.IndexOf(All, profile) >= 0;
+}
 
 namespace Kompaktor.Web
 {

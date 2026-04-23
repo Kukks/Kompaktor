@@ -34,6 +34,9 @@ public class MixingManager : IAsyncDisposable
     public string? LastRoundFailureReason { get; private set; }
     public bool AllowUnconfirmedCoinjoinReuse { get; private set; }
 
+    /// <summary>Named preset active for the currently running mixing session (or the last one to run).</summary>
+    public string? ActiveProfile { get; private set; }
+
     public string? ActiveRoundPhase
     {
         get
@@ -74,7 +77,7 @@ public class MixingManager : IAsyncDisposable
         _eventBus = eventBus;
     }
 
-    public async Task<string> StartAsync(string passphrase, Uri coordinatorUri, TorOptions? torOptions = null, bool allowUnconfirmedCoinjoinReuse = false)
+    public async Task<string> StartAsync(string passphrase, Uri coordinatorUri, TorOptions? torOptions = null, bool allowUnconfirmedCoinjoinReuse = false, string? profileOverride = null)
     {
         lock (_lock)
         {
@@ -88,6 +91,13 @@ public class MixingManager : IAsyncDisposable
         var walletEntity = await db.Wallets.FirstOrDefaultAsync();
         if (walletEntity is null)
             throw new InvalidOperationException("No wallet found");
+
+        // Resolve profile: request override wins, otherwise use the persisted
+        // preference. Falls back to Balanced for legacy wallets saved before
+        // the column existed (empty string defaulted via the entity).
+        var profile = !string.IsNullOrWhiteSpace(profileOverride)
+            ? profileOverride!
+            : string.IsNullOrWhiteSpace(walletEntity.MixingProfile) ? "Balanced" : walletEntity.MixingProfile;
 
         var wallet = await KompaktorHdWallet.OpenAsync(db, walletEntity.Id, _network, passphrase);
         wallet.AllowUnconfirmedCoinjoinReuse = allowUnconfirmedCoinjoinReuse;
@@ -124,14 +134,7 @@ public class MixingManager : IAsyncDisposable
         {
             var api = factory.Create();
             var messagingApi = new KompaktorMessagingApi(_logger, round, api);
-
-            return
-            [
-                new ConsolidationBehaviorTrait(10),
-                new SelfSendChangeBehaviorTrait(wallet.GetChangeScript, TimeSpan.FromSeconds(30)),
-                new InteractivePaymentSenderBehaviorTrait(paymentManager, messagingApi),
-                new InteractivePaymentReceiverBehaviorTrait(paymentManager, messagingApi)
-            ];
+            return BuildTraitsForProfile(profile, wallet, paymentManager, messagingApi);
         };
 
         service.RoundCompleted += result =>
@@ -178,9 +181,68 @@ public class MixingManager : IAsyncDisposable
         CoordinatorUri = coordinatorUri;
         TorEnabled = torOptions is not null;
         AllowUnconfirmedCoinjoinReuse = allowUnconfirmedCoinjoinReuse;
+        ActiveProfile = profile;
         _eventBus.Publish("mixing");
-        _logger.LogInformation("Auto-mixing started for wallet {WalletId}", wallet.WalletId);
+        _logger.LogInformation("Auto-mixing started for wallet {WalletId} with profile {Profile}", wallet.WalletId, profile);
         return "Started";
+    }
+
+    /// <summary>
+    /// Maps a named mixing preset onto the concrete list of behavior traits
+    /// the coinjoin client runs. Keeping this out-of-line makes it easy to
+    /// add a new preset without touching the start flow.
+    /// </summary>
+    private static List<KompaktorClientBaseBehaviorTrait> BuildTraitsForProfile(
+        string profile,
+        KompaktorHdWallet wallet,
+        WalletPaymentManager paymentManager,
+        KompaktorMessagingApi messagingApi)
+    {
+        // These knobs deliberately diverge per profile so users see the
+        // preset *doing something* rather than being cosmetic.
+        return profile switch
+        {
+            // Privacy-focused: smaller consolidation target (fewer inputs per
+            // round = more rounds = more unlinkability), longer self-send
+            // delay so change doesn't immediately reattach.
+            "PrivacyFocused" =>
+            [
+                new ConsolidationBehaviorTrait(5),
+                new SelfSendChangeBehaviorTrait(wallet.GetChangeScript, TimeSpan.FromSeconds(60)),
+                new InteractivePaymentSenderBehaviorTrait(paymentManager, messagingApi),
+                new InteractivePaymentReceiverBehaviorTrait(paymentManager, messagingApi)
+            ],
+
+            // Consolidator: aggressively pull inputs into one round so the
+            // wallet ends up with fewer, larger UTXOs. Interactive payments
+            // off since they compete for slots with consolidation goals.
+            "Consolidator" =>
+            [
+                new ConsolidationBehaviorTrait(25),
+                new SelfSendChangeBehaviorTrait(wallet.GetChangeScript, TimeSpan.FromSeconds(30)),
+            ],
+
+            // Payments: interactive-payment heavy workflow. Consolidation
+            // kept conservative so coin-selection doesn't steal slots from
+            // outgoing payments queued by the user.
+            "Payments" =>
+            [
+                new ConsolidationBehaviorTrait(5),
+                new SelfSendChangeBehaviorTrait(wallet.GetChangeScript, TimeSpan.FromSeconds(30)),
+                new InteractivePaymentSenderBehaviorTrait(paymentManager, messagingApi),
+                new InteractivePaymentReceiverBehaviorTrait(paymentManager, messagingApi)
+            ],
+
+            // Balanced (default) and any unknown string fall through to the
+            // historical trait bundle — safe for rollback.
+            _ =>
+            [
+                new ConsolidationBehaviorTrait(10),
+                new SelfSendChangeBehaviorTrait(wallet.GetChangeScript, TimeSpan.FromSeconds(30)),
+                new InteractivePaymentSenderBehaviorTrait(paymentManager, messagingApi),
+                new InteractivePaymentReceiverBehaviorTrait(paymentManager, messagingApi)
+            ],
+        };
     }
 
     public async Task<string> StopAsync()

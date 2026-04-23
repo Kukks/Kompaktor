@@ -11,6 +11,28 @@ public class WalletEntity
     /// <summary>True once the user has verified their mnemonic backup by confirming word positions</summary>
     public bool IsBackupVerified { get; set; }
 
+    // ---- Mixing preferences ----
+    // These drive auto-mixing behavior when /api/mixing/start is invoked
+    // without explicit overrides. The UI surfaces them as "Wallet settings"
+    // so the user's picks persist across sessions.
+
+    /// <summary>
+    /// Named preset that determines which behavior traits the mixing client
+    /// runs. Values: "Balanced" (default), "PrivacyFocused", "Consolidator",
+    /// "Payments". Stored as a string so adding presets doesn't require a
+    /// schema migration.
+    /// </summary>
+    public string MixingProfile { get; set; } = "Balanced";
+
+    /// <summary>Saved default for "route coordinator traffic through Tor".</summary>
+    public bool TorEnabled { get; set; }
+
+    /// <summary>SOCKS5 host for Tor, when <see cref="TorEnabled"/> is true.</summary>
+    public string? TorSocksHost { get; set; }
+
+    /// <summary>SOCKS5 port for Tor, when <see cref="TorEnabled"/> is true.</summary>
+    public int? TorSocksPort { get; set; }
+
     public List<AccountEntity> Accounts { get; set; } = [];
 }
 
