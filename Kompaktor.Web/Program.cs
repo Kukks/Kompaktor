@@ -182,6 +182,17 @@ app.MapGet("/api/dashboard/summary", async (
     var unconfirmedSats = await unspent.Where(u => u.ConfirmedHeight == null).SumAsync(u => u.AmountSat, ct);
     var coinjoins = await db.CoinJoinRecords.CountAsync(ct);
 
+    // Privacy breakdown: these three buckets are not mutually exclusive —
+    // a single UTXO can be both coinjoin-produced (mixed) AND sitting on an
+    // exposed address if a later round burned the script. Report the raw
+    // counts + balances; the UI treats exposed as a separate axis.
+    var mixedQuery = unspent.Where(u => u.IsCoinJoinOutput);
+    var mixedSats = await mixedQuery.SumAsync(u => u.AmountSat, ct);
+    var mixedCount = await mixedQuery.CountAsync(ct);
+    var exposedQuery = unspent.Where(u => u.Address.IsExposed);
+    var exposedSats = await exposedQuery.SumAsync(u => u.AmountSat, ct);
+    var exposedCount = await exposedQuery.CountAsync(ct);
+
     decimal? fiatRate = null;
     string? fiatCurrency = null;
     if (!string.IsNullOrWhiteSpace(fiat))
@@ -210,6 +221,14 @@ app.MapGet("/api/dashboard/summary", async (
         unconfirmedBalanceSats = unconfirmedSats,
         unconfirmedBalanceBtc = unconfirmedSats / 100_000_000.0,
         completedCoinjoins = coinjoins,
+        mixedBalanceSats = mixedSats,
+        mixedBalanceBtc = mixedSats / 100_000_000.0,
+        mixedUtxoCount = mixedCount,
+        unmixedBalanceSats = totalSats - mixedSats,
+        unmixedBalanceBtc = (totalSats - mixedSats) / 100_000_000.0,
+        exposedBalanceSats = exposedSats,
+        exposedBalanceBtc = exposedSats / 100_000_000.0,
+        exposedUtxoCount = exposedCount,
         fiatCurrency,
         fiatRate,
         totalBalanceFiat = fiatRate is null ? (decimal?)null

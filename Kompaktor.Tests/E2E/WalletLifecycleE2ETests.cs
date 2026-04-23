@@ -3233,4 +3233,39 @@ public class WalletLifecycleE2ETests
         var detail = await client.GetFromJsonAsync<JsonElement>($"/api/coin-control/utxo/{utxoId}");
         Assert.True(detail.GetProperty("isAddressExposed").GetBoolean());
     }
+
+    [Fact]
+    public async Task Summary_reports_mixed_unmixed_and_exposed_balance_breakdown()
+    {
+        // Seed three UTXOs covering the three bucket states the dashboard
+        // cares about: plain unmixed, coinjoin-produced (mixed), and one
+        // sitting on an exposed address. The summary endpoint should surface
+        // each bucket's sats+count so the UI can render the breakdown.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var unmixedId = await SeedUtxoAsync(factory, client, amountSat: 100_000, tag: 0x11);
+        var mixedId = await SeedUtxoAsync(factory, client, amountSat: 200_000, tag: 0x22);
+        var exposedId = await SeedUtxoAsync(factory, client, amountSat: 50_000, tag: 0x33);
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<WalletDbContext>();
+            var mixed = await db.Utxos.SingleAsync(u => u.Id == mixedId);
+            mixed.IsCoinJoinOutput = true;
+            var exposed = await db.Utxos.Include(u => u.Address).SingleAsync(u => u.Id == exposedId);
+            exposed.Address.IsExposed = true;
+            await db.SaveChangesAsync();
+        }
+
+        var resp = await client.GetFromJsonAsync<JsonElement>("/api/dashboard/summary");
+
+        Assert.Equal(350_000, resp.GetProperty("totalBalanceSats").GetInt64());
+        Assert.Equal(200_000, resp.GetProperty("mixedBalanceSats").GetInt64());
+        Assert.Equal(1, resp.GetProperty("mixedUtxoCount").GetInt32());
+        Assert.Equal(150_000, resp.GetProperty("unmixedBalanceSats").GetInt64());
+        Assert.Equal(50_000, resp.GetProperty("exposedBalanceSats").GetInt64());
+        Assert.Equal(1, resp.GetProperty("exposedUtxoCount").GetInt32());
+    }
 }

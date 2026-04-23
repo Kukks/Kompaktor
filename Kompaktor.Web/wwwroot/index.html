@@ -720,6 +720,11 @@
                     <div class="unit">BTC</div>
                     <div class="unit" id="balanceFiat" style="margin-top:4px;opacity:0.7;"></div>
                     <div class="unit" id="balanceUnconfirmed" style="margin-top:4px;color:var(--yellow);display:none"></div>
+                    <div class="unit" id="balanceBreakdown" style="margin-top:8px;font-size:0.8em;line-height:1.4;text-align:left;display:none">
+                        <div id="balanceMixed" style="color:var(--green)"></div>
+                        <div id="balanceUnmixed" style="color:var(--dim)"></div>
+                        <div id="balanceExposed" style="color:var(--red);display:none"></div>
+                    </div>
                 </div>
                 <div class="card">
                     <div class="label">UTXOs</div>
@@ -1518,6 +1523,24 @@
                     } else {
                         unconfRow.style.display = 'none';
                     }
+                }
+                const breakdown = document.getElementById('balanceBreakdown');
+                if (breakdown && data.totalBalanceSats > 0) {
+                    const mixedEl = document.getElementById('balanceMixed');
+                    const unmixedEl = document.getElementById('balanceUnmixed');
+                    const exposedEl = document.getElementById('balanceExposed');
+                    mixedEl.textContent = `Mixed: ${data.mixedBalanceBtc.toFixed(8)} (${data.mixedUtxoCount})`;
+                    unmixedEl.textContent = `Unmixed: ${data.unmixedBalanceBtc.toFixed(8)} (${data.unspentUtxoCount - data.mixedUtxoCount})`;
+                    if (data.exposedUtxoCount > 0) {
+                        exposedEl.textContent = `Exposed: ${data.exposedBalanceBtc.toFixed(8)} (${data.exposedUtxoCount})`;
+                        exposedEl.title = 'These UTXOs sit on addresses revealed in a prior coinjoin round. Co-spending with non-exposed UTXOs leaks linkage.';
+                        exposedEl.style.display = '';
+                    } else {
+                        exposedEl.style.display = 'none';
+                    }
+                    breakdown.style.display = '';
+                } else if (breakdown) {
+                    breakdown.style.display = 'none';
                 }
                 renderFiatBalance();
             }
