@@ -716,6 +716,7 @@
                     <div class="label">Balance</div>
                     <div class="value" id="balance">-</div>
                     <div class="unit">BTC</div>
+                    <div class="unit" id="balanceFiat" style="margin-top:4px;opacity:0.7;"></div>
                 </div>
                 <div class="card">
                     <div class="label">UTXOs</div>
@@ -1415,12 +1416,36 @@
             return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
         }
 
+        // Cached BTC price snapshot. Refreshed by loadPrice(); consumed by loadSummary().
+        let priceSnapshot = null;
+
+        async function loadPrice() {
+            const data = await fetchJson('/api/dashboard/price');
+            if (data && data.available) priceSnapshot = data;
+            renderFiatBalance();
+        }
+
+        function renderFiatBalance() {
+            const el = document.getElementById('balanceFiat');
+            const btcText = document.getElementById('balance').textContent;
+            const btc = parseFloat(btcText);
+            if (!el) return;
+            if (!priceSnapshot || isNaN(btc) || btc < 0) { el.textContent = ''; return; }
+            const usd = priceSnapshot.rates.usd;
+            const eur = priceSnapshot.rates.eur;
+            const parts = [];
+            if (usd) parts.push('≈ $' + (btc * usd).toLocaleString(undefined, { maximumFractionDigits: 2 }));
+            if (eur) parts.push('€' + (btc * eur).toLocaleString(undefined, { maximumFractionDigits: 2 }));
+            el.textContent = parts.join(' · ');
+        }
+
         async function loadSummary() {
             const data = await fetchJson('/api/dashboard/summary');
             if (data) {
                 document.getElementById('balance').textContent = data.totalBalanceBtc.toFixed(8);
                 document.getElementById('utxoCount').textContent = data.unspentUtxoCount;
                 document.getElementById('coinjoinCount').textContent = data.completedCoinjoins;
+                renderFiatBalance();
             }
         }
 
@@ -2846,7 +2871,7 @@
 
         async function refreshAll() {
             document.getElementById('lastUpdate').textContent = 'Refreshing...';
-            await Promise.all([loadSummary(), loadPrivacySummary(), loadPrivacyDistribution(), loadPrivacyRecommendations(), loadPrivacyHistory(), loadRounds(), loadUtxos(), loadCoinjoins(), loadTransactions(), loadMixingStatus(), loadMixingStats(), loadSyncStatus(), loadAddressBook(), loadFeeEstimates(), loadSettingsInfo(), loadPayments(), loadPaymentStats(), loadWebhooks()]);
+            await Promise.all([loadSummary(), loadPrivacySummary(), loadPrivacyDistribution(), loadPrivacyRecommendations(), loadPrivacyHistory(), loadRounds(), loadUtxos(), loadCoinjoins(), loadTransactions(), loadMixingStatus(), loadMixingStats(), loadSyncStatus(), loadAddressBook(), loadFeeEstimates(), loadSettingsInfo(), loadPayments(), loadPaymentStats(), loadWebhooks(), loadPrice()]);
             updateConnectionStatus(sseConnected ? 'live' : 'polling');
         }
 

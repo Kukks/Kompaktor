@@ -8,7 +8,7 @@
 
     <ItemGroup>
         <PackageReference Include="MartinCostello.Logging.XUnit" Version="0.4.0" />
-        <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="9.0.0" />
+        <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="10.0.0" />
         <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="9.0.0"/>
         <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0"/>
         <PackageReference Include="coverlet.collector" Version="6.0.2"/>
@@ -17,6 +17,7 @@
             <PrivateAssets>all</PrivateAssets>
             <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
         </PackageReference>
+        <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.0" />
     </ItemGroup>
 
     <ItemGroup>
@@ -26,6 +27,7 @@
       <ProjectReference Include="..\Kompaktor.Server\Kompaktor.Server.csproj" />
       <ProjectReference Include="..\Kompaktor.Client\Kompaktor.Client.csproj" />
       <ProjectReference Include="..\Kompaktor.Scoring\Kompaktor.Scoring.csproj" />
+      <ProjectReference Include="..\Kompaktor.Web\Kompaktor.Web.csproj" />
     </ItemGroup>
 
 </Project>

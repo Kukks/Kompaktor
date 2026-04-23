@@ -86,9 +86,13 @@ else
     blockchain = new BitcoinCoreBackend(rpcClient);
 }
 
-// Wallet database
-var walletPath = builder.Configuration["Wallet:Path"] ?? "./wallet.db";
-builder.Services.AddDbContext<WalletDbContext>(opt => opt.UseSqlite($"DataSource={walletPath}"));
+// Wallet database — resolve path lazily so test-time config overrides apply
+builder.Services.AddDbContext<WalletDbContext>((sp, opt) =>
+{
+    var cfg = sp.GetRequiredService<IConfiguration>();
+    var walletPath = cfg["Wallet:Path"] ?? "./wallet.db";
+    opt.UseSqlite($"DataSource={walletPath}");
+});
 
 // Coordinator signing key
 var signingKey = !string.IsNullOrEmpty(coordinatorOptions.CoordinatorSigningKeyHex)
@@ -143,6 +147,7 @@ builder.Services.AddSingleton(network);
 builder.Services.AddSingleton<MixingManager>();
 builder.Services.AddSingleton<WalletSyncBackgroundService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<WalletSyncBackgroundService>());
+builder.Services.AddSingleton<IPriceService, CoingeckoPriceService>();
 builder.Services.AddOpenApi();
 
 var app = builder.Build();
@@ -154,8 +159,8 @@ using (var scope = app.Services.CreateScope())
     await db.Database.EnsureCreatedAsync();
 }
 
-// Connect blockchain
-await blockchain.ConnectAsync();
+// Connect blockchain (resolve from DI so tests can swap the backend)
+await app.Services.GetRequiredService<IBlockchainBackend>().ConnectAsync();
 
 app.UseRateLimiter();
 
@@ -1626,6 +1631,21 @@ app.MapGet("/api/dashboard/fee-estimates", async (IBlockchainBackend chain) =>
     return Results.Ok(estimates);
 }).WithTags("Dashboard");
 
+// Current BTC price in fiat currencies (cached 60s via Coingecko)
+app.MapGet("/api/dashboard/price", async (IPriceService prices, CancellationToken ct) =>
+{
+    var snapshot = await prices.GetAsync(ct);
+    if (snapshot.Rates.Count == 0)
+        return Results.Ok(new { available = false });
+
+    return Results.Ok(new
+    {
+        available = true,
+        fetchedAt = snapshot.FetchedAt,
+        rates = snapshot.Rates
+    });
+}).WithTags("Dashboard");
+
 // RBF fee bump: create a replacement transaction with higher fee
 app.MapPost("/api/dashboard/fee-bump", async (WalletDbContext db, HttpContext ctx) =>
 {
@@ -2020,3 +2040,14 @@ record VerifyBackupRequest(string Passphrase, VerifyBackupAnswer[] Answers);
 record VerifyBackupAnswer(int Position, string Word);
 record FeeBumpRequest(string TxId, long NewFeeRateSatPerVb);
 record SweepRequest(string Destination, long FeeRateSatPerVb = 2);
+
+namespace Kompaktor.Web
+{
+    /// <summary>
+    /// Marker type used by <c>WebApplicationFactory&lt;WebEntryPoint&gt;</c> in E2E tests.
+    /// Since the Program class generated from top-level statements lives in the
+    /// global namespace and collides with Kompaktor.Server's Program, we expose
+    /// this dedicated anchor type for test hosts to locate the Kompaktor.Web assembly.
+    /// </summary>
+    public sealed class WebEntryPoint { }
+}
