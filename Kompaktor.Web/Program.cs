@@ -979,6 +979,56 @@ app.MapGet("/api/wallet/info", async (WalletDbContext db) =>
     });
 }).WithTags("Wallet");
 
+// Delete the wallet and wipe ALL local state. Requires the current passphrase
+// AND the literal string "DELETE" as an explicit confirmation. Mixing is stopped
+// first so the background manager cannot resurrect rows mid-delete. The user
+// keeps their mnemonic — restore-from-seed rebuilds everything that derives
+// from it; ad-hoc state (labels, address book, webhook history) is gone.
+app.MapPost("/api/wallet/delete", async (WalletDbContext db, HttpContext ctx, MixingManager mixer, DashboardEventBus bus) =>
+{
+    var body = await ctx.Request.ReadFromJsonAsync<DeleteWalletRequest>();
+    if (body is null || string.IsNullOrWhiteSpace(body.Passphrase))
+        return Results.BadRequest("Passphrase required");
+    if (body.Confirmation != "DELETE")
+        return Results.BadRequest("Confirmation must be the literal string \"DELETE\"");
+
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.BadRequest("No wallet found");
+
+    try
+    {
+        _ = MnemonicEncryption.Decrypt(wallet.EncryptedMnemonic, wallet.MnemonicSalt, body.Passphrase);
+    }
+    catch (System.Security.Cryptography.CryptographicException)
+    {
+        return Results.BadRequest("Passphrase is incorrect");
+    }
+
+    await mixer.StopAsync();
+
+    // Wipe every table — single-wallet-per-install means nothing here
+    // belongs to anyone else. Order: leaves first to satisfy any residual FKs.
+    db.WebhookDeliveries.RemoveRange(db.WebhookDeliveries);
+    db.PaymentWebhooks.RemoveRange(db.PaymentWebhooks);
+    db.PendingPayments.RemoveRange(db.PendingPayments);
+    db.PrivacySnapshots.RemoveRange(db.PrivacySnapshots);
+    db.FailedRoundInputs.RemoveRange(db.FailedRoundInputs);
+    db.AddressBook.RemoveRange(db.AddressBook);
+    db.Labels.RemoveRange(db.Labels);
+    db.CredentialEvents.RemoveRange(db.CredentialEvents);
+    db.CoinJoinParticipations.RemoveRange(db.CoinJoinParticipations);
+    db.CoinJoinRecords.RemoveRange(db.CoinJoinRecords);
+    db.Utxos.RemoveRange(db.Utxos);
+    db.Transactions.RemoveRange(db.Transactions);
+    db.Addresses.RemoveRange(db.Addresses);
+    db.Accounts.RemoveRange(db.Accounts);
+    db.Wallets.RemoveRange(db.Wallets);
+    await db.SaveChangesAsync();
+
+    bus.Publish("wallet");
+    return Results.Ok(new { deleted = true });
+}).WithTags("Wallet");
+
 // Rename the wallet. Cosmetic only - does not affect keys, addresses, or any on-chain state.
 app.MapPost("/api/wallet/rename", async (WalletDbContext db, HttpContext ctx, DashboardEventBus bus) =>
 {
@@ -3041,6 +3091,7 @@ record LabelRequest(string Text);
 record PassphraseRequest(string Passphrase);
 record ChangePassphraseRequest(string CurrentPassphrase, string NewPassphrase);
 record RenameWalletRequest(string Name);
+record DeleteWalletRequest(string Passphrase, string Confirmation);
 record RestoreRequest(string Mnemonic, string Passphrase, string? Name = null);
 record CreateWalletRequest(string Passphrase, string? Name = null, int? WordCount = null);
 record MixingStartRequest(string Passphrase, string? CoordinatorUrl = null, string? TorSocksHost = null, int? TorSocksPort = null, bool AllowUnconfirmedCoinjoinReuse = false, string? Profile = null);

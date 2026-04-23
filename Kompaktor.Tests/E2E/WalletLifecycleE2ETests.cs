@@ -4234,4 +4234,127 @@ public class WalletLifecycleE2ETests
         var resp = await client.PostAsJsonAsync("/api/wallet/rename", new { Name = "Anything" });
         Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
     }
+
+    [Fact]
+    public async Task Delete_wallet_wipes_all_state()
+    {
+        // The delete endpoint is a factory-reset: after it completes, a fresh
+        // wallet must be creatable. This test seeds a few tables (address book,
+        // webhook, pending payment) to prove the wipe reaches past the
+        // Wallet→Account→Address→UTXO cascade chain.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<WalletDbContext>();
+            var wallet = await db.Wallets.FirstAsync();
+            db.AddressBook.Add(new AddressBookEntry
+            {
+                WalletId = wallet.Id,
+                Address = "bcrt1qtest",
+                Label = "friend"
+            });
+            db.PaymentWebhooks.Add(new PaymentWebhookEntity
+            {
+                WalletId = wallet.Id,
+                Url = "https://example.com/h",
+                Secret = "s"
+            });
+            db.PendingPayments.Add(new PendingPaymentEntity
+            {
+                WalletId = wallet.Id,
+                Direction = "Outbound",
+                AmountSat = 1000,
+                Destination = "bcrt1qtest",
+                Status = "Completed"
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var resp = await client.PostAsJsonAsync("/api/wallet/delete",
+            new { Passphrase = "pw", Confirmation = "DELETE" });
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var body = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(body.GetProperty("deleted").GetBoolean());
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<WalletDbContext>();
+            Assert.Equal(0, await db.Wallets.CountAsync());
+            Assert.Equal(0, await db.Accounts.CountAsync());
+            Assert.Equal(0, await db.Addresses.CountAsync());
+            Assert.Equal(0, await db.AddressBook.CountAsync());
+            Assert.Equal(0, await db.PaymentWebhooks.CountAsync());
+            Assert.Equal(0, await db.PendingPayments.CountAsync());
+        }
+
+        // After wipe, /api/wallet/info reports no wallet — restore/create flows become valid.
+        var info = await client.GetFromJsonAsync<JsonElement>("/api/wallet/info");
+        Assert.False(info.GetProperty("exists").GetBoolean());
+
+        // And creating a fresh wallet must succeed (no "A wallet already exists" collision).
+        var create = await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "new" });
+        Assert.Equal(HttpStatusCode.OK, create.StatusCode);
+    }
+
+    [Fact]
+    public async Task Delete_wallet_rejects_wrong_passphrase()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "correct" });
+
+        var resp = await client.PostAsJsonAsync("/api/wallet/delete",
+            new { Passphrase = "wrong", Confirmation = "DELETE" });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+
+        // Wallet still present after failed attempt.
+        var info = await client.GetFromJsonAsync<JsonElement>("/api/wallet/info");
+        Assert.True(info.GetProperty("exists").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Delete_wallet_rejects_wrong_confirmation()
+    {
+        // "DELETE" is the literal confirmation. Lowercase, whitespace, other
+        // strings — all must fail, otherwise the guard is just theatre.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        foreach (var bad in new[] { "delete", "Delete", "CONFIRM", "DELETE ", " DELETE", "" })
+        {
+            var resp = await client.PostAsJsonAsync("/api/wallet/delete",
+                new { Passphrase = "pw", Confirmation = bad });
+            Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        }
+
+        var info = await client.GetFromJsonAsync<JsonElement>("/api/wallet/info");
+        Assert.True(info.GetProperty("exists").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Delete_wallet_rejects_missing_passphrase()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.PostAsJsonAsync("/api/wallet/delete",
+            new { Passphrase = "", Confirmation = "DELETE" });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Delete_wallet_without_wallet_returns_bad_request()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        var resp = await client.PostAsJsonAsync("/api/wallet/delete",
+            new { Passphrase = "pw", Confirmation = "DELETE" });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
 }

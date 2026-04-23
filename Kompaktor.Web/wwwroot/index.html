@@ -1221,6 +1221,17 @@
                         <span id="renameWalletStatus" style="font-size:12px"></span>
                     </div>
                 </div>
+                <div style="background:var(--surface);border:1px solid var(--red);border-radius:6px;padding:16px;margin-top:12px">
+                    <h3 style="color:var(--red);margin:0 0 8px;font-size:14px">Danger Zone: Delete Wallet</h3>
+                    <p style="color:var(--text-muted);font-size:13px;margin-bottom:8px">Wipes ALL local wallet data (keys, history, labels, webhooks, mixing state). Any stuck mixing rounds are stopped first. If you still have your recovery phrase you can restore the on-chain wallet; everything else (labels, address book, webhook history, privacy metrics) is gone forever.</p>
+                    <p id="deleteWalletBackupWarn" style="color:var(--yellow);font-size:12px;margin:4px 0 10px;display:none"><strong>Warning:</strong> Your backup has not been verified. If you delete now and lose your recovery phrase, your funds are unrecoverable.</p>
+                    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
+                        <input type="password" id="deleteWalletPass" placeholder="Passphrase" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:4px;font-size:13px;width:200px">
+                        <input type="text" id="deleteWalletConfirm" placeholder='Type "DELETE" to confirm' style="background:var(--bg);border:1px solid var(--red);color:var(--text);padding:6px 10px;border-radius:4px;font-size:13px;width:220px">
+                        <button style="background:var(--red);color:#fff;border:none;padding:6px 14px;border-radius:4px;font-size:13px;cursor:pointer" onclick="deleteWallet()">Delete Wallet</button>
+                        <span id="deleteWalletStatus" style="font-size:12px"></span>
+                    </div>
+                </div>
             </section>
 
             <section>
@@ -3531,6 +3542,37 @@
             }
         }
 
+        async function deleteWallet() {
+            const passEl = document.getElementById('deleteWalletPass');
+            const confirmEl = document.getElementById('deleteWalletConfirm');
+            const status = document.getElementById('deleteWalletStatus');
+            const passphrase = passEl.value;
+            const confirmation = confirmEl.value;
+            if (!passphrase) { status.innerHTML = '<span style="color:var(--red)">Passphrase required</span>'; return; }
+            if (confirmation !== 'DELETE') { status.innerHTML = '<span style="color:var(--red)">Type DELETE (all caps, no quotes) to confirm</span>'; return; }
+            if (!confirm('This permanently deletes the wallet from this device. Continue?')) return;
+            status.innerHTML = '<span style="color:var(--yellow)">Deleting...</span>';
+            try {
+                const res = await fetch('/api/wallet/delete', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ passphrase, confirmation })
+                });
+                const data = await res.json();
+                if (!res.ok) {
+                    status.innerHTML = `<span style="color:var(--red)">${esc(typeof data === 'string' ? data : data.detail || JSON.stringify(data))}</span>`;
+                    return;
+                }
+                status.innerHTML = '<span style="color:var(--green)">Deleted</span>';
+                passEl.value = '';
+                confirmEl.value = '';
+                showToast('Wallet deleted. Reloading...', 'success');
+                setTimeout(() => location.reload(), 800);
+            } catch (err) {
+                status.innerHTML = `<span style="color:var(--red)">Failed: ${esc(err.message)}</span>`;
+            }
+        }
+
         async function loadXpubs() {
             const status = document.getElementById('xpubStatus');
             const list = document.getElementById('xpubList');
@@ -3811,6 +3853,8 @@
                     ? '<span style="color:var(--green)">Enabled</span>'
                     : '<span style="color:var(--yellow)">Disabled (legacy wallet)</span>';
                 updateBackupWarning(info.isBackupVerified);
+                const deleteBackupWarn = document.getElementById('deleteWalletBackupWarn');
+                if (deleteBackupWarn) deleteBackupWarn.style.display = info.isBackupVerified ? 'none' : '';
             }
 
             if (sync) {
