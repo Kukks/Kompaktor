@@ -1186,6 +1186,40 @@
             </section>
 
             <section>
+                <h2>Mixing Preferences</h2>
+                <div style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:16px">
+                    <p style="color:var(--text-muted);font-size:13px;margin-bottom:12px">Pick a preset that tunes the auto-mixing client's behavior, and configure Tor for coordinator privacy. Changes take effect the next time mixing is started.</p>
+                    <div style="display:flex;flex-direction:column;gap:14px">
+                        <div>
+                            <label style="display:block;font-size:12px;color:var(--text-muted);margin-bottom:4px">Mixing profile</label>
+                            <select id="mixProfile" onchange="updateProfileHint()" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:4px;font-size:13px;width:220px">
+                                <option value="Balanced">Balanced</option>
+                                <option value="PrivacyFocused">Privacy Focused</option>
+                                <option value="Consolidator">Consolidator</option>
+                                <option value="Payments">Payments</option>
+                            </select>
+                            <div id="mixProfileHint" style="font-size:11px;color:var(--text-muted);margin-top:6px;max-width:560px"></div>
+                        </div>
+                        <div>
+                            <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer">
+                                <input type="checkbox" id="settTorEnabled" onchange="toggleTorFields()">
+                                <span>Route coordinator traffic through Tor</span>
+                            </label>
+                            <div id="torFields" style="display:none;margin-top:8px;gap:8px;align-items:center;flex-wrap:wrap">
+                                <input type="text" id="settTorHost" placeholder="127.0.0.1" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:4px;font-size:13px;width:150px">
+                                <input type="number" id="settTorPort" placeholder="9050" min="1" max="65535" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:4px;font-size:13px;width:110px">
+                                <span style="font-size:11px;color:var(--text-muted)">SOCKS5 host &amp; port (leave blank for 127.0.0.1:9050)</span>
+                            </div>
+                        </div>
+                        <div style="display:flex;gap:8px;align-items:center">
+                            <button class="send-btn" onclick="saveMixingPreferences()">Save Preferences</button>
+                            <span id="mixingPrefsStatus" style="font-size:12px"></span>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <section>
                 <h2>Backup</h2>
                 <div style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:16px">
                     <p style="color:var(--text-muted);font-size:13px;margin-bottom:12px">Export your recovery phrase. You will need your passphrase to decrypt it.</p>
@@ -3312,12 +3346,89 @@
         }
 
         // Settings: load wallet info
+        // Human-readable hints for each preset — kept here so the strings sit
+        // next to the UI rather than travelling through the API. The API only
+        // surfaces the name + validates the choice.
+        const profileDescriptions = {
+            Balanced: 'Default: 10 inputs/round, 30s self-send change delay, interactive payments on.',
+            PrivacyFocused: 'Smaller batches (5/round) and longer self-send delay so change does not reattach; interactive payments on.',
+            Consolidator: 'Aggressively pulls inputs (25/round) into fewer larger UTXOs; interactive payments off so they do not compete for slots.',
+            Payments: '5 inputs/round with interactive payment slots prioritised for outgoing peer-to-peer transfers.'
+        };
+
+        function updateProfileHint() {
+            const profile = document.getElementById('mixProfile').value;
+            document.getElementById('mixProfileHint').textContent = profileDescriptions[profile] || '';
+        }
+
+        function toggleTorFields() {
+            const enabled = document.getElementById('settTorEnabled').checked;
+            document.getElementById('torFields').style.display = enabled ? 'flex' : 'none';
+        }
+
+        async function loadMixingPreferences() {
+            const data = await fetchJson('/api/wallet/settings');
+            if (!data) return;
+            const profileEl = document.getElementById('mixProfile');
+            if (profileEl) {
+                profileEl.value = data.mixingProfile || 'Balanced';
+                updateProfileHint();
+            }
+            const torEl = document.getElementById('settTorEnabled');
+            if (torEl) torEl.checked = !!data.torEnabled;
+            const hostEl = document.getElementById('settTorHost');
+            if (hostEl) hostEl.value = data.torSocksHost || '';
+            const portEl = document.getElementById('settTorPort');
+            if (portEl) portEl.value = data.torSocksPort || '';
+            toggleTorFields();
+        }
+
+        async function saveMixingPreferences() {
+            const profile = document.getElementById('mixProfile').value;
+            const torEnabled = document.getElementById('settTorEnabled').checked;
+            const hostRaw = document.getElementById('settTorHost').value.trim();
+            const portRaw = document.getElementById('settTorPort').value.trim();
+
+            // Empty strings / 0 signal "clear the persisted value" on the
+            // backend. When Tor is disabled we also clear the host+port so
+            // they don't silently re-activate if the user re-enables later.
+            const body = {
+                mixingProfile: profile,
+                torEnabled: torEnabled,
+                torSocksHost: torEnabled ? hostRaw : '',
+                torSocksPort: torEnabled && portRaw ? parseInt(portRaw) : 0
+            };
+
+            const status = document.getElementById('mixingPrefsStatus');
+            status.innerHTML = '<span style="color:var(--text-muted)">Saving...</span>';
+            try {
+                const res = await fetch('/api/wallet/settings', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+                if (!res.ok) {
+                    const err = await res.text();
+                    status.innerHTML = '<span style="color:var(--red)">' + esc(err || 'Save failed') + '</span>';
+                    return;
+                }
+                status.innerHTML = '<span style="color:var(--green)">Saved</span>';
+                setTimeout(() => { status.innerHTML = ''; }, 2500);
+            } catch (err) {
+                status.innerHTML = '<span style="color:var(--red)">' + esc(err.message) + '</span>';
+            }
+        }
+
         async function loadSettingsInfo() {
             const [info, sync, chain] = await Promise.all([
                 fetchJson('/api/wallet/info'),
                 fetchJson('/api/wallet/sync-status'),
                 fetchJson('/api/blockchain/info')
             ]);
+
+            // Side-load mixing prefs — they don't block the main info grid,
+            // so run it alongside rather than waiting on it in Promise.all.
+            loadMixingPreferences();
 
             if (info && info.exists) {
                 document.getElementById('settWalletName').textContent = info.name;
