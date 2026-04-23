@@ -502,6 +502,11 @@ app.MapGet("/api/dashboard/transactions/{txId}", async (string txId, WalletDbCon
         .Select(c => new { c.Id, c.RoundId, c.Status, c.OurInputCount, c.TotalInputCount, c.OurOutputCount, c.TotalOutputCount, c.ParticipantCount })
         .FirstOrDefaultAsync();
 
+    var txNotes = await db.Labels
+        .Where(l => l.EntityType == "Transaction" && l.EntityId == txId)
+        .Select(l => new { l.Id, l.Text })
+        .ToListAsync();
+
     return Results.Ok(new
     {
         txId,
@@ -510,6 +515,7 @@ app.MapGet("/api/dashboard/transactions/{txId}", async (string txId, WalletDbCon
         spentSats,
         confirmedHeight = received.FirstOrDefault()?.ConfirmedHeight ?? spent.FirstOrDefault()?.ConfirmedHeight ?? 0,
         coinjoin,
+        notes = txNotes,
         receivedOutputs = received.Select(u => new
         {
             u.Id,
@@ -530,6 +536,47 @@ app.MapGet("/api/dashboard/transactions/{txId}", async (string txId, WalletDbCon
             address = new Script(u.Address.ScriptPubKey).GetDestinationAddress(network)?.ToString()
         })
     });
+}).WithTags("Dashboard");
+
+// Attach a free-text note to a transaction. Notes are user-private — they never
+// leave the local DB and are not broadcast to the network.
+app.MapPost("/api/dashboard/transactions/{txId}/note", async (
+    string txId, WalletDbContext db, HttpContext ctx, DashboardEventBus bus) =>
+{
+    var body = await ctx.Request.ReadFromJsonAsync<TransactionNoteRequest>();
+    if (body is null || string.IsNullOrWhiteSpace(body.Text))
+        return Results.BadRequest("Note text is required");
+
+    // Ensure wallet actually knows about this tx — prevents scribbling notes
+    // on arbitrary txids that have nothing to do with this wallet.
+    var touchesWallet = await db.Utxos
+        .AnyAsync(u => u.TxId == txId || u.SpentByTxId == txId);
+    if (!touchesWallet) return Results.NotFound("Transaction not found in wallet");
+
+    var entity = new LabelEntity
+    {
+        EntityType = "Transaction",
+        EntityId = txId,
+        Text = body.Text.Trim()
+    };
+    db.Labels.Add(entity);
+    await db.SaveChangesAsync();
+    bus.Publish("transactions");
+
+    return Results.Ok(new { entity.Id, entity.Text });
+}).WithTags("Dashboard");
+
+app.MapDelete("/api/dashboard/transactions/{txId}/note/{noteId}", async (
+    string txId, int noteId, WalletDbContext db, DashboardEventBus bus) =>
+{
+    var label = await db.Labels.FindAsync(noteId);
+    if (label is null || label.EntityType != "Transaction" || label.EntityId != txId)
+        return Results.NotFound();
+
+    db.Labels.Remove(label);
+    await db.SaveChangesAsync();
+    bus.Publish("transactions");
+    return Results.Ok(new { deleted = noteId });
 }).WithTags("Dashboard");
 
 // Coin control: freeze/unfreeze UTXOs
@@ -2292,6 +2339,7 @@ record RestoreRequest(string Mnemonic, string Passphrase, string? Name = null);
 record CreateWalletRequest(string Passphrase, string? Name = null, int? WordCount = null);
 record MixingStartRequest(string Passphrase, string? CoordinatorUrl = null, string? TorSocksHost = null, int? TorSocksPort = null, bool AllowUnconfirmedCoinjoinReuse = false);
 record AddressBookRequest(string Label, string Address);
+record TransactionNoteRequest(string Text);
 record SendRequest(string Destination, long AmountSat, long FeeRateSatPerVb = 2, string Strategy = "PrivacyFirst", string Passphrase = "");
 record BroadcastPsbtRequest(string SignedPsbt);
 record CreatePaymentRequest(string Destination, long AmountSat, bool Interactive = true, bool Urgent = false, string? Label = null, int? ExpiryMinutes = null);

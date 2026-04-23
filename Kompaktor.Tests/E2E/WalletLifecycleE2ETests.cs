@@ -448,6 +448,43 @@ public class WalletLifecycleE2ETests
     }
 
     [Fact]
+    public async Task Transaction_note_add_rejects_unknown_tx()
+    {
+        // Prevents users from scribbling notes onto arbitrary txids the wallet
+        // has never seen — keeps the Labels table scoped to real wallet activity.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.PostAsJsonAsync(
+            "/api/dashboard/transactions/ffffffff/note", new { Text = "fake" });
+        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Transaction_note_add_rejects_empty_text()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.PostAsJsonAsync(
+            "/api/dashboard/transactions/anyTx/note", new { Text = "   " });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Transaction_note_delete_returns_not_found_for_missing_note()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.DeleteAsync("/api/dashboard/transactions/any/note/999");
+        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+    }
+
+    [Fact]
     public async Task Receive_uri_builds_bip21_with_amount_and_label()
     {
         await using var factory = new KompaktorWebFactory();
