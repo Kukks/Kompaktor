@@ -686,6 +686,61 @@ public class WalletLifecycleE2ETests
     }
 
     [Fact]
+    public async Task Plan_send_returns_inputs_outputs_and_fee_for_valid_plan()
+    {
+        // This is the preview that the UI uses before calling /dashboard/send,
+        // so it's critical that it returns enough info to show the user the
+        // coin selection, fee, and any privacy warnings before they commit.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        // Seed 500k sats so there's enough room for fee + change.
+        await SeedUtxoAsync(factory, client, amountSat: 500_000, tag: 0x33);
+
+        // Use an address controlled by the wallet itself as the destination —
+        // we're just exercising the planning path, not the privacy semantics.
+        var receive = await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address");
+        var dest = receive.GetProperty("address").GetString()!;
+
+        var planResp = await client.PostAsJsonAsync("/api/dashboard/plan-send", new
+        {
+            Destination = dest,
+            AmountSat = 100_000,
+            FeeRateSatPerVb = 2,
+            Strategy = "PrivacyFirst"
+        });
+        Assert.Equal(HttpStatusCode.OK, planResp.StatusCode);
+        var plan = await planResp.Content.ReadFromJsonAsync<JsonElement>();
+
+        Assert.True(plan.GetProperty("inputCount").GetInt32() >= 1);
+        Assert.True(plan.GetProperty("outputCount").GetInt32() >= 1);
+        Assert.True(plan.GetProperty("estimatedFeeSat").GetInt64() > 0);
+        Assert.False(string.IsNullOrEmpty(plan.GetProperty("txHex").GetString()));
+
+        // Selected UTXOs should be present and match what we seeded.
+        var selected = plan.GetProperty("selectedUtxos").EnumerateArray().ToArray();
+        Assert.NotEmpty(selected);
+        Assert.Equal(500_000, selected.Sum(u => u.GetProperty("amountSat").GetInt64()));
+    }
+
+    [Fact]
+    public async Task Plan_send_rejects_garbage_destination()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.PostAsJsonAsync("/api/dashboard/plan-send", new
+        {
+            Destination = "not-an-address",
+            AmountSat = 1000,
+            FeeRateSatPerVb = 2
+        });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
     public async Task Webhook_crud_happy_path()
     {
         await using var factory = new KompaktorWebFactory();
