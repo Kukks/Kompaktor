@@ -1250,6 +1250,44 @@ app.MapGet("/api/wallet/export-xpub", async (WalletDbContext db) =>
     return Results.Ok(new { walletName = wallet.Name, network = wallet.Network, accounts });
 }).WithTags("Wallet");
 
+// Passphrase rotation. The passphrase encrypts the locally stored mnemonic
+// via AES-256-GCM keyed by PBKDF2 — it's a storage-encryption secret, not a
+// BIP39 passphrase, so changing it doesn't alter addresses or recovery. The
+// user's written mnemonic still restores the wallet without any passphrase.
+app.MapPost("/api/wallet/change-passphrase", async (WalletDbContext db, HttpContext ctx) =>
+{
+    var body = await ctx.Request.ReadFromJsonAsync<ChangePassphraseRequest>();
+    if (body is null || string.IsNullOrWhiteSpace(body.CurrentPassphrase) || string.IsNullOrWhiteSpace(body.NewPassphrase))
+        return Results.BadRequest("Current and new passphrases required");
+
+    if (body.CurrentPassphrase == body.NewPassphrase)
+        return Results.BadRequest("New passphrase must differ from current");
+
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.BadRequest("No wallet found");
+
+    string mnemonic;
+    try
+    {
+        mnemonic = MnemonicEncryption.Decrypt(wallet.EncryptedMnemonic, wallet.MnemonicSalt, body.CurrentPassphrase);
+    }
+    catch (System.Security.Cryptography.CryptographicException)
+    {
+        return Results.BadRequest("Current passphrase is incorrect");
+    }
+
+    var (encrypted, salt) = MnemonicEncryption.Encrypt(mnemonic, body.NewPassphrase);
+    wallet.EncryptedMnemonic = encrypted;
+    wallet.MnemonicSalt = salt;
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        changed = true,
+        message = "Passphrase updated. Use the new passphrase for all future sensitive operations (sending payments, starting mixing, exporting keys). Your recovery phrase and addresses are unchanged."
+    });
+}).WithTags("Wallet");
+
 // Wallet backup: export mnemonic (requires passphrase)
 app.MapPost("/api/wallet/export-mnemonic", async (WalletDbContext db, HttpContext ctx) =>
 {
@@ -2950,6 +2988,7 @@ record SendPlanRequest(string Destination, long AmountSat, long FeeRateSatPerVb 
 record BatchFreezeRequest(int[] UtxoIds, bool Freeze);
 record LabelRequest(string Text);
 record PassphraseRequest(string Passphrase);
+record ChangePassphraseRequest(string CurrentPassphrase, string NewPassphrase);
 record RestoreRequest(string Mnemonic, string Passphrase, string? Name = null);
 record CreateWalletRequest(string Passphrase, string? Name = null, int? WordCount = null);
 record MixingStartRequest(string Passphrase, string? CoordinatorUrl = null, string? TorSocksHost = null, int? TorSocksPort = null, bool AllowUnconfirmedCoinjoinReuse = false, string? Profile = null);

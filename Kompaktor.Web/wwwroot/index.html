@@ -1263,6 +1263,20 @@
                 </div>
             </section>
 
+            <section>
+                <h2>Change Passphrase</h2>
+                <div style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:16px">
+                    <p style="color:var(--text-muted);font-size:13px;margin-bottom:12px">Rotate the passphrase used to decrypt your wallet locally. This is a storage-encryption secret — it does NOT change your recovery phrase or addresses. Your written mnemonic still restores the wallet without any passphrase.</p>
+                    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
+                        <input type="password" id="changePassCurrent" placeholder="Current passphrase" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:4px;font-size:13px;width:200px">
+                        <input type="password" id="changePassNew" placeholder="New passphrase" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:4px;font-size:13px;width:200px">
+                        <input type="password" id="changePassConfirm" placeholder="Confirm new passphrase" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:4px;font-size:13px;width:200px">
+                        <button class="send-btn" onclick="changePassphrase()">Update</button>
+                        <span id="changePassStatus" style="font-size:12px"></span>
+                    </div>
+                </div>
+            </section>
+
             <section id="backupVerifySection">
                 <h2>Verify Backup <span id="backupVerifiedBadge" style="display:none;font-size:12px;background:var(--green);color:#000;padding:2px 8px;border-radius:10px;margin-left:8px">Verified</span></h2>
                 <div style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:16px">
@@ -3444,6 +3458,38 @@
                 result.style.display = '';
                 status.innerHTML = `<span style="color:var(--green)">${data.wordCount} words</span>`;
                 document.getElementById('backupPass').value = '';
+            } catch (err) {
+                status.innerHTML = `<span style="color:var(--red)">Failed: ${esc(err.message)}</span>`;
+            }
+        }
+
+        async function changePassphrase() {
+            const curEl = document.getElementById('changePassCurrent');
+            const newEl = document.getElementById('changePassNew');
+            const confirmEl = document.getElementById('changePassConfirm');
+            const status = document.getElementById('changePassStatus');
+            const cur = curEl.value;
+            const pw = newEl.value;
+            const confirm = confirmEl.value;
+            if (!cur || !pw) { status.innerHTML = '<span style="color:var(--red)">All fields required</span>'; return; }
+            if (pw !== confirm) { status.innerHTML = '<span style="color:var(--red)">New passphrase confirmation does not match</span>'; return; }
+            status.innerHTML = '<span style="color:var(--yellow)">Updating...</span>';
+            try {
+                const res = await fetch('/api/wallet/change-passphrase', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ currentPassphrase: cur, newPassphrase: pw })
+                });
+                const data = await res.json();
+                if (!res.ok) {
+                    status.innerHTML = `<span style="color:var(--red)">${esc(typeof data === 'string' ? data : data.detail || JSON.stringify(data))}</span>`;
+                    return;
+                }
+                status.innerHTML = '<span style="color:var(--green)">Updated</span>';
+                curEl.value = '';
+                newEl.value = '';
+                confirmEl.value = '';
+                showToast('Passphrase updated — use the new one for future operations', 'success');
             } catch (err) {
                 status.innerHTML = `<span style="color:var(--red)">Failed: ${esc(err.message)}</span>`;
             }

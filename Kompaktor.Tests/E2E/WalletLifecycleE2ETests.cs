@@ -3834,6 +3834,84 @@ public class WalletLifecycleE2ETests
     }
 
     [Fact]
+    public async Task Change_passphrase_rotates_storage_secret()
+    {
+        // Rotating the passphrase must let the user immediately decrypt the
+        // mnemonic with the new one and reject the old one. The mnemonic WORDS
+        // must remain identical — otherwise the user's written backup would
+        // silently diverge from the live wallet, a silent data-loss bug.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "old-pw" });
+
+        var before = await (await client.PostAsJsonAsync("/api/wallet/export-mnemonic",
+            new { Passphrase = "old-pw" })).Content.ReadFromJsonAsync<JsonElement>();
+        var originalMnemonic = before.GetProperty("mnemonic").GetString()!;
+
+        var change = await client.PostAsJsonAsync("/api/wallet/change-passphrase",
+            new { CurrentPassphrase = "old-pw", NewPassphrase = "new-pw" });
+        Assert.Equal(HttpStatusCode.OK, change.StatusCode);
+
+        // Old passphrase must no longer decrypt.
+        var oldResp = await client.PostAsJsonAsync("/api/wallet/export-mnemonic",
+            new { Passphrase = "old-pw" });
+        Assert.Equal(HttpStatusCode.BadRequest, oldResp.StatusCode);
+
+        // New passphrase recovers the same mnemonic.
+        var after = await (await client.PostAsJsonAsync("/api/wallet/export-mnemonic",
+            new { Passphrase = "new-pw" })).Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(originalMnemonic, after.GetProperty("mnemonic").GetString());
+    }
+
+    [Fact]
+    public async Task Change_passphrase_rejects_wrong_current()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "correct" });
+
+        var resp = await client.PostAsJsonAsync("/api/wallet/change-passphrase",
+            new { CurrentPassphrase = "wrong", NewPassphrase = "whatever" });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+
+        // Original passphrase still works — we didn't corrupt anything on a
+        // failed rotation attempt.
+        var check = await client.PostAsJsonAsync("/api/wallet/export-mnemonic",
+            new { Passphrase = "correct" });
+        Assert.Equal(HttpStatusCode.OK, check.StatusCode);
+    }
+
+    [Fact]
+    public async Task Change_passphrase_rejects_identical_new_and_current()
+    {
+        // No-op rotations are a misconfiguration (user forgot which input is
+        // which), so surface them as errors rather than silently succeeding.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.PostAsJsonAsync("/api/wallet/change-passphrase",
+            new { CurrentPassphrase = "pw", NewPassphrase = "pw" });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Change_passphrase_rejects_empty_inputs()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var missingNew = await client.PostAsJsonAsync("/api/wallet/change-passphrase",
+            new { CurrentPassphrase = "pw", NewPassphrase = "" });
+        Assert.Equal(HttpStatusCode.BadRequest, missingNew.StatusCode);
+
+        var missingCurrent = await client.PostAsJsonAsync("/api/wallet/change-passphrase",
+            new { CurrentPassphrase = "", NewPassphrase = "new" });
+        Assert.Equal(HttpStatusCode.BadRequest, missingCurrent.StatusCode);
+    }
+
+    [Fact]
     public async Task Webhook_redeliver_creates_new_delivery_row()
     {
         // A webhook receiver may have been down when the original event fired.
