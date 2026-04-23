@@ -3595,6 +3595,39 @@ public class WalletLifecycleE2ETests
     }
 
     [Fact]
+    public async Task Payment_send_respects_expiryMinutes()
+    {
+        // Outbound payments need an expiry so short-lived offers auto-cancel.
+        // The /status endpoint must round-trip ExpiresAt close to the expected
+        // value — a slack of a few seconds absorbs clock drift within the test.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+        var addr = (await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address"))
+            .GetProperty("address").GetString()!;
+
+        var before = DateTimeOffset.UtcNow;
+        var created = await (await client.PostAsJsonAsync("/api/payments/send", new
+        {
+            Destination = addr,
+            AmountSat = 55_000L,
+            ExpiryMinutes = 15
+        })).Content.ReadFromJsonAsync<JsonElement>();
+        var paymentId = created.GetProperty("id").GetString()!;
+
+        var status = await client.GetFromJsonAsync<JsonElement>($"/api/payments/{paymentId}/status");
+        var expiresAtEl = status.GetProperty("expiresAt");
+        // ASP.NET serializes DateTimeOffset as an ISO-8601 string by default,
+        // but nothing binds us to that — accept either form so the test stays
+        // stable if serialization conventions change.
+        var expiresAt = expiresAtEl.ValueKind == JsonValueKind.Number
+            ? DateTimeOffset.FromUnixTimeSeconds(expiresAtEl.GetInt64())
+            : expiresAtEl.GetDateTimeOffset();
+        var expected = before.AddMinutes(15);
+        Assert.InRange(expiresAt, expected.AddSeconds(-10), expected.AddSeconds(30));
+    }
+
+    [Fact]
     public async Task Payment_send_defaults_maxRetries_when_unset()
     {
         // Callers that omit MaxRetries must continue to get the historical

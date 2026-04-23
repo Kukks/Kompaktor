@@ -995,10 +995,15 @@
                         <div style="margin-bottom:12px">
                             <input type="datetime-local" id="payScheduleAt" style="display:none;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:4px;font-size:12px">
                         </div>
-                        <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px">
-                            <label for="payMaxRetries" style="font-size:11px;color:var(--text-muted);text-transform:uppercase" title="Number of round failures before auto-failing the payment. 0 = unlimited. Default 10.">Max retries</label>
-                            <input type="number" id="payMaxRetries" placeholder="10" min="0" max="1000" style="width:80px;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:4px;font-size:12px">
-                            <span style="font-size:10px;color:var(--text-muted)">0 = unlimited</span>
+                        <div style="display:flex;gap:12px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
+                            <div style="display:flex;gap:6px;align-items:center">
+                                <label for="payMaxRetries" style="font-size:11px;color:var(--text-muted);text-transform:uppercase" title="Number of round failures before auto-failing the payment. 0 = unlimited. Default 10.">Max retries</label>
+                                <input type="number" id="payMaxRetries" placeholder="10" min="0" max="1000" style="width:70px;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:4px;font-size:12px">
+                            </div>
+                            <div style="display:flex;gap:6px;align-items:center">
+                                <label for="payExpiryMinutes" style="font-size:11px;color:var(--text-muted);text-transform:uppercase" title="Auto-cancel this payment if it hasn't been matched into a round within this many minutes. Blank = no expiry.">Expires in (min)</label>
+                                <input type="number" id="payExpiryMinutes" placeholder="none" min="1" max="10080" style="width:70px;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:4px;font-size:12px">
+                            </div>
                         </div>
                         <button class="send-btn" onclick="createSendPayment()">Queue Payment</button>
                         <span id="payStatus" style="font-size:12px;margin-left:8px"></span>
@@ -2881,6 +2886,7 @@
             const scheduleToggle = document.getElementById('payScheduleToggle').checked;
             const scheduleLocal = document.getElementById('payScheduleAt').value;
             const maxRetriesRaw = document.getElementById('payMaxRetries').value.trim();
+            const expiryRaw = document.getElementById('payExpiryMinutes').value.trim();
             const status = document.getElementById('payStatus');
 
             if (!dest || !amount || amount <= 0) {
@@ -2902,6 +2908,10 @@
                     const mr = parseInt(maxRetriesRaw);
                     if (!isNaN(mr) && mr >= 0) body.maxRetries = mr;
                 }
+                if (expiryRaw !== '') {
+                    const em = parseInt(expiryRaw);
+                    if (!isNaN(em) && em > 0) body.expiryMinutes = em;
+                }
                 const res = await fetch('/api/payments/send', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -2917,6 +2927,7 @@
                 document.getElementById('payAmount').value = '';
                 document.getElementById('payLabel').value = '';
                 document.getElementById('payMaxRetries').value = '';
+                document.getElementById('payExpiryMinutes').value = '';
                 document.getElementById('payScheduleToggle').checked = false;
                 document.getElementById('payScheduleAt').value = '';
                 document.getElementById('payScheduleAt').style.display = 'none';
