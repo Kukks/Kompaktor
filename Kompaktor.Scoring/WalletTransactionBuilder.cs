@@ -90,6 +90,16 @@ public class WalletTransactionBuilder
         if (reusedInputs > 0)
             warnings.Add($"{reusedInputs} input(s) come from reused addresses — address reuse degrades privacy");
 
+        // Privacy warning: mixing exposed (revealed to prior coinjoin
+        // participants) UTXOs with non-exposed ones in the same spend.
+        // Co-spending creates a provable link between the two sets that
+        // defeats the compartmentalization of having kept some UTXOs off
+        // the radar.
+        var exposedCount = selection.Selected.Count(s => s.Utxo.Address.IsExposed);
+        var nonExposedCount = selection.Selected.Count - exposedCount;
+        if (exposedCount > 0 && nonExposedCount > 0)
+            warnings.Add($"Co-spending {exposedCount} exposed UTXO(s) with {nonExposedCount} non-exposed — links both sets together");
+
         // Privacy warning: script type mismatch between inputs and destination
         if (coins.Length > 0)
         {

@@ -188,4 +188,52 @@ public class WalletTransactionBuilderTests : IDisposable
         Assert.Single(plan.SelectedUtxos);
         Assert.Equal(200_000, plan.SelectedUtxos[0].Utxo.AmountSat);
     }
+
+    [Fact]
+    public async Task PlanTransaction_WarnsWhenCoSpendingExposedAndNonExposedUtxos()
+    {
+        // Build a wallet with two spendable addresses — one flagged exposed
+        // (simulating a prior coinjoin revealed the script), one not. Fund
+        // each with enough to force the selector to pick BOTH, then verify
+        // the planner adds a warning about the linkage leakage.
+        var (wallet, external, _) = SeedWallet();
+
+        var exposedKey = new Key();
+        var exposedScript = exposedKey.GetScriptPubKey(ScriptPubKeyType.Segwit);
+        var exposed = new AddressEntity
+        {
+            KeyPath = "0/1", ScriptPubKey = exposedScript.ToBytes(),
+            Account = external.Account, IsChange = false, IsExposed = true
+        };
+        _db.Addresses.Add(exposed);
+        _db.SaveChanges();
+
+        // Two UTXOs, 60k each — neither alone covers a 80k send after fees
+        // so the selector MUST pick both.
+        _db.Utxos.Add(new UtxoEntity
+        {
+            TxId = "aa11000000000000000000000000000000000000000000000000000000000000",
+            OutputIndex = 0, AddressId = external.Id,
+            AmountSat = 60_000, ScriptPubKey = external.ScriptPubKey,
+            ConfirmedHeight = 100
+        });
+        _db.Utxos.Add(new UtxoEntity
+        {
+            TxId = "bb22000000000000000000000000000000000000000000000000000000000000",
+            OutputIndex = 0, AddressId = exposed.Id,
+            AmountSat = 60_000, ScriptPubKey = exposed.ScriptPubKey,
+            ConfirmedHeight = 101
+        });
+        _db.SaveChanges();
+
+        var destination = new Key().GetScriptPubKey(ScriptPubKeyType.Segwit);
+        var builder = new WalletTransactionBuilder(_db, _network);
+
+        var plan = await builder.PlanTransactionAsync(
+            wallet.Id, destination, Money.Satoshis(80_000),
+            new FeeRate(2m));
+
+        Assert.Equal(2, plan.SelectedUtxos.Count);
+        Assert.Contains(plan.Warnings, w => w.Contains("exposed") && w.Contains("non-exposed"));
+    }
 }
