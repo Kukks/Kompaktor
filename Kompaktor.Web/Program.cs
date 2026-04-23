@@ -1405,7 +1405,12 @@ app.MapGet("/api/payments/search", async (
 
     if (!string.IsNullOrWhiteSpace(status))
     {
-        var statuses = status.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        // Use a List<string> rather than string[] here — in .NET 10 the C# compiler
+        // resolves `string[].Contains(string)` to the new MemoryExtensions.Contains
+        // ReadOnlySpan overload, which EF Core's expression funcletizer can't compile.
+        var statuses = status
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .ToList();
         query = query.Where(p => statuses.Contains(p.Status));
     }
 

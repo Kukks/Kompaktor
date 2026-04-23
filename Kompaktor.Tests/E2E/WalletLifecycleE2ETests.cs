@@ -635,6 +635,50 @@ public class WalletLifecycleE2ETests
     }
 
     [Fact]
+    public async Task Payments_search_filters_by_status_including_comma_list()
+    {
+        // Exercises the comma-split path in /api/payments/search's status filter
+        // (Program.cs:1406-1410). A single value, a comma-separated list, and a
+        // non-matching value must each route correctly through statuses.Contains.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+        var receive = await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address");
+        var addr = receive.GetProperty("address").GetString()!;
+
+        // A freshly seeded payment with no UTXOs starts (and stays) in "Pending"
+        // for the duration of the test window — we don't need a real broadcast
+        // to exercise the filter codepath.
+        await client.PostAsJsonAsync("/api/payments/send", new
+        {
+            Destination = addr,
+            AmountSat = 1000,
+            Label = "status-test"
+        });
+
+        // Single status matches.
+        var onlyPending = await client.GetFromJsonAsync<JsonElement>(
+            "/api/payments/search?status=Pending");
+        Assert.Equal(1, onlyPending.GetProperty("total").GetInt32());
+
+        // Comma list containing the actual status still matches.
+        var multi = await client.GetFromJsonAsync<JsonElement>(
+            "/api/payments/search?status=Pending,Failed,Completed");
+        Assert.Equal(1, multi.GetProperty("total").GetInt32());
+
+        // Comma list with whitespace must still parse (TrimEntries).
+        var spaced = await client.GetFromJsonAsync<JsonElement>(
+            "/api/payments/search?status=Failed%2C%20Pending");
+        Assert.Equal(1, spaced.GetProperty("total").GetInt32());
+
+        // Status that no seeded payment has returns zero.
+        var noMatch = await client.GetFromJsonAsync<JsonElement>(
+            "/api/payments/search?status=Completed");
+        Assert.Equal(0, noMatch.GetProperty("total").GetInt32());
+    }
+
+    [Fact]
     public async Task Transaction_detail_returns_received_utxo_from_seeded_backend()
     {
         // Drives the receive pipeline end-to-end: stage a UTXO on the fake
