@@ -979,6 +979,30 @@ app.MapGet("/api/wallet/info", async (WalletDbContext db) =>
     });
 }).WithTags("Wallet");
 
+// Rename the wallet. Cosmetic only - does not affect keys, addresses, or any on-chain state.
+app.MapPost("/api/wallet/rename", async (WalletDbContext db, HttpContext ctx, DashboardEventBus bus) =>
+{
+    var body = await ctx.Request.ReadFromJsonAsync<RenameWalletRequest>();
+    if (body is null || string.IsNullOrWhiteSpace(body.Name))
+        return Results.BadRequest("Name required");
+
+    var trimmed = body.Name.Trim();
+    if (trimmed.Length > 100)
+        return Results.BadRequest("Name must be 100 characters or fewer");
+
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.BadRequest("No wallet found");
+
+    if (wallet.Name == trimmed)
+        return Results.Ok(new { renamed = false, name = wallet.Name });
+
+    wallet.Name = trimmed;
+    await db.SaveChangesAsync();
+    bus.Publish("wallet");
+
+    return Results.Ok(new { renamed = true, name = wallet.Name });
+}).WithTags("Wallet");
+
 // Wallet-level preferences for auto-mixing (profile + Tor).
 // These are the defaults /api/mixing/start falls back to when the caller
 // omits CoordinatorUrl / TorSocks* fields.
@@ -3016,6 +3040,7 @@ record BatchFreezeRequest(int[] UtxoIds, bool Freeze);
 record LabelRequest(string Text);
 record PassphraseRequest(string Passphrase);
 record ChangePassphraseRequest(string CurrentPassphrase, string NewPassphrase);
+record RenameWalletRequest(string Name);
 record RestoreRequest(string Mnemonic, string Passphrase, string? Name = null);
 record CreateWalletRequest(string Passphrase, string? Name = null, int? WordCount = null);
 record MixingStartRequest(string Passphrase, string? CoordinatorUrl = null, string? TorSocksHost = null, int? TorSocksPort = null, bool AllowUnconfirmedCoinjoinReuse = false, string? Profile = null);

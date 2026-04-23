@@ -1213,6 +1213,14 @@
                     <span class="label">Fresh Change</span><span id="settFreshChange">-</span>
                     <span class="label">Auto-Extend</span><span id="settGapExtension">-</span>
                 </div>
+                <div style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:16px;margin-top:12px">
+                    <p style="color:var(--text-muted);font-size:13px;margin-bottom:8px">Rename the wallet. Cosmetic only — does not touch your keys, addresses, or backup.</p>
+                    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                        <input type="text" id="renameWalletName" maxlength="100" placeholder="New wallet name" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:4px;font-size:13px;width:240px">
+                        <button class="send-btn" onclick="renameWallet()">Rename</button>
+                        <span id="renameWalletStatus" style="font-size:12px"></span>
+                    </div>
+                </div>
             </section>
 
             <section>
@@ -3490,6 +3498,34 @@
                 newEl.value = '';
                 confirmEl.value = '';
                 showToast('Passphrase updated — use the new one for future operations', 'success');
+            } catch (err) {
+                status.innerHTML = `<span style="color:var(--red)">Failed: ${esc(err.message)}</span>`;
+            }
+        }
+
+        async function renameWallet() {
+            const input = document.getElementById('renameWalletName');
+            const status = document.getElementById('renameWalletStatus');
+            const name = input.value.trim();
+            if (!name) { status.innerHTML = '<span style="color:var(--red)">Name required</span>'; return; }
+            status.innerHTML = '<span style="color:var(--yellow)">Saving...</span>';
+            try {
+                const res = await fetch('/api/wallet/rename', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name })
+                });
+                const data = await res.json();
+                if (!res.ok) {
+                    status.innerHTML = `<span style="color:var(--red)">${esc(typeof data === 'string' ? data : data.detail || JSON.stringify(data))}</span>`;
+                    return;
+                }
+                status.innerHTML = data.renamed
+                    ? '<span style="color:var(--green)">Renamed</span>'
+                    : '<span style="color:var(--text-muted)">No change</span>';
+                input.value = '';
+                document.getElementById('settWalletName').textContent = data.name;
+                if (data.renamed) showToast(`Wallet renamed to "${data.name}"`, 'success');
             } catch (err) {
                 status.innerHTML = `<span style="color:var(--red)">Failed: ${esc(err.message)}</span>`;
             }

@@ -4145,4 +4145,93 @@ public class WalletLifecycleE2ETests
         Assert.Equal(JsonValueKind.Null, resp.GetProperty("lastRoundCompletedAt").ValueKind);
         Assert.Equal(JsonValueKind.Null, resp.GetProperty("lastSuccessfulRoundAt").ValueKind);
     }
+
+    [Fact]
+    public async Task Rename_wallet_persists_and_surfaces_in_info()
+    {
+        // The wallet name is shown in the header and referenced in multi-device
+        // restore flows. It must round-trip through GET /api/wallet/info so
+        // every subsequent dashboard render shows the new label.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw", Name = "Original" });
+
+        var resp = await client.PostAsJsonAsync("/api/wallet/rename", new { Name = "Renamed" });
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var body = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(body.GetProperty("renamed").GetBoolean());
+        Assert.Equal("Renamed", body.GetProperty("name").GetString());
+
+        var info = await client.GetFromJsonAsync<JsonElement>("/api/wallet/info");
+        Assert.Equal("Renamed", info.GetProperty("name").GetString());
+    }
+
+    [Fact]
+    public async Task Rename_wallet_trims_whitespace()
+    {
+        // Stray whitespace from paste is a common input pattern and would
+        // otherwise produce names like "  My Wallet  " that render oddly.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.PostAsJsonAsync("/api/wallet/rename", new { Name = "   Trimmed   " });
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var body = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("Trimmed", body.GetProperty("name").GetString());
+    }
+
+    [Fact]
+    public async Task Rename_wallet_is_noop_when_name_unchanged()
+    {
+        // Sending the current name should not trigger an event bus notification
+        // or a SaveChanges round-trip. Surfacing this via renamed=false lets
+        // clients avoid unnecessary UI churn.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw", Name = "Same" });
+
+        var resp = await client.PostAsJsonAsync("/api/wallet/rename", new { Name = "Same" });
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var body = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.False(body.GetProperty("renamed").GetBoolean());
+        Assert.Equal("Same", body.GetProperty("name").GetString());
+    }
+
+    [Fact]
+    public async Task Rename_wallet_rejects_empty_and_whitespace()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var empty = await client.PostAsJsonAsync("/api/wallet/rename", new { Name = "" });
+        Assert.Equal(HttpStatusCode.BadRequest, empty.StatusCode);
+
+        var whitespace = await client.PostAsJsonAsync("/api/wallet/rename", new { Name = "   " });
+        Assert.Equal(HttpStatusCode.BadRequest, whitespace.StatusCode);
+    }
+
+    [Fact]
+    public async Task Rename_wallet_rejects_name_over_100_chars()
+    {
+        // Guards against pathological storage growth and UI layout breakage.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var longName = new string('x', 101);
+        var resp = await client.PostAsJsonAsync("/api/wallet/rename", new { Name = longName });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Rename_wallet_without_wallet_returns_bad_request()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        var resp = await client.PostAsJsonAsync("/api/wallet/rename", new { Name = "Anything" });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
 }
