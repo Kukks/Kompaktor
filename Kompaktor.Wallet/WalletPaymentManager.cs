@@ -195,10 +195,14 @@ public class WalletPaymentManager : IOutboundPaymentManager, IInboundPaymentMana
     /// </summary>
     public async Task<PendingPaymentEntity> CreateOutboundPaymentAsync(
         string destination, long amountSat, bool interactive = true, bool urgent = false,
-        string? label = null, TimeSpan? expiry = null, DateTimeOffset? scheduledAt = null)
+        string? label = null, TimeSpan? expiry = null, DateTimeOffset? scheduledAt = null,
+        int? maxRetries = null)
     {
         if (amountSat < 546)
             throw new ArgumentException("Amount below dust limit (546 sats)");
+
+        if (maxRetries is < 0 or > 1000)
+            throw new ArgumentException("maxRetries must be between 0 and 1000 (0 = unlimited)");
 
         var address = BitcoinAddress.Create(destination, _network);
 
@@ -214,7 +218,8 @@ public class WalletPaymentManager : IOutboundPaymentManager, IInboundPaymentMana
             Label = label,
             Status = isScheduled ? "Scheduled" : "Pending",
             ExpiresAt = expiry.HasValue ? DateTimeOffset.UtcNow + expiry.Value : null,
-            ScheduledAt = scheduledAt
+            ScheduledAt = scheduledAt,
+            MaxRetries = maxRetries ?? 10
         };
 
         // For interactive outbound: generate a protocol key for the sender

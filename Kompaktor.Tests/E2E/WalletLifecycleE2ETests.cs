@@ -3542,4 +3542,74 @@ public class WalletLifecycleE2ETests
         var resp = await client.PostAsync("/api/payments/nonexistent-id/retry", content: null);
         Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
     }
+
+    [Fact]
+    public async Task Payment_send_respects_custom_maxRetries()
+    {
+        // Historically MaxRetries was pinned to 10 on the entity; callers had no
+        // way to widen or narrow it. The send endpoint must propagate a caller's
+        // chosen cap so users can trade responsiveness against round availability.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+        var addr = (await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address"))
+            .GetProperty("address").GetString()!;
+
+        var created = await (await client.PostAsJsonAsync("/api/payments/send", new
+        {
+            Destination = addr,
+            AmountSat = 33_000L,
+            MaxRetries = 3
+        })).Content.ReadFromJsonAsync<JsonElement>();
+        var paymentId = created.GetProperty("id").GetString()!;
+        Assert.Equal(3, created.GetProperty("maxRetries").GetInt32());
+
+        var status = await client.GetFromJsonAsync<JsonElement>($"/api/payments/{paymentId}/status");
+        Assert.Equal(3, status.GetProperty("maxRetries").GetInt32());
+
+        // MaxRetries must survive a round-trip through the DB — verify via the
+        // list endpoint which pulls the entity fresh.
+        var list = await client.GetFromJsonAsync<JsonElement>("/api/payments");
+        var match = list.EnumerateArray().First(p => p.GetProperty("id").GetString() == paymentId);
+        Assert.Equal(3, match.GetProperty("maxRetries").GetInt32());
+    }
+
+    [Fact]
+    public async Task Payment_send_rejects_negative_maxRetries()
+    {
+        // Guardrail: negative maxRetries has no meaning; validation belongs on
+        // the wallet-manager side so the web layer can't smuggle bad values in.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+        var addr = (await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address"))
+            .GetProperty("address").GetString()!;
+
+        var resp = await client.PostAsJsonAsync("/api/payments/send", new
+        {
+            Destination = addr,
+            AmountSat = 10_000L,
+            MaxRetries = -1
+        });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Payment_send_defaults_maxRetries_when_unset()
+    {
+        // Callers that omit MaxRetries must continue to get the historical
+        // default of 10 — this keeps existing clients behaviour-identical.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+        var addr = (await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address"))
+            .GetProperty("address").GetString()!;
+
+        var created = await (await client.PostAsJsonAsync("/api/payments/send", new
+        {
+            Destination = addr,
+            AmountSat = 44_000L
+        })).Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(10, created.GetProperty("maxRetries").GetInt32());
+    }
 }
