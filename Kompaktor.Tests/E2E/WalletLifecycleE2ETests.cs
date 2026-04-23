@@ -945,6 +945,130 @@ public class WalletLifecycleE2ETests
     }
 
     [Fact]
+    public async Task Payments_stats_without_wallet_returns_total_zero_only()
+    {
+        // /api/payments/stats is meant to power a dashboard widget. Before a
+        // wallet exists we intentionally return a thin `{ total: 0 }` payload
+        // rather than 404, so the widget can render a zero state without
+        // branching on HTTP status.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        var stats = await client.GetFromJsonAsync<JsonElement>("/api/payments/stats");
+        Assert.Equal(0, stats.GetProperty("total").GetInt32());
+        // Rich counters are absent on the empty-wallet shape — the widget
+        // should rely on `total == 0` alone.
+        Assert.False(stats.TryGetProperty("completedCount", out _));
+    }
+
+    [Fact]
+    public async Task Payments_stats_reflects_pending_outbound_payment()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var receive = await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address");
+        var addr = receive.GetProperty("address").GetString()!;
+
+        await client.PostAsJsonAsync("/api/payments/send", new
+        {
+            Destination = addr, AmountSat = 5_000, Label = "stats-check"
+        });
+
+        var stats = await client.GetFromJsonAsync<JsonElement>("/api/payments/stats");
+        Assert.Equal(1, stats.GetProperty("total").GetInt32());
+        Assert.Equal(0, stats.GetProperty("completedCount").GetInt32());
+        // A brand-new outbound payment lives in Pending/Reserved — it's counted
+        // as pending until the UTXO-selection pipeline flips it.
+        Assert.Equal(1, stats.GetProperty("pendingCount").GetInt32());
+        Assert.Equal(0, stats.GetProperty("failedCount").GetInt32());
+        Assert.Equal(0, stats.GetProperty("totalSentSat").GetInt64());
+        // successRate is defined only once at least one payment has finalized;
+        // for a pure-pending wallet the server returns 0 without a divide-by-zero.
+        Assert.Equal(0, stats.GetProperty("successRate").GetDouble());
+    }
+
+    [Fact]
+    public async Task Payments_export_without_wallet_returns_no_wallet_sentinel()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        var resp = await client.GetAsync("/api/payments/export");
+        resp.EnsureSuccessStatusCode();
+        // When no wallet exists the endpoint short-circuits with a plain
+        // "No wallet" sentinel instead of an empty CSV. Keep the assertion
+        // on the body so a future change to that behavior fails loudly.
+        var body = await resp.Content.ReadAsStringAsync();
+        Assert.Contains("No wallet", body);
+    }
+
+    [Fact]
+    public async Task Payments_export_returns_csv_header_and_row_per_payment()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var receive = await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address");
+        var addr = receive.GetProperty("address").GetString()!;
+
+        await client.PostAsJsonAsync("/api/payments/send", new
+        {
+            Destination = addr, AmountSat = 7_777, Label = "csv,with,commas"
+        });
+
+        var resp = await client.GetAsync("/api/payments/export");
+        resp.EnsureSuccessStatusCode();
+        Assert.Equal("text/csv", resp.Content.Headers.ContentType?.MediaType);
+
+        var csv = await resp.Content.ReadAsStringAsync();
+        var lines = csv.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        Assert.True(lines.Length >= 2, $"expected header + at least 1 row, got {lines.Length}");
+
+        // Header contract is load-bearing for tax/accounting integrations.
+        var header = lines[0].Trim();
+        Assert.StartsWith("Id,Direction,AmountSat", header);
+        Assert.Contains("CreatedAt", header);
+
+        // Commas inside the label must be CSV-quoted, not column-splitting.
+        var dataRow = lines[1];
+        Assert.Contains("\"csv,with,commas\"", dataRow);
+        Assert.Contains("7777", dataRow);
+        Assert.Contains("Outbound", dataRow);
+    }
+
+    [Fact]
+    public async Task Blockchain_info_reports_connected_height_and_network()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        var info = await client.GetFromJsonAsync<JsonElement>("/api/blockchain/info");
+        Assert.True(info.GetProperty("connected").GetBoolean());
+        // FakeBlockchainBackend starts at height 800_000 — pin it so a future
+        // refactor that silently swaps in a different default fails here.
+        Assert.Equal(800_000, info.GetProperty("blockHeight").GetInt32());
+        Assert.Equal("RegTest", info.GetProperty("network").GetString());
+    }
+
+    [Fact]
+    public async Task Coinjoins_endpoint_returns_empty_array_for_fresh_wallet()
+    {
+        // CoinJoinRecords only get minted when this wallet participates in a
+        // round, so a brand-new wallet should produce an empty list rather
+        // than a 404 — the UI renders a "never mixed yet" state from it.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var records = await client.GetFromJsonAsync<JsonElement>("/api/dashboard/coinjoins");
+        Assert.Equal(JsonValueKind.Array, records.ValueKind);
+        Assert.Empty(records.EnumerateArray());
+    }
+
+    [Fact]
     public async Task Transaction_detail_returns_received_utxo_from_seeded_backend()
     {
         // Drives the receive pipeline end-to-end: stage a UTXO on the fake
