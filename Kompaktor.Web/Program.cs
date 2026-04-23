@@ -174,8 +174,11 @@ app.MapKompaktorEndpoints();
 app.MapGet("/api/dashboard/summary", async (WalletDbContext db) =>
 {
     var wallets = await db.Wallets.CountAsync();
-    var utxos = await db.Utxos.Where(u => u.SpentByTxId == null).CountAsync();
-    var totalSats = await db.Utxos.Where(u => u.SpentByTxId == null).SumAsync(u => u.AmountSat);
+    var unspent = db.Utxos.Where(u => u.SpentByTxId == null);
+    var utxos = await unspent.CountAsync();
+    var totalSats = await unspent.SumAsync(u => u.AmountSat);
+    var confirmedSats = await unspent.Where(u => u.ConfirmedHeight != null).SumAsync(u => u.AmountSat);
+    var unconfirmedSats = await unspent.Where(u => u.ConfirmedHeight == null).SumAsync(u => u.AmountSat);
     var coinjoins = await db.CoinJoinRecords.CountAsync();
 
     return Results.Ok(new
@@ -184,6 +187,10 @@ app.MapGet("/api/dashboard/summary", async (WalletDbContext db) =>
         unspentUtxoCount = utxos,
         totalBalanceSats = totalSats,
         totalBalanceBtc = totalSats / 100_000_000.0,
+        confirmedBalanceSats = confirmedSats,
+        confirmedBalanceBtc = confirmedSats / 100_000_000.0,
+        unconfirmedBalanceSats = unconfirmedSats,
+        unconfirmedBalanceBtc = unconfirmedSats / 100_000_000.0,
         completedCoinjoins = coinjoins
     });
 }).WithTags("Dashboard");

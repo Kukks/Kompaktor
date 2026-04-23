@@ -717,6 +717,7 @@
                     <div class="value" id="balance">-</div>
                     <div class="unit">BTC</div>
                     <div class="unit" id="balanceFiat" style="margin-top:4px;opacity:0.7;"></div>
+                    <div class="unit" id="balanceUnconfirmed" style="margin-top:4px;color:var(--yellow);display:none"></div>
                 </div>
                 <div class="card">
                     <div class="label">UTXOs</div>
@@ -1457,6 +1458,15 @@
                 document.getElementById('balance').textContent = data.totalBalanceBtc.toFixed(8);
                 document.getElementById('utxoCount').textContent = data.unspentUtxoCount;
                 document.getElementById('coinjoinCount').textContent = data.completedCoinjoins;
+                const unconfRow = document.getElementById('balanceUnconfirmed');
+                if (unconfRow) {
+                    if (data.unconfirmedBalanceSats > 0) {
+                        unconfRow.textContent = `+ ${data.unconfirmedBalanceBtc.toFixed(8)} pending`;
+                        unconfRow.style.display = '';
+                    } else {
+                        unconfRow.style.display = 'none';
+                    }
+                }
                 renderFiatBalance();
             }
         }

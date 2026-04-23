@@ -253,4 +253,18 @@ public class WalletLifecycleE2ETests
             "/api/dashboard/validate-address?address=not-an-address");
         Assert.False(resp.GetProperty("valid").GetBoolean());
     }
+
+    [Fact]
+    public async Task Summary_exposes_confirmed_and_unconfirmed_balance()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        // Empty wallet: all balance fields should be zero but present.
+        var resp = await client.GetFromJsonAsync<JsonElement>("/api/dashboard/summary");
+        foreach (var field in new[] { "totalBalanceSats", "confirmedBalanceSats", "unconfirmedBalanceSats" })
+        {
+            Assert.Equal(0L, resp.GetProperty(field).GetInt64());
+        }
+    }
 }
