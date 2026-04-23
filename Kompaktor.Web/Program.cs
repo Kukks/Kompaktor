@@ -1773,6 +1773,29 @@ app.MapDelete("/api/payments/{paymentId}", async (string paymentId, WalletDbCont
     return cancelled ? Results.Ok(new { paymentId, status = "cancelled" }) : Results.NotFound();
 }).WithTags("Payments");
 
+app.MapPost("/api/payments/{paymentId}/retry", async (string paymentId, WalletDbContext db, DashboardEventBus bus) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.BadRequest("No wallet found");
+
+    var entity = await db.PendingPayments.FindAsync(paymentId);
+    if (entity is null || entity.WalletId != wallet.Id) return Results.NotFound();
+
+    if (entity.Status != "Failed")
+        return Results.BadRequest($"Only Failed payments can be retried (current status: {entity.Status})");
+
+    entity.Status = "Pending";
+    entity.RetryCount = 0;
+    await db.SaveChangesAsync();
+
+    bus.Publish("payments");
+
+    var webhookSvc = new PaymentWebhookService(db, wallet.Id);
+    _ = webhookSvc.DeliverAsync(entity, "ManuallyRetried");
+
+    return Results.Ok(new { paymentId, status = "pending", retryCount = 0 });
+}).WithTags("Payments");
+
 app.MapGet("/api/payments/{paymentId}/qr", async (string paymentId, WalletDbContext db) =>
 {
     var entity = await db.PendingPayments.FindAsync(paymentId);

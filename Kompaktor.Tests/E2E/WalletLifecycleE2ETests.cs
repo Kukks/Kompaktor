@@ -3465,4 +3465,81 @@ public class WalletLifecycleE2ETests
             await serverTask;
         }
     }
+
+    [Fact]
+    public async Task Failed_payment_can_be_manually_retried()
+    {
+        // Payments that hit the retry cap are flipped to Failed and stay there.
+        // A manual retry must reset RetryCount to 0 and move Status back to
+        // Pending so the mixing engine picks it up again.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+        var addr = (await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address"))
+            .GetProperty("address").GetString()!;
+
+        var created = await (await client.PostAsJsonAsync("/api/payments/send", new
+        {
+            Destination = addr,
+            AmountSat = 25_000L
+        })).Content.ReadFromJsonAsync<JsonElement>();
+        var paymentId = created.GetProperty("id").GetString()!;
+
+        // Simulate exhausted retries by flipping the entity to Failed with the
+        // retry counter maxed out — this is the exact terminal state produced
+        // by BreakCommitment once MaxRetries is reached.
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<WalletDbContext>();
+            var entity = await db.PendingPayments.FindAsync(paymentId);
+            Assert.NotNull(entity);
+            entity!.Status = "Failed";
+            entity.RetryCount = entity.MaxRetries;
+            await db.SaveChangesAsync();
+        }
+
+        var retry = await client.PostAsync($"/api/payments/{paymentId}/retry", content: null);
+        Assert.Equal(HttpStatusCode.OK, retry.StatusCode);
+        var retryBody = await retry.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("pending", retryBody.GetProperty("status").GetString());
+        Assert.Equal(0, retryBody.GetProperty("retryCount").GetInt32());
+
+        var status = await client.GetFromJsonAsync<JsonElement>($"/api/payments/{paymentId}/status");
+        Assert.Equal("Pending", status.GetProperty("status").GetString());
+        Assert.Equal(0, status.GetProperty("retryCount").GetInt32());
+    }
+
+    [Fact]
+    public async Task Retry_rejects_non_failed_payment()
+    {
+        // The retry endpoint must refuse to interfere with active payments —
+        // resetting a Pending/Reserved/Committed payment would race with the
+        // mixing engine's own state machine.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+        var addr = (await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address"))
+            .GetProperty("address").GetString()!;
+
+        var created = await (await client.PostAsJsonAsync("/api/payments/send", new
+        {
+            Destination = addr,
+            AmountSat = 18_000L
+        })).Content.ReadFromJsonAsync<JsonElement>();
+        var paymentId = created.GetProperty("id").GetString()!;
+
+        var retry = await client.PostAsync($"/api/payments/{paymentId}/retry", content: null);
+        Assert.Equal(HttpStatusCode.BadRequest, retry.StatusCode);
+    }
+
+    [Fact]
+    public async Task Retry_unknown_payment_returns_not_found()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.PostAsync("/api/payments/nonexistent-id/retry", content: null);
+        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+    }
 }

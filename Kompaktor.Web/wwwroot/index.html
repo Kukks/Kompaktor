@@ -2802,6 +2802,7 @@
                 const statusColor = p.status === 'Completed' ? 'var(--green)' : p.status === 'Failed' ? 'var(--red)' : p.status === 'Reserved' || p.status === 'Committed' ? 'var(--yellow)' : 'var(--text-muted)';
                 const typeLabel = p.isInteractive ? (p.isUrgent ? 'Interactive (Urgent)' : 'Interactive') : 'Standard';
                 const canCancel = p.status === 'Pending' || p.status === 'Reserved';
+                const canRetry = p.status === 'Failed';
                 let expiryHtml = '';
                 if (p.expiresAt && (p.status === 'Pending' || p.status === 'Reserved')) {
                     const expires = new Date(p.expiresAt);
@@ -2827,7 +2828,7 @@
                     <td>${p.label ? esc(p.label) : '<span style="color:var(--text-muted)">-</span>'}</td>
                     <td>${p.completedTxId ? txLink(p.completedTxId, truncate(p.completedTxId, 10)) : '-'}</td>
                     <td style="font-size:12px">${formatDate(p.createdAt)}</td>
-                    <td>${canCancel ? `<button class="freeze-btn" onclick="cancelPayment('${esc(p.id)}')" title="Cancel this payment">Cancel</button>` : ''}</td>
+                    <td>${canCancel ? `<button class="freeze-btn" onclick="cancelPayment('${esc(p.id)}')" title="Cancel this payment">Cancel</button>` : canRetry ? `<button class="freeze-btn" onclick="retryPayment('${esc(p.id)}')" title="Retry this failed payment">Retry</button>` : ''}</td>
                 </tr>`;
             }).join('');
         }
@@ -3023,6 +3024,21 @@
                     await loadPayments();
                 } else {
                     showToast('Failed to cancel payment', 'warning');
+                }
+            } catch (err) {
+                showToast('Error: ' + err.message, 'warning');
+            }
+        }
+
+        async function retryPayment(paymentId) {
+            try {
+                const res = await fetch(`/api/payments/${encodeURIComponent(paymentId)}/retry`, { method: 'POST' });
+                if (res.ok) {
+                    showToast('Payment retry queued', 'info');
+                    await loadPayments();
+                } else {
+                    const msg = await res.text().catch(() => 'Retry failed');
+                    showToast(msg || 'Retry failed', 'warning');
                 }
             } catch (err) {
                 showToast('Error: ' + err.message, 'warning');
