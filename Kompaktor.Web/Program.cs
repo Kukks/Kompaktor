@@ -608,8 +608,11 @@ app.MapPost("/api/coin-control/batch-freeze", async (WalletDbContext db, HttpCon
     var body = await ctx.Request.ReadFromJsonAsync<BatchFreezeRequest>();
     if (body is null) return Results.BadRequest("Invalid request");
 
+    // Materialize to List<int> — EF Core's expression interpreter on .NET 10
+    // chokes on Contains() against int[] (it resolves to a span-based overload).
+    var ids = body.UtxoIds.ToList();
     var utxos = await db.Utxos
-        .Where(u => body.UtxoIds.Contains(u.Id))
+        .Where(u => ids.Contains(u.Id))
         .ToListAsync();
 
     foreach (var utxo in utxos)

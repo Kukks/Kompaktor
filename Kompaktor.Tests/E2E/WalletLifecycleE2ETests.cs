@@ -685,6 +685,172 @@ public class WalletLifecycleE2ETests
         Assert.Empty(detail.GetProperty("spentInputs").EnumerateArray());
     }
 
+    [Fact]
+    public async Task Coin_control_freeze_and_unfreeze_round_trip()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var utxoId = await SeedUtxoAsync(factory, client, amountSat: 42_000, tag: 0x01);
+
+        var freeze = await client.PostAsync($"/api/coin-control/freeze/{utxoId}", null);
+        Assert.Equal(HttpStatusCode.OK, freeze.StatusCode);
+        var fBody = await freeze.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(fBody.GetProperty("frozen").GetBoolean());
+
+        var detailFrozen = await client.GetFromJsonAsync<JsonElement>($"/api/coin-control/utxo/{utxoId}");
+        Assert.True(detailFrozen.GetProperty("isFrozen").GetBoolean());
+
+        var unfreeze = await client.PostAsync($"/api/coin-control/unfreeze/{utxoId}", null);
+        Assert.Equal(HttpStatusCode.OK, unfreeze.StatusCode);
+        Assert.False((await unfreeze.Content.ReadFromJsonAsync<JsonElement>())
+            .GetProperty("frozen").GetBoolean());
+
+        var detailThawed = await client.GetFromJsonAsync<JsonElement>($"/api/coin-control/utxo/{utxoId}");
+        Assert.False(detailThawed.GetProperty("isFrozen").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Coin_control_freeze_unknown_utxo_returns_404()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var freeze = await client.PostAsync("/api/coin-control/freeze/999999", null);
+        Assert.Equal(HttpStatusCode.NotFound, freeze.StatusCode);
+
+        var unfreeze = await client.PostAsync("/api/coin-control/unfreeze/999999", null);
+        Assert.Equal(HttpStatusCode.NotFound, unfreeze.StatusCode);
+    }
+
+    [Fact]
+    public async Task Coin_control_label_add_list_and_remove()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var utxoId = await SeedUtxoAsync(factory, client, amountSat: 13_370, tag: 0x02);
+
+        var add = await client.PostAsJsonAsync(
+            $"/api/coin-control/label/{utxoId}",
+            new { Text = "from-friend" });
+        Assert.Equal(HttpStatusCode.OK, add.StatusCode);
+        Assert.Equal("added", (await add.Content.ReadFromJsonAsync<JsonElement>())
+            .GetProperty("status").GetString());
+
+        // Adding the same label twice is a no-op — the API reports already_exists
+        // rather than inflating the label list with duplicates.
+        var dup = await client.PostAsJsonAsync(
+            $"/api/coin-control/label/{utxoId}",
+            new { Text = "from-friend" });
+        Assert.Equal("already_exists", (await dup.Content.ReadFromJsonAsync<JsonElement>())
+            .GetProperty("status").GetString());
+
+        // Label should appear in the dashboard utxos feed. Dashboard returns
+        // labels as plain strings (flattened for the list UI).
+        var utxos = await client.GetFromJsonAsync<JsonElement>("/api/dashboard/utxos");
+        var entry = utxos.EnumerateArray().First(u => u.GetProperty("id").GetInt32() == utxoId);
+        var labels = entry.GetProperty("labels").EnumerateArray()
+            .Select(l => l.GetString()).ToArray();
+        Assert.Contains("from-friend", labels);
+
+        // And in the UTXO detail view, with a labelId we can delete by.
+        var detail = await client.GetFromJsonAsync<JsonElement>($"/api/coin-control/utxo/{utxoId}");
+        var labelEntries = detail.GetProperty("labels").EnumerateArray().ToArray();
+        Assert.Single(labelEntries);
+        var labelId = labelEntries[0].GetProperty("id").GetInt32();
+
+        var del = await client.DeleteAsync($"/api/coin-control/label/{utxoId}/{labelId}");
+        Assert.Equal(HttpStatusCode.OK, del.StatusCode);
+
+        var afterDelete = await client.GetFromJsonAsync<JsonElement>($"/api/coin-control/utxo/{utxoId}");
+        Assert.Empty(afterDelete.GetProperty("labels").EnumerateArray());
+    }
+
+    [Fact]
+    public async Task Coin_control_label_empty_text_rejected()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.PostAsJsonAsync(
+            "/api/coin-control/label/1", new { Text = "  " });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Coin_control_batch_freeze_updates_multiple_utxos()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        // Seed two independent UTXOs by using different tags (and thus different fake txids).
+        var u1 = await SeedUtxoAsync(factory, client, amountSat: 10_000, tag: 0x10);
+        var u2 = await SeedUtxoAsync(factory, client, amountSat: 20_000, tag: 0x11);
+
+        var batch = await client.PostAsJsonAsync("/api/coin-control/batch-freeze", new
+        {
+            UtxoIds = new[] { u1, u2 },
+            Freeze = true
+        });
+        Assert.Equal(HttpStatusCode.OK, batch.StatusCode);
+        var body = await batch.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(2, body.GetProperty("updated").GetInt32());
+        Assert.True(body.GetProperty("frozen").GetBoolean());
+
+        var utxos = await client.GetFromJsonAsync<JsonElement>("/api/dashboard/utxos");
+        var entries = utxos.EnumerateArray()
+            .Where(u => u.GetProperty("id").GetInt32() == u1 || u.GetProperty("id").GetInt32() == u2)
+            .ToArray();
+        Assert.Equal(2, entries.Length);
+        Assert.All(entries, e => Assert.True(e.GetProperty("isFrozen").GetBoolean()));
+    }
+
+    /// <summary>
+    /// Stages a single confirmed UTXO on the fake backend against a fresh wallet
+    /// receive address. Returns the DB-assigned utxoId once the wallet has
+    /// observed it. `tag` must be unique per call within a test — it determines
+    /// the fake txid so that two seeded UTXOs don't collide.
+    /// </summary>
+    private static async Task<int> SeedUtxoAsync(
+        KompaktorWebFactory factory, HttpClient client, long amountSat, byte tag)
+    {
+        var receive = await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address");
+        var scriptHex = receive.GetProperty("scriptHex").GetString()!;
+        var script = new Script(Encoders.Hex.DecodeData(scriptHex));
+
+        await WaitForMonitoringAsync(client);
+
+        var bytes = new byte[32];
+        for (var i = 0; i < 32; i++) bytes[i] = (byte)(tag ^ i);
+        var txId = new uint256(bytes);
+        var outPoint = new OutPoint(txId, 0);
+        var txOut = new TxOut(Money.Satoshis(amountSat), script);
+
+        factory.Blockchain.StageUtxo(new UtxoInfo(outPoint, txOut, Confirmations: 1, IsCoinBase: false));
+        factory.Blockchain.RaiseAddressNotification(script, txId, factory.Blockchain.BlockHeight);
+        await client.PostAsync("/api/wallet/resync", null);
+
+        // Wait for the UTXO to show up in the dashboard feed, then return its id.
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(15);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            var utxos = await client.GetFromJsonAsync<JsonElement>("/api/dashboard/utxos");
+            foreach (var u in utxos.EnumerateArray())
+            {
+                if (u.GetProperty("txId").GetString() == txId.ToString())
+                    return u.GetProperty("id").GetInt32();
+            }
+            await Task.Delay(250);
+        }
+        throw new TimeoutException($"Seeded UTXO {txId} never appeared in dashboard feed.");
+    }
+
     /// <summary>
     /// Polls /api/wallet/sync-status until the background service reports
     /// monitoring=true, or throws after the timeout. Startup races the
