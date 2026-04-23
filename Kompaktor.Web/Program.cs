@@ -348,18 +348,41 @@ app.MapGet("/api/dashboard/coinjoins", async (WalletDbContext db) =>
     var records = (await db.CoinJoinRecords.ToListAsync())
         .OrderByDescending(r => r.CreatedAt)
         .Take(50)
-        .Select(r => new
+        .Select(r =>
         {
-            id = r.Id,
-            roundId = r.RoundId,
-            transactionId = r.TransactionId,
-            status = r.Status,
-            ourInputCount = r.OurInputCount,
-            totalInputCount = r.TotalInputCount,
-            ourOutputCount = r.OurOutputCount,
-            totalOutputCount = r.TotalOutputCount,
-            participantCount = r.ParticipantCount,
-            createdAt = r.CreatedAt
+            // Anonymity-set summary: group outputs by value, count the
+            // largest cluster. maxAnonSet is a useful upper bound for
+            // "how well could any participant's output hide in this round".
+            // Exact tolerance isn't applied here — on-chain values are
+            // already rounded to the coordinator's bucketing.
+            int maxAnonSet = 0;
+            int distinctOutputValues = 0;
+            if (r.OutputValuesSat.Length > 0)
+            {
+                var grouped = r.OutputValuesSat
+                    .GroupBy(v => v)
+                    .Select(g => g.Count())
+                    .ToArray();
+                maxAnonSet = grouped.Max();
+                distinctOutputValues = grouped.Length;
+            }
+
+            return new
+            {
+                id = r.Id,
+                roundId = r.RoundId,
+                transactionId = r.TransactionId,
+                status = r.Status,
+                ourInputCount = r.OurInputCount,
+                totalInputCount = r.TotalInputCount,
+                ourOutputCount = r.OurOutputCount,
+                totalOutputCount = r.TotalOutputCount,
+                participantCount = r.ParticipantCount,
+                maxAnonSet,
+                distinctOutputValues,
+                outputValuesSat = r.OutputValuesSat,
+                createdAt = r.CreatedAt
+            };
         })
         .ToList();
 

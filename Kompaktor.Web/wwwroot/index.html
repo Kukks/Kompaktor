@@ -1170,11 +1170,12 @@
                             <th>Our In/Out</th>
                             <th>Total In/Out</th>
                             <th>Participants</th>
+                            <th title="Largest cluster of equal-value outputs in the round (higher = better anonymity set)">Anon Set</th>
                             <th>Date</th>
                         </tr>
                     </thead>
                     <tbody id="coinjoinsBody">
-                        <tr><td colspan="7" class="empty">Loading...</td></tr>
+                        <tr><td colspan="8" class="empty">Loading...</td></tr>
                     </tbody>
                 </table>
             </section>
@@ -1780,18 +1781,29 @@
             const cjs = await fetchJson('/api/dashboard/coinjoins');
             const body = document.getElementById('coinjoinsBody');
             if (!cjs || cjs.length === 0) {
-                body.innerHTML = '<tr><td colspan="7" class="empty">No coinjoin history</td></tr>';
+                body.innerHTML = '<tr><td colspan="8" class="empty">No coinjoin history</td></tr>';
                 return;
             }
-            body.innerHTML = cjs.map(c => `<tr style="cursor:pointer" onclick="loadFlows(${c.id})">
+            body.innerHTML = cjs.map(c => {
+                // Color-grade the anon set: 1-4 = red, 5-9 = yellow, 10+ = green.
+                // Matches how Wasabi/Samourai roughly categorise round quality.
+                const anon = c.maxAnonSet ?? 0;
+                const color = anon >= 10 ? 'var(--green)' : anon >= 5 ? 'var(--yellow)' : anon > 0 ? 'var(--red)' : 'var(--text-muted)';
+                const distinct = c.distinctOutputValues ?? 0;
+                const anonTitle = anon > 0
+                    ? `Largest cluster: ${anon} equal-valued outputs\n${distinct} distinct output value${distinct === 1 ? '' : 's'}`
+                    : 'No output distribution recorded';
+                return `<tr style="cursor:pointer" onclick="loadFlows(${c.id})">
                 <td class="truncate" title="${c.roundId}">${truncate(c.roundId, 12)}</td>
                 <td class="truncate">${txLink(c.transactionId, truncate(c.transactionId, 12))}</td>
                 <td><span class="status-badge ${statusClass(c.status)}">${esc(c.status)}</span></td>
                 <td>${c.ourInputCount}/${c.ourOutputCount}</td>
                 <td>${c.totalInputCount}/${c.totalOutputCount}</td>
                 <td>${c.participantCount}</td>
+                <td style="color:${color}" title="${esc(anonTitle)}">${anon > 0 ? anon : '-'}</td>
                 <td>${formatDate(c.createdAt)}</td>
-            </tr>`).join('');
+            </tr>`;
+            }).join('');
         }
 
         async function loadTransactions() {

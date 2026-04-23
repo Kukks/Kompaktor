@@ -3761,6 +3761,79 @@ public class WalletLifecycleE2ETests
     }
 
     [Fact]
+    public async Task Coinjoin_history_surfaces_anonymity_set_metrics()
+    {
+        // The UI builds a privacy-quality view of each round out of
+        // maxAnonSet + distinctOutputValues + the raw outputValuesSat
+        // array. Seed a record with a crafted distribution so the derived
+        // metrics are unambiguous.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<WalletDbContext>();
+            db.CoinJoinRecords.Add(new CoinJoinRecordEntity
+            {
+                RoundId = "test-round-1",
+                Status = "Completed",
+                OurInputCount = 2,
+                TotalInputCount = 10,
+                OurOutputCount = 2,
+                TotalOutputCount = 12,
+                ParticipantCount = 5,
+                // 6 outputs at 100k, 3 at 50k, 2 at 25k, 1 at 13k — max
+                // cluster is 6, 4 distinct values.
+                OutputValuesSat =
+                [
+                    100_000L, 100_000L, 100_000L, 100_000L, 100_000L, 100_000L,
+                    50_000L, 50_000L, 50_000L,
+                    25_000L, 25_000L,
+                    13_000L
+                ]
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var resp = await client.GetFromJsonAsync<JsonElement>("/api/dashboard/coinjoins");
+        Assert.Single(resp.EnumerateArray());
+        var record = resp[0];
+        Assert.Equal(6, record.GetProperty("maxAnonSet").GetInt32());
+        Assert.Equal(4, record.GetProperty("distinctOutputValues").GetInt32());
+        Assert.Equal(12, record.GetProperty("outputValuesSat").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task Coinjoin_history_handles_missing_output_values()
+    {
+        // Legacy records predating OutputValuesSat must still serialize with
+        // sane defaults — otherwise opening the dashboard crashes for
+        // anyone who mixed before the feature landed.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<WalletDbContext>();
+            db.CoinJoinRecords.Add(new CoinJoinRecordEntity
+            {
+                RoundId = "legacy-round",
+                Status = "Completed",
+                OutputValuesSat = []
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var resp = await client.GetFromJsonAsync<JsonElement>("/api/dashboard/coinjoins");
+        var record = resp[0];
+        Assert.Equal(0, record.GetProperty("maxAnonSet").GetInt32());
+        Assert.Equal(0, record.GetProperty("distinctOutputValues").GetInt32());
+        Assert.Equal(0, record.GetProperty("outputValuesSat").GetArrayLength());
+    }
+
+    [Fact]
     public async Task Mixing_status_exposes_round_timestamps_starting_null()
     {
         // lastRoundCompletedAt / lastSuccessfulRoundAt are the signals the UI
