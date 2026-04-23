@@ -673,8 +673,15 @@ app.MapGet("/api/wallet/receive-address", async (WalletDbContext db) =>
     });
 }).WithTags("Wallet");
 
-// QR code for receive address (BIP-21 URI)
-app.MapGet("/api/wallet/receive-qr", async (WalletDbContext db) =>
+// QR code for receive address (BIP-21 URI).
+// Optional: ?amountSat= or ?amount= (BTC) + ?label= + ?message= fill in the
+// BIP-21 payment request so the payer's wallet pre-fills the send form.
+app.MapGet("/api/wallet/receive-qr", async (
+    WalletDbContext db,
+    long? amountSat = null,
+    decimal? amount = null,
+    string? label = null,
+    string? message = null) =>
 {
     var wallet = await db.Wallets.FirstOrDefaultAsync();
     if (wallet is null) return Results.BadRequest("No wallet found");
@@ -691,7 +698,7 @@ app.MapGet("/api/wallet/receive-qr", async (WalletDbContext db) =>
 
     var script = new Script(address.ScriptPubKey);
     var btcAddress = script.GetDestinationAddress(network);
-    var bip21 = $"bitcoin:{btcAddress}";
+    var bip21 = BuildBip21Uri(btcAddress!.ToString(), amountSat, amount, label, message);
 
     using var qrGenerator = new QRCodeGenerator();
     var qrData = qrGenerator.CreateQrCode(bip21, QRCodeGenerator.ECCLevel.M);
@@ -700,6 +707,52 @@ app.MapGet("/api/wallet/receive-qr", async (WalletDbContext db) =>
 
     return Results.Content(svg, "image/svg+xml");
 }).WithTags("Wallet");
+
+// Returns just the BIP-21 URI for a receive address — handy for copy-to-clipboard
+// and for embedding in Lightning-style payment flows that want the raw string.
+app.MapGet("/api/wallet/receive-uri", async (
+    WalletDbContext db,
+    long? amountSat = null,
+    decimal? amount = null,
+    string? label = null,
+    string? message = null) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.BadRequest("No wallet found");
+
+    var address = await db.Addresses
+        .Include(a => a.Account)
+        .Where(a => a.Account.WalletId == wallet.Id)
+        .Where(a => !a.IsUsed && !a.IsExposed && !a.IsChange)
+        .OrderByDescending(a => a.Account.Purpose)
+        .ThenBy(a => a.Id)
+        .FirstOrDefaultAsync();
+
+    if (address is null) return Results.BadRequest("No fresh addresses available");
+
+    var script = new Script(address.ScriptPubKey);
+    var btcAddress = script.GetDestinationAddress(network);
+    var uri = BuildBip21Uri(btcAddress!.ToString(), amountSat, amount, label, message);
+
+    return Results.Ok(new { address = btcAddress.ToString(), uri });
+}).WithTags("Wallet");
+
+static string BuildBip21Uri(string address, long? amountSat, decimal? amount, string? label, string? message)
+{
+    var parts = new List<string>();
+    // amountSat wins if both are given — avoids ambiguity from mixing units.
+    if (amountSat.HasValue && amountSat.Value > 0)
+        parts.Add($"amount={amountSat.Value / 100_000_000m:0.########}");
+    else if (amount.HasValue && amount.Value > 0)
+        parts.Add($"amount={amount.Value:0.########}");
+    if (!string.IsNullOrWhiteSpace(label))
+        parts.Add($"label={Uri.EscapeDataString(label)}");
+    if (!string.IsNullOrWhiteSpace(message))
+        parts.Add($"message={Uri.EscapeDataString(message)}");
+
+    var query = parts.Count > 0 ? "?" + string.Join("&", parts) : "";
+    return $"bitcoin:{address}{query}";
+}
 
 // Export account-level extended public keys for watch-only / hardware-wallet pairing.
 // No passphrase required — xpubs are not secret, but they expose all wallet addresses.

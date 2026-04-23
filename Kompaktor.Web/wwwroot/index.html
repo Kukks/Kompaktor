@@ -872,6 +872,14 @@
                             <button class="copy-btn" onclick="copyBip21()" title="Copy as bitcoin: payment URI" style="background:var(--bg)">URI</button>
                         </div>
                         <div class="addr-meta" id="receiveAddrMeta"></div>
+                        <details style="margin-top:8px">
+                            <summary style="cursor:pointer;font-size:12px;color:var(--text-muted)">Request a specific amount</summary>
+                            <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
+                                <input type="number" id="reqAmountSat" placeholder="Amount (sats)" style="flex:1;min-width:120px" oninput="refreshReceiveQr()">
+                                <input type="text" id="reqLabel" placeholder="Label (optional)" style="flex:1;min-width:120px" oninput="refreshReceiveQr()">
+                            </div>
+                            <p style="color:var(--text-muted);font-size:11px;margin-top:4px">The QR code + URI below will include these values so the payer's wallet pre-fills them.</p>
+                        </details>
                     </div>
                 </div>
             </div>
@@ -1816,6 +1824,16 @@
             }
         }
 
+        let _receiveQrTimer = null;
+        function buildBip21Query() {
+            const amt = document.getElementById('reqAmountSat')?.value?.trim();
+            const lbl = document.getElementById('reqLabel')?.value?.trim();
+            const parts = [];
+            if (amt && Number(amt) > 0) parts.push('amountSat=' + Number(amt));
+            if (lbl) parts.push('label=' + encodeURIComponent(lbl));
+            return parts.length ? '?' + parts.join('&') : '';
+        }
+
         async function loadReceiveAddress() {
             const data = await fetchJson('/api/wallet/receive-address');
             const addrEl = document.getElementById('receiveAddr');
@@ -1824,20 +1842,29 @@
             if (data && data.address) {
                 addrEl.textContent = data.address;
                 metaEl.textContent = `${data.type} \u00B7 ${data.keyPath}`;
-                // Load QR code
-                try {
-                    const res = await fetch('/api/wallet/receive-qr');
-                    if (res.ok) {
-                        qrEl.innerHTML = await res.text();
-                        qrEl.querySelector('svg').style.width = '100%';
-                        qrEl.querySelector('svg').style.height = '100%';
-                    }
-                } catch { /* QR optional */ }
+                await refreshReceiveQr();
             } else {
                 addrEl.textContent = 'No addresses available';
                 metaEl.textContent = '';
                 qrEl.innerHTML = '<span style="color:var(--text-muted);font-size:11px">No address</span>';
             }
+        }
+
+        async function refreshReceiveQr() {
+            // Debounce: a typing user triggers several oninput events per second.
+            clearTimeout(_receiveQrTimer);
+            _receiveQrTimer = setTimeout(async () => {
+                const qrEl = document.getElementById('receiveQr');
+                if (!qrEl) return;
+                try {
+                    const res = await fetch('/api/wallet/receive-qr' + buildBip21Query());
+                    if (res.ok) {
+                        qrEl.innerHTML = await res.text();
+                        const svg = qrEl.querySelector('svg');
+                        if (svg) { svg.style.width = '100%'; svg.style.height = '100%'; }
+                    }
+                } catch { /* QR is optional */ }
+            }, 250);
         }
 
         function copyAddress() {
@@ -1850,12 +1877,19 @@
             }
         }
 
-        function copyBip21() {
+        async function copyBip21() {
             const addr = document.getElementById('receiveAddr').textContent;
-            if (addr && addr !== 'Loading...' && addr !== 'No addresses available') {
-                navigator.clipboard.writeText('bitcoin:' + addr);
-                showToast('BIP-21 URI copied to clipboard', 'success');
-            }
+            if (!addr || addr === 'Loading...' || addr === 'No addresses available') return;
+            try {
+                const res = await fetchJson('/api/wallet/receive-uri' + buildBip21Query());
+                if (res && res.uri) {
+                    navigator.clipboard.writeText(res.uri);
+                    showToast('BIP-21 URI copied to clipboard', 'success');
+                    return;
+                }
+            } catch { /* fall through */ }
+            navigator.clipboard.writeText('bitcoin:' + addr);
+            showToast('BIP-21 URI copied to clipboard', 'success');
         }
 
         // Address book

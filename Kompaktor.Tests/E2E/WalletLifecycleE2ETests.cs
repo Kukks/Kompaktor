@@ -427,6 +427,33 @@ public class WalletLifecycleE2ETests
     }
 
     [Fact]
+    public async Task Receive_uri_builds_bip21_with_amount_and_label()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        // Bare: just the address, no params.
+        var bare = await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-uri");
+        var bareUri = bare.GetProperty("uri").GetString()!;
+        var addr = bare.GetProperty("address").GetString()!;
+        Assert.Equal($"bitcoin:{addr}", bareUri);
+
+        // amountSat + label — encoded, in BTC, label URL-escaped.
+        var full = await client.GetFromJsonAsync<JsonElement>(
+            "/api/wallet/receive-uri?amountSat=12345678&label=Alice%27s%20Coffee");
+        var uri = full.GetProperty("uri").GetString()!;
+        Assert.Contains("amount=0.12345678", uri);
+        Assert.Contains("label=Alice%27s%20Coffee", uri);
+
+        // amountSat takes precedence over amount when both supplied.
+        var priority = await client.GetFromJsonAsync<JsonElement>(
+            "/api/wallet/receive-uri?amountSat=50000000&amount=999");
+        Assert.Contains("amount=0.5", priority.GetProperty("uri").GetString()!);
+        Assert.DoesNotContain("999", priority.GetProperty("uri").GetString()!);
+    }
+
+    [Fact]
     public async Task Address_book_full_lifecycle_add_list_delete()
     {
         await using var factory = new KompaktorWebFactory();
