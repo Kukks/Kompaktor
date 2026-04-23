@@ -1328,8 +1328,12 @@ app.MapGet("/api/dashboard/privacy-history", async (WalletDbContext db, HttpCont
     var days = int.TryParse(daysStr, out var d) && d is > 0 and <= 365 ? d : 30;
     var since = DateTimeOffset.UtcNow.AddDays(-days);
 
-    var snapshots = await db.PrivacySnapshots
-        .Where(s => s.WalletId == wallet.Id && s.Timestamp >= since)
+    // Same SQLite DateTimeOffset trap as /webhooks/{id}/deliveries — filter
+    // by wallet at the DB, then timestamp-filter + order + project in memory.
+    var snapshots = (await db.PrivacySnapshots
+            .Where(s => s.WalletId == wallet.Id)
+            .ToListAsync())
+        .Where(s => s.Timestamp >= since)
         .OrderBy(s => s.Timestamp)
         .Select(s => new
         {
@@ -1343,7 +1347,7 @@ app.MapGet("/api/dashboard/privacy-history", async (WalletDbContext db, HttpCont
             unmixedUtxoCount = s.UnmixedUtxoCount,
             coinJoinRoundNumber = s.CoinJoinRoundNumber
         })
-        .ToListAsync();
+        .ToList();
 
     return Results.Ok(snapshots);
 }).WithTags("Dashboard");

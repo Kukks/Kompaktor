@@ -2297,6 +2297,70 @@ public class WalletLifecycleE2ETests
         Assert.Empty(resp.GetProperty("recommendations").EnumerateArray());
     }
 
+    [Fact]
+    public async Task Privacy_history_empty_wallet_returns_empty_array()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.GetFromJsonAsync<JsonElement>("/api/dashboard/privacy-history");
+        Assert.Equal(JsonValueKind.Array, resp.ValueKind);
+        Assert.Equal(0, resp.GetArrayLength());
+    }
+
+    [Fact]
+    public async Task Privacy_history_invalid_days_value_does_not_500()
+    {
+        // days outside [1, 365] or unparseable falls back to 30 silently.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        foreach (var q in new[] { "days=not-a-number", "days=0", "days=99999", "days=-5" })
+        {
+            var resp = await client.GetAsync($"/api/dashboard/privacy-history?{q}");
+            Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        }
+    }
+
+    [Fact]
+    public async Task Mixing_statistics_empty_wallet_returns_zeros()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.GetFromJsonAsync<JsonElement>("/api/mixing/statistics");
+        Assert.Equal(0, resp.GetProperty("totalRounds").GetInt32());
+        Assert.Equal(0, resp.GetProperty("completedRounds").GetInt32());
+        Assert.Equal(0, resp.GetProperty("failedRounds").GetInt32());
+        Assert.Equal(0.0, resp.GetProperty("successRate").GetDouble());
+        Assert.Equal(0, resp.GetProperty("totalOurInputs").GetInt32());
+        Assert.Equal(0, resp.GetProperty("totalOurOutputs").GetInt32());
+        Assert.Equal(0.0, resp.GetProperty("averageParticipantsPerRound").GetDouble());
+        // No rounds — first/last are null, not errors.
+        Assert.Equal(JsonValueKind.Null, resp.GetProperty("firstRound").ValueKind);
+        Assert.Equal(JsonValueKind.Null, resp.GetProperty("lastRound").ValueKind);
+    }
+
+    [Fact]
+    public async Task Credential_flows_unknown_round_returns_empty_array()
+    {
+        // Asking about a round the wallet never participated in should return
+        // an empty flow list, not 404 — the UI polls this routinely and we
+        // don't want to flip between "empty" and "error" based on round-id luck.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.GetAsync("/api/dashboard/credential-flows/999999");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var body = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(JsonValueKind.Array, body.ValueKind);
+        Assert.Equal(0, body.GetArrayLength());
+    }
+
     /// <summary>
     /// Stages a single confirmed UTXO on the fake backend against a fresh wallet
     /// receive address. Returns the DB-assigned utxoId once the wallet has
