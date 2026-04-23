@@ -3439,8 +3439,11 @@ public class WalletLifecycleE2ETests
             {
                 using var socket = await listener.AcceptTcpClientAsync();
                 var stream = socket.GetStream();
+                // SOCKS5 greeting is always 4 bytes (version, nmethods,
+                // methods[2]). Read exactly that many so the server waits
+                // for the whole client handshake before replying.
                 var greeting = new byte[4];
-                await stream.ReadAsync(greeting.AsMemory());
+                await stream.ReadExactlyAsync(greeting.AsMemory());
                 await stream.WriteAsync(new byte[] { 0x05, 0x00 });
                 await Task.Delay(100);
             }

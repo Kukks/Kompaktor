@@ -3270,11 +3270,24 @@ internal static class TorReachability
             // isolation path TorCircuitFactory will actually use.
             await stream.WriteAsync(new byte[] { 0x05, 0x02, 0x00, 0x02 }, ioCts.Token);
 
+            // Use ReadExactlyAsync: NetworkStream.ReadAsync is free to
+            // return <2 bytes on partial delivery. On virtualized loopback
+            // under CI load we've seen the response arrive in two TCP
+            // segments, tripping the "Endpoint did not speak SOCKS5"
+            // short-read fallback even against a real SOCKS5 peer.
             var resp = new byte[2];
-            var n = await stream.ReadAsync(resp.AsMemory(), ioCts.Token);
+            try
+            {
+                await stream.ReadExactlyAsync(resp.AsMemory(), ioCts.Token);
+            }
+            catch (EndOfStreamException)
+            {
+                sw.Stop();
+                return new TorProbeResult(false, sw.ElapsedMilliseconds, null, "Endpoint closed connection before sending SOCKS5 reply");
+            }
             sw.Stop();
 
-            if (n < 2 || resp[0] != 0x05)
+            if (resp[0] != 0x05)
                 return new TorProbeResult(false, sw.ElapsedMilliseconds, null, "Endpoint did not speak SOCKS5");
             if (resp[1] == 0xFF)
                 return new TorProbeResult(false, sw.ElapsedMilliseconds, null, "SOCKS5 server rejected offered auth methods");
