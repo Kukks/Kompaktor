@@ -4495,4 +4495,238 @@ public class WalletLifecycleE2ETests
             new { Address = address, Message = "hi", Signature = "not-base64!!!" });
         Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
     }
+
+    [Fact]
+    public async Task Manual_coin_control_plan_uses_only_selected_outpoints()
+    {
+        // Plan-send with selectedOutpoints must use EXACTLY those outpoints as
+        // inputs — the privacy-first scorer should be bypassed.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        await SeedUtxoAsync(factory, client, amountSat: 60_000, tag: 0xA1);
+        await SeedUtxoAsync(factory, client, amountSat: 70_000, tag: 0xA2);
+        await SeedUtxoAsync(factory, client, amountSat: 80_000, tag: 0xA3);
+
+        var utxos = await client.GetFromJsonAsync<JsonElement>("/api/dashboard/utxos");
+        var all = utxos.EnumerateArray().ToList();
+        Assert.Equal(3, all.Count);
+
+        // Pick the two SMALLEST — PrivacyFirst without override would have
+        // picked the largest or scored differently, so if the plan uses only
+        // these two we've proven the override took effect.
+        var sorted = all.OrderBy(u => u.GetProperty("amountSat").GetInt64()).ToList();
+        var chosen = sorted.Take(2).ToList();
+        var outpoints = chosen
+            .Select(u => $"{u.GetProperty("txId").GetString()}:{u.GetProperty("outputIndex").GetInt32()}")
+            .ToArray();
+        var chosenOutpointSet = outpoints.ToHashSet();
+
+        var receive = await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address");
+        var dest = receive.GetProperty("address").GetString()!;
+
+        var planResp = await client.PostAsJsonAsync("/api/dashboard/plan-send", new
+        {
+            Destination = dest,
+            AmountSat = 50_000,
+            FeeRateSatPerVb = 2,
+            Strategy = "PrivacyFirst",
+            SelectedOutpoints = outpoints
+        });
+        Assert.Equal(HttpStatusCode.OK, planResp.StatusCode);
+        var plan = await planResp.Content.ReadFromJsonAsync<JsonElement>();
+
+        Assert.Equal(2, plan.GetProperty("inputCount").GetInt32());
+        var planOutpoints = plan.GetProperty("selectedUtxos").EnumerateArray()
+            .Select(u => $"{u.GetProperty("txId").GetString()}:{u.GetProperty("outputIndex").GetInt32()}")
+            .ToHashSet();
+        Assert.Equal(chosenOutpointSet, planOutpoints);
+    }
+
+    [Fact]
+    public async Task Manual_coin_control_send_spends_exactly_those_utxos()
+    {
+        // End-to-end: send with selectedOutpoints, then verify (a) the
+        // broadcast transaction's inputs match the pinned outpoints and (b)
+        // only the pinned UTXOs are marked spent.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        await SeedUtxoAsync(factory, client, amountSat: 60_000, tag: 0xB1);
+        await SeedUtxoAsync(factory, client, amountSat: 90_000, tag: 0xB2);
+        await SeedUtxoAsync(factory, client, amountSat: 120_000, tag: 0xB3);
+
+        var utxos = await client.GetFromJsonAsync<JsonElement>("/api/dashboard/utxos");
+        var all = utxos.EnumerateArray().ToList();
+        Assert.Equal(3, all.Count);
+
+        // Pin the first + third (0xB1 + 0xB3 = 180k) — skipping the middle.
+        var pick = all.Where(u => u.GetProperty("amountSat").GetInt64() != 90_000).ToList();
+        Assert.Equal(2, pick.Count);
+        var outpoints = pick
+            .Select(u => $"{u.GetProperty("txId").GetString()}:{u.GetProperty("outputIndex").GetInt32()}")
+            .ToArray();
+        var pinnedOutpointSet = outpoints.ToHashSet();
+        var skippedId = all.First(u => u.GetProperty("amountSat").GetInt64() == 90_000)
+            .GetProperty("id").GetInt32();
+        var pinnedIds = pick.Select(u => u.GetProperty("id").GetInt32()).ToArray();
+
+        var receive = await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address");
+        var dest = receive.GetProperty("address").GetString()!;
+        var before = factory.Blockchain.BroadcastedTransactions.Count;
+
+        var sendResp = await client.PostAsJsonAsync("/api/dashboard/send", new
+        {
+            Destination = dest,
+            AmountSat = 100_000,
+            FeeRateSatPerVb = 2,
+            Strategy = "PrivacyFirst",
+            Passphrase = "pw",
+            SelectedOutpoints = outpoints
+        });
+        Assert.Equal(HttpStatusCode.OK, sendResp.StatusCode);
+
+        Assert.Equal(before + 1, factory.Blockchain.BroadcastedTransactions.Count);
+        var broadcast = factory.Blockchain.BroadcastedTransactions[^1];
+        var broadcastOutpoints = broadcast.Inputs
+            .Select(i => $"{i.PrevOut.Hash}:{(int)i.PrevOut.N}")
+            .ToHashSet();
+        Assert.Equal(pinnedOutpointSet, broadcastOutpoints);
+
+        // Pinned UTXOs are spent; the skipped middle one is not.
+        foreach (var id in pinnedIds)
+        {
+            var detail = await client.GetFromJsonAsync<JsonElement>($"/api/coin-control/utxo/{id}");
+            Assert.True(detail.GetProperty("isSpent").GetBoolean());
+        }
+        var skippedDetail = await client.GetFromJsonAsync<JsonElement>($"/api/coin-control/utxo/{skippedId}");
+        Assert.False(skippedDetail.GetProperty("isSpent").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Manual_coin_control_rejects_insufficient_selection()
+    {
+        // Selecting UTXOs whose combined value is less than the send amount
+        // should fail — the advisor doesn't silently top-up the shortfall.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        await SeedUtxoAsync(factory, client, amountSat: 30_000, tag: 0xC1);
+        await SeedUtxoAsync(factory, client, amountSat: 200_000, tag: 0xC2);
+
+        var utxos = await client.GetFromJsonAsync<JsonElement>("/api/dashboard/utxos");
+        var small = utxos.EnumerateArray()
+            .First(u => u.GetProperty("amountSat").GetInt64() == 30_000);
+        var outpoint = $"{small.GetProperty("txId").GetString()}:{small.GetProperty("outputIndex").GetInt32()}";
+
+        var receive = await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address");
+        var dest = receive.GetProperty("address").GetString()!;
+
+        // 100k > 30k and only 30k pinned
+        var resp = await client.PostAsJsonAsync("/api/dashboard/plan-send", new
+        {
+            Destination = dest,
+            AmountSat = 100_000,
+            FeeRateSatPerVb = 2,
+            Strategy = "PrivacyFirst",
+            SelectedOutpoints = new[] { outpoint }
+        });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        var body = await resp.Content.ReadAsStringAsync();
+        Assert.Contains("Insufficient", body, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Manual_coin_control_rejects_foreign_outpoint()
+    {
+        // An outpoint whose txid doesn't belong to the wallet must be a 400 —
+        // never silently skipped or used.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        await SeedUtxoAsync(factory, client, amountSat: 100_000, tag: 0xD1);
+
+        var receive = await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address");
+        var dest = receive.GetProperty("address").GetString()!;
+        var foreignTxId = new string('f', 64);
+
+        var resp = await client.PostAsJsonAsync("/api/dashboard/plan-send", new
+        {
+            Destination = dest,
+            AmountSat = 20_000,
+            FeeRateSatPerVb = 2,
+            Strategy = "PrivacyFirst",
+            SelectedOutpoints = new[] { $"{foreignTxId}:0" }
+        });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Manual_coin_control_rejects_malformed_outpoint()
+    {
+        // "txid-without-index", non-hex, negative vout, etc. must be 400.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+        await SeedUtxoAsync(factory, client, amountSat: 100_000, tag: 0xE1);
+
+        var receive = await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address");
+        var dest = receive.GetProperty("address").GetString()!;
+
+        foreach (var bad in new[] { "missing-colon", "zzzz:0", new string('a', 64) + ":-1", ":", new string('a', 63) + ":0" })
+        {
+            var resp = await client.PostAsJsonAsync("/api/dashboard/plan-send", new
+            {
+                Destination = dest,
+                AmountSat = 20_000,
+                FeeRateSatPerVb = 2,
+                Strategy = "PrivacyFirst",
+                SelectedOutpoints = new[] { bad }
+            });
+            Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        }
+    }
+
+    [Fact]
+    public async Task Manual_coin_control_spends_frozen_utxo_when_explicitly_pinned()
+    {
+        // Freeze is a soft hide for auto-selection; an explicit pin should
+        // override. The response should still flag that a frozen UTXO was
+        // spent so the UI can surface it.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var smallId = await SeedUtxoAsync(factory, client, amountSat: 150_000, tag: 0xF1);
+        await SeedUtxoAsync(factory, client, amountSat: 300_000, tag: 0xF2);
+
+        await client.PostAsync($"/api/coin-control/freeze/{smallId}", null);
+
+        var utxos = await client.GetFromJsonAsync<JsonElement>("/api/dashboard/utxos");
+        var frozen = utxos.EnumerateArray()
+            .First(u => u.GetProperty("amountSat").GetInt64() == 150_000);
+        var outpoint = $"{frozen.GetProperty("txId").GetString()}:{frozen.GetProperty("outputIndex").GetInt32()}";
+
+        var receive = await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address");
+        var dest = receive.GetProperty("address").GetString()!;
+
+        var planResp = await client.PostAsJsonAsync("/api/dashboard/plan-send", new
+        {
+            Destination = dest,
+            AmountSat = 100_000,
+            FeeRateSatPerVb = 2,
+            Strategy = "PrivacyFirst",
+            SelectedOutpoints = new[] { outpoint }
+        });
+        Assert.Equal(HttpStatusCode.OK, planResp.StatusCode);
+        var plan = await planResp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(1, plan.GetProperty("inputCount").GetInt32());
+        var warnings = plan.GetProperty("warnings").EnumerateArray()
+            .Select(w => w.GetString() ?? "").ToList();
+        Assert.Contains(warnings, w => w.Contains("frozen", StringComparison.OrdinalIgnoreCase));
+    }
 }

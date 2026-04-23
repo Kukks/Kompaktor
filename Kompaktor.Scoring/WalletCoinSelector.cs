@@ -95,6 +95,44 @@ public class WalletCoinSelector
     }
 
     /// <summary>
+    /// Uses exactly the specified outpoints as the coin selection — bypasses
+    /// the advisor entirely. Frozen UTXOs are allowed here because the user
+    /// has made an explicit, per-coin decision to spend them. Throws if any
+    /// outpoint doesn't belong to the wallet or isn't spendable.
+    /// </summary>
+    public async Task<CoinSelectionResult> SelectSpecificUtxosAsync(
+        string walletId,
+        IReadOnlyList<(string TxId, int OutputIndex)> outpoints,
+        CancellationToken ct = default)
+    {
+        if (outpoints.Count == 0)
+            throw new ArgumentException("At least one outpoint required", nameof(outpoints));
+
+        // includeFrozen:true — manual selection is an explicit override
+        var scored = await GetScoredUtxosAsync(walletId, includeFrozen: true, ct: ct);
+        var byOutpoint = scored.ToDictionary(s => (s.Utxo.TxId, s.Utxo.OutputIndex));
+
+        var selected = new List<ScoredUtxo>(outpoints.Count);
+        foreach (var op in outpoints)
+        {
+            if (!byOutpoint.TryGetValue((op.TxId, op.OutputIndex), out var match))
+                throw new InvalidOperationException(
+                    $"Outpoint {op.TxId}:{op.OutputIndex} is not a spendable UTXO for this wallet");
+            selected.Add(match);
+        }
+
+        var warnings = new List<string>();
+        var frozenCount = selected.Count(s => s.Utxo.IsFrozen);
+        if (frozenCount > 0)
+            warnings.Add($"{frozenCount} of {selected.Count} selected UTXO(s) are frozen — spending anyway due to explicit selection");
+
+        return new CoinSelectionResult(
+            selected,
+            selected.Sum(s => s.Utxo.AmountSat),
+            warnings.ToArray());
+    }
+
+    /// <summary>
     /// Returns UTXOs that would benefit from additional coinjoin mixing.
     /// These are coins with low anonymity scores that should be prioritized.
     /// </summary>

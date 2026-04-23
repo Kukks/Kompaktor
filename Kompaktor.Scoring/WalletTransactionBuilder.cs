@@ -25,7 +25,9 @@ public class WalletTransactionBuilder
 
     /// <summary>
     /// Creates a transaction sending to the specified destination.
-    /// Uses privacy-first coin selection by default.
+    /// When <paramref name="specificUtxos"/> is non-null the listed outpoints
+    /// are used verbatim (manual coin control, bypasses the advisor); otherwise
+    /// coins are chosen by <paramref name="strategy"/>.
     /// Returns the unsigned PSBT and selected coins for signing.
     /// </summary>
     public async Task<TransactionPlan> PlanTransactionAsync(
@@ -34,13 +36,16 @@ public class WalletTransactionBuilder
         Money amount,
         FeeRate feeRate,
         CoinSelectionStrategy strategy = CoinSelectionStrategy.PrivacyFirst,
+        IReadOnlyList<(string TxId, int OutputIndex)>? specificUtxos = null,
         CancellationToken ct = default)
     {
         var warnings = new List<string>();
 
-        // Select coins using privacy-aware scoring
-        var selection = await _coinSelector.SelectForSpendAsync(
-            walletId, amount.Satoshi, strategy, ct);
+        // Manual override: use exactly the outpoints the caller specified;
+        // otherwise fall back to scored privacy selection.
+        var selection = specificUtxos is { Count: > 0 }
+            ? await _coinSelector.SelectSpecificUtxosAsync(walletId, specificUtxos, ct)
+            : await _coinSelector.SelectForSpendAsync(walletId, amount.Satoshi, strategy, ct);
 
         if (selection.Warnings.Length > 0)
             warnings.AddRange(selection.Warnings);
@@ -58,8 +63,14 @@ public class WalletTransactionBuilder
         // Get fresh change address (prefer Taproot)
         var changeAddress = await GetFreshChangeAddressAsync(walletId, ct);
 
-        // Build the transaction with RBF opt-in (BIP 125)
+        // Build the transaction with RBF opt-in (BIP 125). When the caller
+        // pinned specific UTXOs, override NBitcoin's default selector (which
+        // would trim inputs down to just what the amount requires) so every
+        // pinned coin becomes an input — that's the whole point of manual
+        // coin control.
         var builder = _network.CreateTransactionBuilder();
+        if (specificUtxos is { Count: > 0 })
+            builder.CoinSelector = new UseAllCoinsSelector();
         builder.AddCoins(coins);
         builder.Send(destination, amount);
         builder.SetChange(changeAddress);
@@ -178,3 +189,12 @@ public record TransactionPlan(
     Script ChangeScript,
     IReadOnlyList<ScoredUtxo> SelectedUtxos,
     string[] Warnings);
+
+/// <summary>
+/// NBitcoin coin selector that forces ALL supplied coins to be included.
+/// Used for manual coin control where the caller has already made the pick.
+/// </summary>
+internal sealed class UseAllCoinsSelector : ICoinSelector
+{
+    public IEnumerable<ICoin> Select(IEnumerable<ICoin> coins, IMoney target) => coins;
+}

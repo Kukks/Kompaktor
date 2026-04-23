@@ -904,6 +904,11 @@
             <section>
                 <h2>Send</h2>
                 <div class="send-form">
+                    <div id="sendCoinControlBanner" style="display:none;padding:8px 10px;background:rgba(255,180,0,0.08);border:1px solid var(--accent);border-radius:4px;margin-bottom:10px;font-size:12px;display:none;align-items:center;gap:8px;flex-wrap:wrap">
+                        <span style="color:var(--accent);font-weight:600">&#9678; Manual coin control</span>
+                        <span id="sendCoinControlSummary" style="color:var(--text-muted)"></span>
+                        <button onclick="clearForcedOutpoints()" style="margin-left:auto;background:none;border:1px solid var(--border);color:var(--text);font-size:11px;padding:2px 8px;border-radius:3px;cursor:pointer">Clear selection</button>
+                    </div>
                     <div class="field">
                         <label>Destination Address</label>
                         <input type="text" id="sendDest" class="wide" placeholder="bc1q... or bitcoin: URI" oninput="parseBip21(this.value)" list="addressBookSuggestions">
@@ -1108,6 +1113,7 @@
                 <div class="batch-bar" id="batchBar">
                     <span id="batchCount">0 selected</span>
                     <span id="batchAmount" style="color:var(--accent)"></span>
+                    <button onclick="sendSelectedUtxos()" title="Use only these UTXOs as inputs to the next send">Send Selected</button>
                     <button onclick="batchFreeze(true)">Freeze Selected</button>
                     <button onclick="batchFreeze(false)">Unfreeze Selected</button>
                     <button onclick="clearSelection()">Clear</button>
@@ -1689,6 +1695,47 @@
         let selectedUtxos = new Set();
         let mixingOutpoints = new Set();
         let utxoCache = new Map();
+        // Outpoints ("txid:vout") the user explicitly forced as send inputs
+        // via "Send Selected" on the UTXOs tab. Null = no override, use strategy.
+        let forcedOutpoints = null;
+
+        function setForcedOutpoints(outpoints, label) {
+            forcedOutpoints = outpoints && outpoints.length > 0 ? outpoints.slice() : null;
+            const banner = document.getElementById('sendCoinControlBanner');
+            const summary = document.getElementById('sendCoinControlSummary');
+            if (!banner || !summary) return;
+            if (forcedOutpoints) {
+                banner.style.display = 'flex';
+                summary.textContent = label || `${forcedOutpoints.length} UTXO${forcedOutpoints.length === 1 ? '' : 's'} pinned as inputs`;
+            } else {
+                banner.style.display = 'none';
+                summary.textContent = '';
+            }
+        }
+
+        function clearForcedOutpoints() { setForcedOutpoints(null); }
+
+        function sendSelectedUtxos() {
+            const outpoints = [];
+            let totalSat = 0;
+            for (const id of selectedUtxos) {
+                const u = utxoCache.get(id);
+                if (!u) continue;
+                outpoints.push(`${u.txId}:${u.outputIndex}`);
+                totalSat += Math.round(u.amountBtc * 100000000);
+            }
+            if (outpoints.length === 0) {
+                showToast('Select at least one UTXO first', 'error');
+                return;
+            }
+            setForcedOutpoints(outpoints, `${outpoints.length} UTXO${outpoints.length === 1 ? '' : 's'} pinned (${(totalSat / 100000000).toFixed(8)} BTC available)`);
+            switchTab('send-receive');
+            const destEl = document.getElementById('sendDest');
+            if (destEl) {
+                destEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                destEl.focus();
+            }
+        }
 
         async function loadUtxos() {
             const utxos = await fetchJson('/api/dashboard/utxos');
@@ -2289,10 +2336,12 @@
             panel.innerHTML = '<span style="color:var(--text-muted)">Building transaction plan...</span>';
 
             try {
+                const reqBody = { destination: dest, amountSat: amount, feeRateSatPerVb: feeRate, strategy };
+                if (forcedOutpoints) reqBody.selectedOutpoints = forcedOutpoints;
                 const res = await fetch('/api/dashboard/plan-send', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ destination: dest, amountSat: amount, feeRateSatPerVb: feeRate, strategy })
+                    body: JSON.stringify(reqBody)
                 });
                 const data = await res.json();
 
@@ -2357,10 +2406,12 @@
             status.innerHTML = '<span style="color:var(--yellow)">Signing &amp; broadcasting...</span>';
 
             try {
+                const reqBody = { destination: dest, amountSat: amount, feeRateSatPerVb: feeRate, strategy, passphrase };
+                if (forcedOutpoints) reqBody.selectedOutpoints = forcedOutpoints;
                 const res = await fetch('/api/dashboard/send', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ destination: dest, amountSat: amount, feeRateSatPerVb: feeRate, strategy, passphrase })
+                    body: JSON.stringify(reqBody)
                 });
                 const data = await res.json();
 
@@ -2380,6 +2431,7 @@
                 document.getElementById('sendDest').value = '';
                 document.getElementById('sendAmount').value = '';
                 document.getElementById('sendPassphrase').value = '';
+                clearForcedOutpoints();
                 showToast('Transaction broadcast: ' + data.txId.substring(0, 16) + '...', 'success');
             } catch (err) {
                 status.innerHTML = `<span style="color:var(--red)">Failed: ${esc(err.message)}</span>`;
@@ -2397,10 +2449,12 @@
             status.innerHTML = '<span style="color:var(--yellow)">Generating PSBT...</span>';
 
             try {
+                const reqBody = { destination: dest, amountSat: amount, feeRateSatPerVb: feeRate, strategy };
+                if (forcedOutpoints) reqBody.selectedOutpoints = forcedOutpoints;
                 const res = await fetch('/api/dashboard/export-psbt', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ destination: dest, amountSat: amount, feeRateSatPerVb: feeRate, strategy })
+                    body: JSON.stringify(reqBody)
                 });
                 const data = await res.json();
                 if (!res.ok) { status.innerHTML = `<span style="color:var(--red)">${esc(data.detail || data.title || JSON.stringify(data))}</span>`; return; }

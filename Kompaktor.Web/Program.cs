@@ -423,6 +423,10 @@ app.MapPost("/api/dashboard/plan-send", async (WalletDbContext db, HttpContext c
     var body = await ctx.Request.ReadFromJsonAsync<SendPlanRequest>();
     if (body is null) return Results.BadRequest("Invalid request");
 
+    List<(string TxId, int OutputIndex)>? specific;
+    try { specific = ParseOutpoints(body.SelectedOutpoints); }
+    catch (FormatException ex) { return Results.BadRequest(ex.Message); }
+
     try
     {
         var destination = BitcoinAddress.Create(body.Destination, network);
@@ -433,7 +437,7 @@ app.MapPost("/api/dashboard/plan-send", async (WalletDbContext db, HttpContext c
 
         var txBuilder = new WalletTransactionBuilder(db, network);
         var plan = await txBuilder.PlanTransactionAsync(
-            wallet.Id, destination.ScriptPubKey, amount, feeRate, strategy);
+            wallet.Id, destination.ScriptPubKey, amount, feeRate, strategy, specific);
 
         return Results.Ok(new
         {
@@ -1375,6 +1379,32 @@ static string BuildBip21Uri(string address, long? amountSat, decimal? amount, st
 
     var query = parts.Count > 0 ? "?" + string.Join("&", parts) : "";
     return $"bitcoin:{address}{query}";
+}
+
+// Parses "txid:vout" strings into outpoint tuples. Returns null when the
+// input is null/empty so callers can distinguish "no selection" from an
+// empty-but-specified list. Throws FormatException on malformed entries so
+// the endpoint can turn it into a 400 response.
+static List<(string TxId, int OutputIndex)>? ParseOutpoints(string[]? raw)
+{
+    if (raw is null || raw.Length == 0) return null;
+    var result = new List<(string, int)>(raw.Length);
+    foreach (var entry in raw)
+    {
+        if (string.IsNullOrWhiteSpace(entry))
+            throw new FormatException("Empty outpoint entry");
+        var sep = entry.LastIndexOf(':');
+        if (sep <= 0 || sep == entry.Length - 1)
+            throw new FormatException($"Outpoint '{entry}' must be formatted as 'txid:vout'");
+        var txidPart = entry[..sep];
+        var voutPart = entry[(sep + 1)..];
+        if (txidPart.Length != 64 || !txidPart.All(Uri.IsHexDigit))
+            throw new FormatException($"Outpoint '{entry}' has an invalid txid");
+        if (!int.TryParse(voutPart, out var vout) || vout < 0)
+            throw new FormatException($"Outpoint '{entry}' has an invalid vout");
+        result.Add((txidPart, vout));
+    }
+    return result;
 }
 
 // Export account-level extended public keys for watch-only / hardware-wallet pairing.
@@ -2379,6 +2409,10 @@ app.MapPost("/api/dashboard/send", async (WalletDbContext db, IBlockchainBackend
     if (string.IsNullOrWhiteSpace(body.Passphrase))
         return Results.BadRequest("Passphrase required to sign the transaction");
 
+    List<(string TxId, int OutputIndex)>? specific;
+    try { specific = ParseOutpoints(body.SelectedOutpoints); }
+    catch (FormatException ex) { return Results.BadRequest(ex.Message); }
+
     try
     {
         var destination = BitcoinAddress.Create(body.Destination, network);
@@ -2390,7 +2424,7 @@ app.MapPost("/api/dashboard/send", async (WalletDbContext db, IBlockchainBackend
         // Plan the transaction
         var txBuilder = new WalletTransactionBuilder(db, network);
         var plan = await txBuilder.PlanTransactionAsync(
-            wallet.Id, destination.ScriptPubKey, amount, feeRate, strategy);
+            wallet.Id, destination.ScriptPubKey, amount, feeRate, strategy, specific);
 
         // Open wallet and sign
         var hdWallet = await KompaktorHdWallet.OpenAsync(db, wallet.Id, network, body.Passphrase);
@@ -2459,6 +2493,10 @@ app.MapPost("/api/dashboard/export-psbt", async (WalletDbContext db, HttpContext
     var body = await ctx.Request.ReadFromJsonAsync<SendPlanRequest>();
     if (body is null) return Results.BadRequest("Invalid request");
 
+    List<(string TxId, int OutputIndex)>? specific;
+    try { specific = ParseOutpoints(body.SelectedOutpoints); }
+    catch (FormatException ex) { return Results.BadRequest(ex.Message); }
+
     try
     {
         var destination = BitcoinAddress.Create(body.Destination, network);
@@ -2469,7 +2507,7 @@ app.MapPost("/api/dashboard/export-psbt", async (WalletDbContext db, HttpContext
 
         var txBuilder = new WalletTransactionBuilder(db, network);
         var plan = await txBuilder.PlanTransactionAsync(
-            wallet.Id, destination.ScriptPubKey, amount, feeRate, strategy);
+            wallet.Id, destination.ScriptPubKey, amount, feeRate, strategy, specific);
 
         // Create PSBT from the unsigned transaction
         var psbt = PSBT.FromTransaction(plan.Transaction, network);
@@ -3162,7 +3200,7 @@ app.MapFallbackToFile("index.html");
 
 app.Run();
 
-record SendPlanRequest(string Destination, long AmountSat, long FeeRateSatPerVb = 2, string Strategy = "PrivacyFirst");
+record SendPlanRequest(string Destination, long AmountSat, long FeeRateSatPerVb = 2, string Strategy = "PrivacyFirst", string[]? SelectedOutpoints = null);
 record BatchFreezeRequest(int[] UtxoIds, bool Freeze);
 record LabelRequest(string Text);
 record PassphraseRequest(string Passphrase);
@@ -3176,7 +3214,7 @@ record CreateWalletRequest(string Passphrase, string? Name = null, int? WordCoun
 record MixingStartRequest(string Passphrase, string? CoordinatorUrl = null, string? TorSocksHost = null, int? TorSocksPort = null, bool AllowUnconfirmedCoinjoinReuse = false, string? Profile = null);
 record AddressBookRequest(string Label, string Address);
 record TransactionNoteRequest(string Text);
-record SendRequest(string Destination, long AmountSat, long FeeRateSatPerVb = 2, string Strategy = "PrivacyFirst", string Passphrase = "");
+record SendRequest(string Destination, long AmountSat, long FeeRateSatPerVb = 2, string Strategy = "PrivacyFirst", string Passphrase = "", string[]? SelectedOutpoints = null);
 record BroadcastPsbtRequest(string SignedPsbt);
 record CreatePaymentRequest(string Destination, long AmountSat, bool Interactive = true, bool Urgent = false, string? Label = null, int? ExpiryMinutes = null, DateTimeOffset? ScheduledAt = null, int? MaxRetries = null);
 record BatchSendRequest(string Destination, long AmountSat, bool Interactive = true, bool Urgent = false, string? Label = null, int? ExpiryMinutes = null, DateTimeOffset? ScheduledAt = null, int? MaxRetries = null);
