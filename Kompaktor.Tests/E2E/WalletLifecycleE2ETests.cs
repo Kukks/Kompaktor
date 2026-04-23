@@ -1712,6 +1712,83 @@ public class WalletLifecycleE2ETests
         Assert.False(string.IsNullOrWhiteSpace(body.GetProperty("status").GetString()));
     }
 
+    [Fact]
+    public async Task Blockchain_info_reports_network_and_connected_state()
+    {
+        // The fake backend always reports as connected — network comes from
+        // config (we forced regtest in the test factory).
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        var resp = await client.GetFromJsonAsync<JsonElement>("/api/blockchain/info");
+        Assert.True(resp.GetProperty("connected").GetBoolean());
+        Assert.Equal("RegTest", resp.GetProperty("network").GetString());
+        // Fake backend reports a block height (may be 0).
+        Assert.True(resp.TryGetProperty("blockHeight", out _));
+    }
+
+    [Fact]
+    public async Task Coordinator_stats_reports_network_and_rounds_envelope()
+    {
+        // The coordinator orchestrator starts a round on boot, so activeRounds
+        // is race-y; we just assert the envelope shape + network name.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        var resp = await client.GetFromJsonAsync<JsonElement>("/api/coordinator/stats");
+        Assert.Equal("RegTest", resp.GetProperty("network").GetString());
+        Assert.True(resp.GetProperty("activeRounds").GetInt32() >= 0);
+        Assert.True(resp.GetProperty("roundsInRegistration").GetInt32() >= 0);
+        // rounds array is always present (never null).
+        Assert.Equal(JsonValueKind.Array, resp.GetProperty("rounds").ValueKind);
+        // activeRounds must match the array length — the orchestrator
+        // derives it from the same list.
+        Assert.Equal(
+            resp.GetProperty("activeRounds").GetInt32(),
+            resp.GetProperty("rounds").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task Privacy_summary_reports_zeros_for_fresh_wallet()
+    {
+        // No UTXOs yet — every counter is zero, not null. The endpoint has a
+        // special branch for "no wallet" that also returns zeros; make sure
+        // both paths are consistent.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.GetFromJsonAsync<JsonElement>("/api/dashboard/privacy-summary");
+        Assert.Equal(0, resp.GetProperty("totalUtxos").GetInt32());
+        Assert.Equal(0L, resp.GetProperty("totalAmountSat").GetInt64());
+        Assert.Equal(0, resp.GetProperty("mixedUtxoCount").GetInt32());
+    }
+
+    [Fact]
+    public async Task Privacy_summary_without_wallet_returns_zero_snapshot()
+    {
+        // No wallet at all — endpoint must still succeed (not 400) so the
+        // landing page can render before the user has set up their wallet.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        var resp = await client.GetFromJsonAsync<JsonElement>("/api/dashboard/privacy-summary");
+        Assert.Equal(0, resp.GetProperty("totalUtxos").GetInt32());
+        Assert.Equal(0L, resp.GetProperty("totalAmountSat").GetInt64());
+    }
+
+    [Fact]
+    public async Task Coinjoins_list_on_fresh_wallet_is_empty()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.GetFromJsonAsync<JsonElement>("/api/dashboard/coinjoins");
+        Assert.Equal(JsonValueKind.Array, resp.ValueKind);
+        Assert.Empty(resp.EnumerateArray());
+    }
+
     /// <summary>
     /// Stages a single confirmed UTXO on the fake backend against a fresh wallet
     /// receive address. Returns the DB-assigned utxoId once the wallet has
