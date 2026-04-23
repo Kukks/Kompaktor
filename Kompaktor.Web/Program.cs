@@ -1409,8 +1409,9 @@ app.MapGet("/api/dashboard/privacy-recommendations", async (WalletDbContext db, 
     // Flag exposed-address UTXOs: scripts that were revealed in a prior
     // coinjoin round (often a failed one). Co-spending these with
     // non-exposed UTXOs is the #1 foot-gun the planner warns about,
-    // so surface them at the dashboard level too.
-    var exposedCount = scored.Count(s => s.Utxo.Address.IsExposed);
+    // so surface them at the dashboard level too. Frozen exposed UTXOs
+    // don't trigger the rec — freezing is the remediation we offer.
+    var exposedCount = scored.Count(s => s.Utxo.Address.IsExposed && !s.Utxo.IsFrozen);
     if (exposedCount > 0)
     {
         recommendations.Add(new

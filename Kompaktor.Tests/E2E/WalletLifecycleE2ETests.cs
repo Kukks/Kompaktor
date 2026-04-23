@@ -2884,6 +2884,16 @@ public class WalletLifecycleE2ETests
         var exposed = recs.Single(r => r.title.Contains("Exposed", StringComparison.Ordinal));
         Assert.Equal("high", exposed.priority);
         Assert.Contains("1", exposed.title);
+
+        // Freezing counts as "remediated" — after freeze-exposed, the rec
+        // should disappear so the user stops seeing a nag for coins they
+        // already parked.
+        await client.PostAsync("/api/coin-control/freeze-exposed", content: null);
+        var after = await client.GetFromJsonAsync<JsonElement>("/api/dashboard/privacy-recommendations");
+        var afterTitles = after.GetProperty("recommendations").EnumerateArray()
+            .Select(r => r.GetProperty("title").GetString()!)
+            .ToArray();
+        Assert.DoesNotContain(afterTitles, t => t.Contains("Exposed Addresses", StringComparison.Ordinal));
     }
 
     [Fact]
