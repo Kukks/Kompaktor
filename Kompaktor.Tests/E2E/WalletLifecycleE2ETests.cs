@@ -1395,6 +1395,84 @@ public class WalletLifecycleE2ETests
         Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
     }
 
+    [Fact]
+    public async Task Payments_stats_on_empty_wallet_returns_zero_total()
+    {
+        // No wallet has been created — stats still resolves, with total=0.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        var resp = await client.GetFromJsonAsync<JsonElement>("/api/payments/stats");
+        Assert.Equal(0, resp.GetProperty("total").GetInt32());
+    }
+
+    [Fact]
+    public async Task Payments_stats_buckets_pending_and_totals_amounts()
+    {
+        // Seed two outbound payments (both will stay Pending since the wallet
+        // has no UTXOs to spend). Stats should report total=2, pendingCount=2,
+        // and zero sent/received amounts.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var addr = (await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address"))
+            .GetProperty("address").GetString()!;
+
+        await client.PostAsJsonAsync("/api/payments/send", new
+        {
+            Destination = addr, AmountSat = 1_000L, Label = "a"
+        });
+        await client.PostAsJsonAsync("/api/payments/send", new
+        {
+            Destination = addr, AmountSat = 2_500L, Label = "b"
+        });
+
+        var resp = await client.GetFromJsonAsync<JsonElement>("/api/payments/stats");
+        Assert.Equal(2, resp.GetProperty("total").GetInt32());
+        Assert.Equal(2, resp.GetProperty("pendingCount").GetInt32());
+        Assert.Equal(0, resp.GetProperty("completedCount").GetInt32());
+        Assert.Equal(0, resp.GetProperty("failedCount").GetInt32());
+        Assert.Equal(0L, resp.GetProperty("totalSentSat").GetInt64());
+        Assert.Equal(0L, resp.GetProperty("totalReceivedSat").GetInt64());
+        // Success rate over {Completed + Failed} is undefined with no such
+        // payments — endpoint returns 0 in that case.
+        Assert.Equal(0.0, resp.GetProperty("successRate").GetDouble());
+    }
+
+    [Fact]
+    public async Task Payments_stats_counts_failed_separately_after_cancellation()
+    {
+        // Cancel one of two payments. Stats should reflect one pending + one
+        // failed, and successRate should drop to 0% (0 completed / 1 terminal).
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var addr = (await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address"))
+            .GetProperty("address").GetString()!;
+
+        var one = (await (await client.PostAsJsonAsync("/api/payments/send", new
+        {
+            Destination = addr, AmountSat = 1_000L
+        })).Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetString()!;
+
+        await client.PostAsJsonAsync("/api/payments/send", new
+        {
+            Destination = addr, AmountSat = 2_000L
+        });
+
+        var del = await client.DeleteAsync($"/api/payments/{one}");
+        Assert.Equal(HttpStatusCode.OK, del.StatusCode);
+
+        var resp = await client.GetFromJsonAsync<JsonElement>("/api/payments/stats");
+        Assert.Equal(2, resp.GetProperty("total").GetInt32());
+        Assert.Equal(1, resp.GetProperty("pendingCount").GetInt32());
+        Assert.Equal(1, resp.GetProperty("failedCount").GetInt32());
+        Assert.Equal(0, resp.GetProperty("completedCount").GetInt32());
+        Assert.Equal(0.0, resp.GetProperty("successRate").GetDouble());
+    }
+
     /// <summary>
     /// Stages a single confirmed UTXO on the fake backend against a fresh wallet
     /// receive address. Returns the DB-assigned utxoId once the wallet has
