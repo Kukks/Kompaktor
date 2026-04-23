@@ -1310,6 +1310,91 @@ public class WalletLifecycleE2ETests
         Assert.NotEqual(JsonValueKind.Null, schedField.ValueKind);
     }
 
+    [Fact]
+    public async Task Sweep_consumes_all_spendable_utxos_into_single_output()
+    {
+        // Send-all: the sweep endpoint should include every spendable UTXO as
+        // an input and produce a single output to the destination, with fee
+        // deducted from the swept amount.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        await SeedUtxoAsync(factory, client, amountSat: 100_000, tag: 0x71);
+        await SeedUtxoAsync(factory, client, amountSat: 250_000, tag: 0x72);
+        await SeedUtxoAsync(factory, client, amountSat: 50_000, tag: 0x73);
+
+        // Any valid regtest address — use a fresh receive to keep test network-correct.
+        var dest = (await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address"))
+            .GetProperty("address").GetString()!;
+
+        var resp = await client.PostAsJsonAsync("/api/dashboard/sweep", new
+        {
+            Destination = dest,
+            FeeRateSatPerVb = 2
+        });
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var body = await resp.Content.ReadFromJsonAsync<JsonElement>();
+
+        Assert.Equal(3, body.GetProperty("inputCount").GetInt32());
+        Assert.Equal(400_000L, body.GetProperty("totalInputSat").GetInt64());
+
+        var fee = body.GetProperty("feeSat").GetInt64();
+        var sendAmount = body.GetProperty("sendAmountSat").GetInt64();
+        Assert.True(fee > 0, "sweep must include a non-zero fee");
+        Assert.Equal(400_000L, sendAmount + fee);
+        Assert.Equal(dest, body.GetProperty("destination").GetString());
+    }
+
+    [Fact]
+    public async Task Sweep_without_wallet_returns_bad_request()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        var resp = await client.PostAsJsonAsync("/api/dashboard/sweep", new
+        {
+            Destination = "bcrt1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq4tkvrp",
+            FeeRateSatPerVb = 2
+        });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Sweep_with_no_spendable_utxos_returns_bad_request()
+    {
+        // Fresh wallet has no UTXOs — sweep should refuse rather than build a
+        // zero-input transaction.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var dest = (await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address"))
+            .GetProperty("address").GetString()!;
+
+        var resp = await client.PostAsJsonAsync("/api/dashboard/sweep", new
+        {
+            Destination = dest,
+            FeeRateSatPerVb = 2
+        });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Sweep_rejects_missing_destination()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.PostAsJsonAsync("/api/dashboard/sweep", new
+        {
+            Destination = "",
+            FeeRateSatPerVb = 2
+        });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
     /// <summary>
     /// Stages a single confirmed UTXO on the fake backend against a fresh wallet
     /// receive address. Returns the DB-assigned utxoId once the wallet has
