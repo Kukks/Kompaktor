@@ -1584,6 +1584,79 @@ public class WalletLifecycleE2ETests
         Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
     }
 
+    [Fact]
+    public async Task Payments_export_csv_emits_header_row_when_no_payments()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.GetAsync("/api/payments/export");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        Assert.Equal("text/csv", resp.Content.Headers.ContentType?.MediaType);
+
+        var text = await resp.Content.ReadAsStringAsync();
+        // Header-only CSV: single line (after trimming trailing newline).
+        var lines = text.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        Assert.Single(lines);
+        Assert.Contains("Id,Direction,AmountSat", lines[0]);
+        Assert.Contains("Label", lines[0]);
+        Assert.Contains("TxId", lines[0]);
+    }
+
+    [Fact]
+    public async Task Payments_export_csv_includes_seeded_payment_row()
+    {
+        // Create a payment, export CSV, confirm both header + row and that
+        // the row contains the payment's label and amount.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var addr = (await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address"))
+            .GetProperty("address").GetString()!;
+        await client.PostAsJsonAsync("/api/payments/send", new
+        {
+            Destination = addr,
+            AmountSat = 123_456L,
+            Label = "invoice-42"
+        });
+
+        var resp = await client.GetAsync("/api/payments/export");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var text = await resp.Content.ReadAsStringAsync();
+
+        var lines = text.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        Assert.Equal(2, lines.Length); // header + 1 row
+        Assert.Contains("invoice-42", lines[1]);
+        Assert.Contains(",123456,", lines[1]);
+        Assert.Contains("Outbound", lines[1]);
+    }
+
+    [Fact]
+    public async Task Payments_export_csv_escapes_embedded_quotes_in_label()
+    {
+        // Labels can carry double-quotes — CSV must double them per RFC 4180.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var addr = (await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address"))
+            .GetProperty("address").GetString()!;
+        await client.PostAsJsonAsync("/api/payments/send", new
+        {
+            Destination = addr,
+            AmountSat = 1_000L,
+            Label = "he said \"hi\""
+        });
+
+        var text = await (await client.GetAsync("/api/payments/export")).Content.ReadAsStringAsync();
+        var lines = text.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        Assert.Equal(2, lines.Length);
+        // `"he said ""hi"""` — label quoted, internal quotes doubled.
+        Assert.Contains("\"he said \"\"hi\"\"\"", lines[1]);
+    }
+
     /// <summary>
     /// Stages a single confirmed UTXO on the fake backend against a fresh wallet
     /// receive address. Returns the DB-assigned utxoId once the wallet has
