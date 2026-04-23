@@ -267,4 +267,79 @@ public class WalletLifecycleE2ETests
             Assert.Equal(0L, resp.GetProperty(field).GetInt64());
         }
     }
+
+    [Fact]
+    public async Task Restore_from_mnemonic_produces_identical_xpubs()
+    {
+        // Create a wallet in one factory, grab its mnemonic + xpubs.
+        string mnemonic;
+        string[] originalXpubs;
+        await using (var f1 = new KompaktorWebFactory())
+        {
+            using var c1 = f1.CreateClient();
+            var created = await (await c1.PostAsJsonAsync(
+                "/api/wallet/create", new { Passphrase = "pw", WordCount = 12 }))
+                .Content.ReadFromJsonAsync<JsonElement>();
+            mnemonic = created.GetProperty("mnemonic").GetString()!;
+
+            var xpubResp = await c1.GetFromJsonAsync<JsonElement>("/api/wallet/export-xpub");
+            originalXpubs = xpubResp.GetProperty("accounts").EnumerateArray()
+                .Select(a => a.GetProperty("xpub").GetString()!)
+                .OrderBy(x => x)
+                .ToArray();
+        }
+
+        // Restore into a fresh factory (fresh DB). Same mnemonic must yield same xpubs.
+        await using var f2 = new KompaktorWebFactory();
+        using var c2 = f2.CreateClient();
+
+        var restore = await c2.PostAsJsonAsync("/api/wallet/restore", new
+        {
+            Mnemonic = mnemonic,
+            Passphrase = "pw",
+            Name = "Restored"
+        });
+        Assert.Equal(HttpStatusCode.OK, restore.StatusCode);
+
+        var restoredXpubResp = await c2.GetFromJsonAsync<JsonElement>("/api/wallet/export-xpub");
+        var restoredXpubs = restoredXpubResp.GetProperty("accounts").EnumerateArray()
+            .Select(a => a.GetProperty("xpub").GetString()!)
+            .OrderBy(x => x)
+            .ToArray();
+
+        Assert.Equal(originalXpubs, restoredXpubs);
+    }
+
+    [Fact]
+    public async Task Restore_rejects_invalid_mnemonic()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        var resp = await client.PostAsJsonAsync("/api/wallet/restore", new
+        {
+            Mnemonic = "not a real mnemonic phrase at all",
+            Passphrase = "pw"
+        });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Restore_when_wallet_exists_returns_bad_request()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        var created = await (await client.PostAsJsonAsync(
+            "/api/wallet/create", new { Passphrase = "pw" }))
+            .Content.ReadFromJsonAsync<JsonElement>();
+        var mnemonic = created.GetProperty("mnemonic").GetString()!;
+
+        var resp = await client.PostAsJsonAsync("/api/wallet/restore", new
+        {
+            Mnemonic = mnemonic,
+            Passphrase = "pw"
+        });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
 }

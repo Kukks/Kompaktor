@@ -647,8 +647,9 @@
                     </div>
                     <div id="restoreField" style="display:none">
                         <div class="field">
-                            <label>Mnemonic Words</label>
-                            <input type="text" id="setupMnemonic" placeholder="word1 word2 word3 ...">
+                            <label>Mnemonic Words <span id="mnemonicCount" style="color:var(--text-muted);font-weight:normal;font-size:12px"></span></label>
+                            <input type="text" id="setupMnemonic" placeholder="word1 word2 word3 ..." oninput="updateMnemonicCount()">
+                            <p style="color:var(--text-muted);font-size:12px;margin-top:4px">Enter 12, 15, 18, 21, or 24 words separated by spaces.</p>
                         </div>
                     </div>
                     <div class="actions">
@@ -1767,6 +1768,17 @@
             isRestoreMode = !isRestoreMode;
             document.getElementById('restoreField').style.display = isRestoreMode ? '' : 'none';
             document.getElementById('restoreToggle').textContent = isRestoreMode ? 'Create New Instead' : 'Restore from Backup';
+            if (isRestoreMode) updateMnemonicCount();
+        }
+
+        function updateMnemonicCount() {
+            const input = document.getElementById('setupMnemonic').value.trim();
+            const count = input ? input.split(/\s+/).length : 0;
+            const el = document.getElementById('mnemonicCount');
+            if (count === 0) { el.textContent = ''; return; }
+            const valid = [12, 15, 18, 21, 24].includes(count);
+            el.textContent = `— ${count} word${count === 1 ? '' : 's'}${valid ? ' ✓' : ''}`;
+            el.style.color = valid ? 'var(--green)' : 'var(--text-muted)';
         }
 
         async function createWallet() {
