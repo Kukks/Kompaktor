@@ -1669,6 +1669,48 @@ public class WalletLifecycleE2ETests
     }
 
     [Fact]
+    public async Task Coin_control_freeze_exposed_only_touches_exposed_live_utxos()
+    {
+        // One-click action: freeze every UTXO sitting on an exposed address.
+        // Seed three UTXOs, expose one, pre-freeze another as a control,
+        // and verify only the exposed+live one flips. Counts must match so
+        // the UI can say "Froze N UTXOs" confidently.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var exposedId = await SeedUtxoAsync(factory, client, amountSat: 50_000, tag: 0xE1);
+        var cleanId = await SeedUtxoAsync(factory, client, amountSat: 60_000, tag: 0xE2);
+        var preFrozenId = await SeedUtxoAsync(factory, client, amountSat: 70_000, tag: 0xE3);
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<WalletDbContext>();
+            var exposed = await db.Utxos.Include(u => u.Address).SingleAsync(u => u.Id == exposedId);
+            exposed.Address.IsExposed = true;
+            var preFrozen = await db.Utxos.SingleAsync(u => u.Id == preFrozenId);
+            preFrozen.IsFrozen = true;
+            await db.SaveChangesAsync();
+        }
+
+        var resp = await client.PostAsync("/api/coin-control/freeze-exposed", content: null);
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var body = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(1, body.GetProperty("frozen").GetInt32());
+
+        var utxos = await client.GetFromJsonAsync<JsonElement>("/api/dashboard/utxos");
+        var byId = utxos.EnumerateArray().ToDictionary(u => u.GetProperty("id").GetInt32());
+        Assert.True(byId[exposedId].GetProperty("isFrozen").GetBoolean());
+        Assert.False(byId[cleanId].GetProperty("isFrozen").GetBoolean());
+        Assert.True(byId[preFrozenId].GetProperty("isFrozen").GetBoolean());
+
+        // Idempotent — second call finds nothing new.
+        var resp2 = await client.PostAsync("/api/coin-control/freeze-exposed", content: null);
+        var body2 = await resp2.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(0, body2.GetProperty("frozen").GetInt32());
+    }
+
+    [Fact]
     public async Task Scheduled_payment_starts_dormant_and_activates_after_due_time()
     {
         await using var factory = new KompaktorWebFactory();

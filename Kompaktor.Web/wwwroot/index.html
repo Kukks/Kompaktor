@@ -2714,12 +2714,32 @@
                 return;
             }
             container.innerHTML = '<h2 style="margin-bottom:12px">Privacy Recommendations</h2>' +
-                data.recommendations.map(r =>
-                    `<div class="rec-card ${esc(r.priority)}">
+                data.recommendations.map(r => {
+                    const action = r.title.includes('Exposed Addresses')
+                        ? `<button class="btn btn-small" style="margin-top:8px" onclick="freezeExposedUtxos(this)">Freeze all exposed</button>`
+                        : '';
+                    return `<div class="rec-card ${esc(r.priority)}">
                         <div class="rec-title">${esc(r.title)}</div>
                         <div class="rec-msg">${esc(r.message)}</div>
-                    </div>`
-                ).join('');
+                        ${action}
+                    </div>`;
+                }).join('');
+        }
+
+        async function freezeExposedUtxos(btn) {
+            btn.disabled = true;
+            btn.textContent = 'Freezing…';
+            try {
+                const resp = await fetch('/api/coin-control/freeze-exposed', { method: 'POST' });
+                const body = await resp.json();
+                showToast(`Froze ${body.frozen} exposed UTXO${body.frozen === 1 ? '' : 's'}`);
+                await loadUtxos();
+                await loadPrivacyRecommendations();
+            } catch (e) {
+                showToast('Failed to freeze exposed UTXOs', 'error');
+                btn.disabled = false;
+                btn.textContent = 'Freeze all exposed';
+            }
         }
 
         // Payments

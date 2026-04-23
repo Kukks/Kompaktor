@@ -755,6 +755,26 @@ app.MapPost("/api/coin-control/batch-freeze", async (WalletDbContext db, HttpCon
     return Results.Ok(new { updated = utxos.Count, frozen = body.Freeze });
 }).WithTags("CoinControl");
 
+// One-click operationalization of the "exposed UTXOs" dashboard
+// recommendation — freezes every live UTXO sitting on an exposed
+// address so it can't be co-spent with non-exposed coins until the
+// user explicitly unfreezes or remixes. Only touches still-unspent,
+// not-already-frozen rows so it's safe to call repeatedly.
+app.MapPost("/api/coin-control/freeze-exposed", async (WalletDbContext db, DashboardEventBus bus) =>
+{
+    var candidates = await db.Utxos
+        .Include(u => u.Address)
+        .Where(u => u.SpentByTxId == null && !u.IsFrozen && u.Address.IsExposed)
+        .ToListAsync();
+
+    foreach (var utxo in candidates)
+        utxo.IsFrozen = true;
+
+    await db.SaveChangesAsync();
+    if (candidates.Count > 0) bus.Publish("utxos");
+    return Results.Ok(new { frozen = candidates.Count });
+}).WithTags("CoinControl");
+
 // Labels: add label to a UTXO
 app.MapPost("/api/coin-control/label/{utxoId}", async (int utxoId, WalletDbContext db, HttpContext ctx, DashboardEventBus bus) =>
 {
