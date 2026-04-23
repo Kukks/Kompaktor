@@ -520,6 +520,52 @@ public class WalletLifecycleE2ETests
     }
 
     [Fact]
+    public async Task Transaction_note_create_and_delete_roundtrip()
+    {
+        // Full note lifecycle on a real wallet tx: create a wallet, seed a
+        // UTXO (which mints a tx the wallet "knows"), add a note, verify it
+        // surfaces on the tx detail, delete it, and verify it's gone.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        await SeedUtxoAsync(factory, client, amountSat: 42_000, tag: 0x7C);
+
+        var utxos = await client.GetFromJsonAsync<JsonElement>("/api/dashboard/utxos");
+        var txId = utxos.EnumerateArray().First().GetProperty("txId").GetString()!;
+
+        // Baseline: no notes on this tx.
+        var detail0 = await client.GetFromJsonAsync<JsonElement>($"/api/dashboard/transactions/{txId}");
+        Assert.Empty(detail0.GetProperty("notes").EnumerateArray());
+
+        // Create a note.
+        var createResp = await client.PostAsJsonAsync(
+            $"/api/dashboard/transactions/{txId}/note", new { Text = "  tax-2026  " });
+        createResp.EnsureSuccessStatusCode();
+        var created = await createResp.Content.ReadFromJsonAsync<JsonElement>();
+        var noteId = created.GetProperty("id").GetInt32();
+        // Server trims whitespace before persisting.
+        Assert.Equal("tax-2026", created.GetProperty("text").GetString());
+
+        // Note surfaces on the detail endpoint.
+        var detail1 = await client.GetFromJsonAsync<JsonElement>($"/api/dashboard/transactions/{txId}");
+        var notes = detail1.GetProperty("notes").EnumerateArray().ToArray();
+        Assert.Single(notes);
+        Assert.Equal(noteId, notes[0].GetProperty("id").GetInt32());
+        Assert.Equal("tax-2026", notes[0].GetProperty("text").GetString());
+
+        // Delete the note; endpoint echoes the deleted id.
+        var delResp = await client.DeleteAsync($"/api/dashboard/transactions/{txId}/note/{noteId}");
+        delResp.EnsureSuccessStatusCode();
+        var delBody = await delResp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(noteId, delBody.GetProperty("deleted").GetInt32());
+
+        // Gone on the next read.
+        var detail2 = await client.GetFromJsonAsync<JsonElement>($"/api/dashboard/transactions/{txId}");
+        Assert.Empty(detail2.GetProperty("notes").EnumerateArray());
+    }
+
+    [Fact]
     public async Task Receive_uri_builds_bip21_with_amount_and_label()
     {
         await using var factory = new KompaktorWebFactory();
