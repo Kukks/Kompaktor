@@ -1657,6 +1657,61 @@ public class WalletLifecycleE2ETests
         Assert.Contains("\"he said \"\"hi\"\"\"", lines[1]);
     }
 
+    [Fact]
+    public async Task Mixing_status_on_fresh_host_reports_not_running()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        var resp = await client.GetFromJsonAsync<JsonElement>("/api/mixing/status");
+        Assert.False(resp.GetProperty("running").GetBoolean());
+        Assert.Equal(0, resp.GetProperty("completedRounds").GetInt32());
+        Assert.Equal(0, resp.GetProperty("failedRounds").GetInt32());
+    }
+
+    [Fact]
+    public async Task Mixing_start_rejects_missing_passphrase()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        var resp = await client.PostAsJsonAsync("/api/mixing/start", new
+        {
+            Passphrase = ""
+        });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Mixing_start_without_wallet_returns_bad_request()
+    {
+        // No wallet has been created yet. StartAsync will throw, and the
+        // endpoint must translate that into a 400 rather than a 500.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        var resp = await client.PostAsJsonAsync("/api/mixing/start", new
+        {
+            Passphrase = "any-passphrase",
+            CoordinatorUrl = "http://localhost:9999"
+        });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Mixing_stop_when_not_running_returns_ok_with_status_string()
+    {
+        // Stopping an already-stopped mixer should be idempotent — just
+        // returns a status message, never throws.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        var resp = await client.PostAsync("/api/mixing/stop", content: null);
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var body = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.False(string.IsNullOrWhiteSpace(body.GetProperty("status").GetString()));
+    }
+
     /// <summary>
     /// Stages a single confirmed UTXO on the fake backend against a fresh wallet
     /// receive address. Returns the DB-assigned utxoId once the wallet has
