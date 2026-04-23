@@ -2376,7 +2376,14 @@ public class Test
             var txid = clients[0].Round.GetTransaction(Network).GetHash();
             var operatorTxId = roundOperator.GetTransaction(Network).GetHash();
             Assert.Equal(txid, operatorTxId);
-            var tx = await RPC.GetRawTransactionAsync(txid);
+            // Pass throwIfNotFound:false so the bitcoind mempool-lag between
+            // broadcast and RPC visibility becomes a retriable assertion
+            // failure rather than an RPCException that escapes Eventually's
+            // XunitException-only catch. Previously this produced a CI flake
+            // on slower runners where the tx wasn't yet in the mempool when
+            // the first Eventually iteration queried for it.
+            var tx = await RPC.GetRawTransactionAsync(txid, null, false, default);
+            Assert.NotNull(tx);
             foreach (var wallet in wallets)
                 wallet.AddTransaction(tx);
         }, 300_000); // 5 minutes
