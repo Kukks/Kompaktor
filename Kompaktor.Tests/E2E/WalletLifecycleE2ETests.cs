@@ -175,4 +175,39 @@ public class WalletLifecycleE2ETests
         Assert.Equal(65_000m, rates.GetProperty("usd").GetDecimal());
         Assert.Equal(60_000m, rates.GetProperty("eur").GetDecimal());
     }
+
+    [Fact]
+    public async Task Export_xpub_returns_per_account_keys()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.GetFromJsonAsync<JsonElement>("/api/wallet/export-xpub");
+        var accounts = resp.GetProperty("accounts").EnumerateArray().ToArray();
+        Assert.NotEmpty(accounts);
+
+        foreach (var account in accounts)
+        {
+            var xpub = account.GetProperty("xpub").GetString();
+            Assert.False(string.IsNullOrWhiteSpace(xpub));
+            var purpose = account.GetProperty("purpose").GetInt32();
+            Assert.Contains(purpose, new[] { 84, 86 });
+        }
+
+        // Expect RegTest derivation — coin type 1
+        var taproot = accounts.First(a => a.GetProperty("purpose").GetInt32() == 86);
+        Assert.Equal("m/86'/1'/0'", taproot.GetProperty("derivationPath").GetString());
+    }
+
+    [Fact]
+    public async Task Export_xpub_without_wallet_returns_bad_request()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        var resp = await client.GetAsync("/api/wallet/export-xpub");
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
 }

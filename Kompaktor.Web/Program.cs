@@ -693,6 +693,30 @@ app.MapGet("/api/wallet/receive-qr", async (WalletDbContext db) =>
     return Results.Content(svg, "image/svg+xml");
 }).WithTags("Wallet");
 
+// Export account-level extended public keys for watch-only / hardware-wallet pairing.
+// No passphrase required — xpubs are not secret, but they expose all wallet addresses.
+app.MapGet("/api/wallet/export-xpub", async (WalletDbContext db) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.BadRequest("No wallet found");
+
+    var accounts = await db.Accounts
+        .Where(a => a.WalletId == wallet.Id && a.AccountXPub != null)
+        .OrderByDescending(a => a.Purpose)
+        .ThenBy(a => a.AccountIndex)
+        .Select(a => new
+        {
+            purpose = a.Purpose,
+            scriptType = a.Purpose == 86 ? "P2TR" : a.Purpose == 84 ? "P2WPKH" : "Unknown",
+            accountIndex = a.AccountIndex,
+            derivationPath = $"m/{a.Purpose}'/{(wallet.Network == "RegTest" || wallet.Network == "TestNet" ? 1 : 0)}'/{a.AccountIndex}'",
+            xpub = a.AccountXPub
+        })
+        .ToListAsync();
+
+    return Results.Ok(new { walletName = wallet.Name, network = wallet.Network, accounts });
+}).WithTags("Wallet");
+
 // Wallet backup: export mnemonic (requires passphrase)
 app.MapPost("/api/wallet/export-mnemonic", async (WalletDbContext db, HttpContext ctx) =>
 {

@@ -1207,6 +1207,18 @@
             </section>
 
             <section>
+                <h2>Extended Public Keys</h2>
+                <div style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:16px">
+                    <p style="color:var(--text-muted);font-size:13px;margin-bottom:12px">Export account-level xpubs for watch-only wallets (Sparrow, Electrum, Specter) or pairing with hardware signers. Xpubs let anyone see your addresses but not spend funds.</p>
+                    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                        <button class="send-btn" onclick="loadXpubs()">Show Public Keys</button>
+                        <span id="xpubStatus" style="font-size:12px"></span>
+                    </div>
+                    <div id="xpubList" style="display:none;margin-top:12px;font-family:monospace;font-size:12px"></div>
+                </div>
+            </section>
+
+            <section>
                 <h2>Export / Import Wallet Data</h2>
                 <div style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:16px">
                     <p style="color:var(--text-muted);font-size:13px;margin-bottom:12px">Export or import labels, address book, and coinjoin history as JSON. Does not include private keys.</p>
@@ -3091,6 +3103,35 @@
                 result.style.display = '';
                 status.innerHTML = `<span style="color:var(--green)">${data.wordCount} words</span>`;
                 document.getElementById('backupPass').value = '';
+            } catch (err) {
+                status.innerHTML = `<span style="color:var(--red)">Failed: ${esc(err.message)}</span>`;
+            }
+        }
+
+        async function loadXpubs() {
+            const status = document.getElementById('xpubStatus');
+            const list = document.getElementById('xpubList');
+            status.innerHTML = '<span style="color:var(--yellow)">Loading...</span>';
+            try {
+                const res = await fetch('/api/wallet/export-xpub');
+                const data = await res.json();
+                if (!res.ok) {
+                    status.innerHTML = `<span style="color:var(--red)">${esc(typeof data === 'string' ? data : JSON.stringify(data))}</span>`;
+                    list.style.display = 'none';
+                    return;
+                }
+                const html = data.accounts.map(a => `
+                    <div style="padding:10px;border:1px solid var(--border);border-radius:4px;margin-bottom:8px">
+                        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+                            <span style="font-weight:bold;font-family:sans-serif">${esc(a.scriptType)} account #${a.accountIndex}</span>
+                            <button class="send-btn" style="font-size:11px;padding:2px 8px" onclick="navigator.clipboard.writeText('${esc(a.xpub)}'); this.textContent='Copied!'; setTimeout(()=>this.textContent='Copy',1500)">Copy</button>
+                        </div>
+                        <div style="color:var(--text-muted);font-family:sans-serif;font-size:11px;margin-bottom:4px">${esc(a.derivationPath)}</div>
+                        <div style="word-break:break-all">${esc(a.xpub)}</div>
+                    </div>`).join('');
+                list.innerHTML = html || '<span style="color:var(--text-muted)">No xpubs available</span>';
+                list.style.display = '';
+                status.innerHTML = `<span style="color:var(--green)">${data.accounts.length} accounts</span>`;
             } catch (err) {
                 status.innerHTML = `<span style="color:var(--red)">Failed: ${esc(err.message)}</span>`;
             }
