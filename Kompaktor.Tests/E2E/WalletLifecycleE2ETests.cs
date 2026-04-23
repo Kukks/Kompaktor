@@ -679,6 +679,99 @@ public class WalletLifecycleE2ETests
     }
 
     [Fact]
+    public async Task Batch_send_rejects_empty_array()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.PostAsJsonAsync("/api/payments/batch-send", Array.Empty<object>());
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Batch_send_rejects_over_50_items()
+    {
+        // The endpoint caps each batch at 50 entries (Program.cs:1495-1496).
+        // We don't need valid addresses because the length gate runs first.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var oversized = Enumerable.Range(0, 51)
+            .Select(_ => new { Destination = "placeholder", AmountSat = 1_000L })
+            .ToArray();
+
+        var resp = await client.PostAsJsonAsync("/api/payments/batch-send", oversized);
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Batch_send_rejects_invalid_address_without_partial_writes()
+    {
+        // Validation is all-or-nothing: if ANY entry has an invalid address,
+        // the whole batch is rejected and no PendingPayment rows are created.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var receive = await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address");
+        var addr = receive.GetProperty("address").GetString()!;
+
+        var mixed = new[]
+        {
+            new { Destination = addr, AmountSat = 1_000L },
+            new { Destination = "not-a-real-address", AmountSat = 2_000L },
+            new { Destination = addr, AmountSat = 3_000L }
+        };
+
+        var resp = await client.PostAsJsonAsync("/api/payments/batch-send", mixed);
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+
+        // Nothing should have been persisted.
+        var payments = await client.GetFromJsonAsync<JsonElement>("/api/payments");
+        Assert.Empty(payments.EnumerateArray());
+    }
+
+    [Fact]
+    public async Task Batch_send_creates_all_pending_payments_when_addresses_valid()
+    {
+        // Happy path: a 3-entry batch should result in 3 PendingPayment rows
+        // in "Pending" status (no UTXOs to actually spend, but the records
+        // exist for the scheduler to retry/fail later).
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var receive = await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address");
+        var addr = receive.GetProperty("address").GetString()!;
+
+        var batch = new[]
+        {
+            new { Destination = addr, AmountSat = 1_100L, Label = "b1" },
+            new { Destination = addr, AmountSat = 1_200L, Label = "b2" },
+            new { Destination = addr, AmountSat = 1_300L, Label = "b3" }
+        };
+
+        var resp = await client.PostAsJsonAsync("/api/payments/batch-send", batch);
+        resp.EnsureSuccessStatusCode();
+
+        var body = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(3, body.GetProperty("count").GetInt32());
+        var items = body.GetProperty("payments").EnumerateArray().ToArray();
+        Assert.Equal(3, items.Length);
+        Assert.All(items, i => Assert.Equal("Outbound", i.GetProperty("direction").GetString()));
+
+        // Each amount maps to a distinct label.
+        var labelsByAmount = items.ToDictionary(
+            i => i.GetProperty("amountSat").GetInt64(),
+            i => i.GetProperty("label").GetString());
+        Assert.Equal("b1", labelsByAmount[1_100]);
+        Assert.Equal("b2", labelsByAmount[1_200]);
+        Assert.Equal("b3", labelsByAmount[1_300]);
+    }
+
+    [Fact]
     public async Task Transaction_detail_returns_received_utxo_from_seeded_backend()
     {
         // Drives the receive pipeline end-to-end: stage a UTXO on the fake
