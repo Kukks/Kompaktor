@@ -39,6 +39,8 @@ public class WalletPaymentManager : IOutboundPaymentManager, IInboundPaymentMana
         {
             await ExpireStalePaymentsAsync();
 
+            await ActivateScheduledPaymentsAsync();
+
             var query = _db.PendingPayments
                 .Where(p => p.WalletId == _walletId && p.Direction == "Outbound");
 
@@ -48,6 +50,9 @@ public class WalletPaymentManager : IOutboundPaymentManager, IInboundPaymentMana
                 query = query.Where(p => p.Status == "Pending" || p.Status == "Reserved");
 
             var entities = await query.ToListAsync();
+            // Exclude payments scheduled for the future
+            var now = DateTimeOffset.UtcNow;
+            entities = entities.Where(e => e.ScheduledAt is null || e.ScheduledAt <= now).ToList();
             return entities.Select(ToProtocolPayment).ToArray();
         }
         finally
@@ -62,6 +67,7 @@ public class WalletPaymentManager : IOutboundPaymentManager, IInboundPaymentMana
         try
         {
             await ExpireStalePaymentsAsync();
+            await ActivateScheduledPaymentsAsync();
 
             var query = _db.PendingPayments
                 .Where(p => p.WalletId == _walletId && p.Direction == "Inbound");
@@ -72,6 +78,8 @@ public class WalletPaymentManager : IOutboundPaymentManager, IInboundPaymentMana
                 query = query.Where(p => p.Status == "Pending" || p.Status == "Reserved");
 
             var entities = await query.ToListAsync();
+            var now = DateTimeOffset.UtcNow;
+            entities = entities.Where(e => e.ScheduledAt is null || e.ScheduledAt <= now).ToList();
             return entities.Select(ToProtocolPayment).ToArray();
         }
         finally
@@ -187,13 +195,14 @@ public class WalletPaymentManager : IOutboundPaymentManager, IInboundPaymentMana
     /// </summary>
     public async Task<PendingPaymentEntity> CreateOutboundPaymentAsync(
         string destination, long amountSat, bool interactive = true, bool urgent = false,
-        string? label = null, TimeSpan? expiry = null)
+        string? label = null, TimeSpan? expiry = null, DateTimeOffset? scheduledAt = null)
     {
         if (amountSat < 546)
             throw new ArgumentException("Amount below dust limit (546 sats)");
 
         var address = BitcoinAddress.Create(destination, _network);
 
+        var isScheduled = scheduledAt.HasValue && scheduledAt.Value > DateTimeOffset.UtcNow;
         var entity = new PendingPaymentEntity
         {
             WalletId = _walletId,
@@ -203,8 +212,9 @@ public class WalletPaymentManager : IOutboundPaymentManager, IInboundPaymentMana
             IsInteractive = interactive,
             IsUrgent = urgent,
             Label = label,
-            Status = "Pending",
-            ExpiresAt = expiry.HasValue ? DateTimeOffset.UtcNow + expiry.Value : null
+            Status = isScheduled ? "Scheduled" : "Pending",
+            ExpiresAt = expiry.HasValue ? DateTimeOffset.UtcNow + expiry.Value : null,
+            ScheduledAt = scheduledAt
         };
 
         // For interactive outbound: generate a protocol key for the sender
@@ -257,6 +267,37 @@ public class WalletPaymentManager : IOutboundPaymentManager, IInboundPaymentMana
         _db.PendingPayments.Add(entity);
         await _db.SaveChangesAsync();
         return entity;
+    }
+
+    /// <summary>
+    /// Flips any "Scheduled" payments whose ScheduledAt has elapsed to "Pending".
+    /// Safe to call from list endpoints — it's idempotent and only writes when
+    /// there are due payments.
+    /// </summary>
+    public async Task ActivateScheduledPaymentsAsync()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var scheduled = await _db.PendingPayments
+            .Where(p => p.WalletId == _walletId)
+            .Where(p => p.Status == "Scheduled")
+            .Where(p => p.ScheduledAt != null)
+            .ToListAsync();
+
+        var activated = scheduled.Where(p => p.ScheduledAt <= now).ToList();
+        if (activated.Count > 0)
+        {
+            foreach (var p in activated)
+                p.Status = "Pending";
+            await _db.SaveChangesAsync();
+
+            try
+            {
+                var webhookSvc = new PaymentWebhookService(_db, _walletId);
+                foreach (var p in activated)
+                    await webhookSvc.DeliverAsync(p, "Activated");
+            }
+            catch { }
+        }
     }
 
     private async Task ExpireStalePaymentsAsync()

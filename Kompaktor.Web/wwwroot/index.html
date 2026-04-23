@@ -974,9 +974,13 @@
                                 <input type="text" id="payLabel" placeholder="Optional" style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:4px;font-size:13px">
                             </div>
                         </div>
-                        <div style="display:flex;gap:12px;align-items:center;margin-bottom:12px">
+                        <div style="display:flex;gap:12px;align-items:center;margin-bottom:8px">
                             <label style="font-size:12px;color:var(--text-muted);cursor:pointer"><input type="checkbox" id="payInteractive" checked> Interactive</label>
                             <label style="font-size:12px;color:var(--text-muted);cursor:pointer" title="Fall back to non-interactive if peer is offline"><input type="checkbox" id="payUrgent"> Urgent</label>
+                            <label style="font-size:12px;color:var(--text-muted);cursor:pointer;margin-left:auto" title="Defer activation until a future date/time"><input type="checkbox" id="payScheduleToggle" onchange="document.getElementById('payScheduleAt').style.display=this.checked?'inline-block':'none'"> Schedule for later</label>
+                        </div>
+                        <div style="margin-bottom:12px">
+                            <input type="datetime-local" id="payScheduleAt" style="display:none;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:4px;font-size:12px">
                         </div>
                         <button class="send-btn" onclick="createSendPayment()">Queue Payment</button>
                         <span id="payStatus" style="font-size:12px;margin-left:8px"></span>
@@ -2764,6 +2768,8 @@
             const label = document.getElementById('payLabel').value.trim();
             const interactive = document.getElementById('payInteractive').checked;
             const urgent = document.getElementById('payUrgent').checked;
+            const scheduleToggle = document.getElementById('payScheduleToggle').checked;
+            const scheduleLocal = document.getElementById('payScheduleAt').value;
             const status = document.getElementById('payStatus');
 
             if (!dest || !amount || amount <= 0) {
@@ -2771,12 +2777,19 @@
                 return;
             }
 
+            // datetime-local gives us wall-clock in the user's timezone; convert to unix seconds.
+            let scheduledAt = null;
+            if (scheduleToggle && scheduleLocal) {
+                const dt = new Date(scheduleLocal);
+                if (!isNaN(dt.getTime())) scheduledAt = Math.floor(dt.getTime() / 1000);
+            }
+
             status.innerHTML = '<span style="color:var(--yellow)">Creating...</span>';
             try {
                 const res = await fetch('/api/payments/send', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ destination: dest, amountSat: amount, interactive, urgent, label: label || null })
+                    body: JSON.stringify({ destination: dest, amountSat: amount, interactive, urgent, label: label || null, scheduledAt })
                 });
                 const data = await res.json();
                 if (!res.ok) {
@@ -2787,7 +2800,13 @@
                 document.getElementById('payDest').value = '';
                 document.getElementById('payAmount').value = '';
                 document.getElementById('payLabel').value = '';
-                showToast(`Payment of ${amount.toLocaleString()} sats queued`, 'success');
+                document.getElementById('payScheduleToggle').checked = false;
+                document.getElementById('payScheduleAt').value = '';
+                document.getElementById('payScheduleAt').style.display = 'none';
+                const toastMsg = scheduledAt
+                    ? `Payment of ${amount.toLocaleString()} sats scheduled`
+                    : `Payment of ${amount.toLocaleString()} sats queued`;
+                showToast(toastMsg, 'success');
                 await loadPayments();
                 setTimeout(() => { status.innerHTML = ''; }, 3000);
             } catch (err) {

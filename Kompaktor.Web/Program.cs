@@ -1320,6 +1320,10 @@ app.MapGet("/api/payments", async (WalletDbContext db) =>
     var wallet = await db.Wallets.FirstOrDefaultAsync();
     if (wallet is null) return Results.Ok(Array.Empty<object>());
 
+    // Drive scheduled-payment activation from the list path so UI-visible state
+    // always reflects the current time, even when the CoinJoin manager is idle.
+    try { await new WalletPaymentManager(db, wallet.Id, network).ActivateScheduledPaymentsAsync(); } catch { }
+
     // SQLite's EF Core provider can't ORDER BY DateTimeOffset — pull then sort in memory.
     var payments = (await db.PendingPayments
             .Where(p => p.WalletId == wallet.Id)
@@ -1332,7 +1336,7 @@ app.MapGet("/api/payments", async (WalletDbContext db) =>
             amountBtc = p.AmountSat / 100_000_000.0,
             p.Destination, p.Status, p.IsInteractive, p.IsUrgent,
             p.Label, p.CompletedTxId, p.ProofJson, p.RetryCount, p.MaxRetries,
-            p.CreatedAt, p.CompletedAt, p.ExpiresAt
+            p.CreatedAt, p.CompletedAt, p.ExpiresAt, p.ScheduledAt
         })
         .ToList();
 
@@ -1389,7 +1393,7 @@ app.MapGet("/api/payments/search", async (
             amountBtc = p.AmountSat / 100_000_000.0,
             p.Destination, p.Status, p.IsInteractive, p.IsUrgent,
             p.Label, p.CompletedTxId, p.ProofJson, p.RetryCount, p.MaxRetries,
-            p.CreatedAt, p.CompletedAt, p.ExpiresAt
+            p.CreatedAt, p.CompletedAt, p.ExpiresAt, p.ScheduledAt
         })
         .ToList();
 
@@ -1419,7 +1423,7 @@ app.MapPost("/api/payments/send", async (WalletDbContext db, HttpContext ctx, Da
         var manager = new WalletPaymentManager(db, wallet.Id, network);
         var expiry = body.ExpiryMinutes.HasValue ? TimeSpan.FromMinutes(body.ExpiryMinutes.Value) : (TimeSpan?)null;
         var entity = await manager.CreateOutboundPaymentAsync(
-            body.Destination, body.AmountSat, body.Interactive, body.Urgent, body.Label, expiry);
+            body.Destination, body.AmountSat, body.Interactive, body.Urgent, body.Label, expiry, body.ScheduledAt);
 
         bus.Publish("payments");
         return Results.Ok(new
@@ -1428,7 +1432,7 @@ app.MapPost("/api/payments/send", async (WalletDbContext db, HttpContext ctx, Da
             amountBtc = entity.AmountSat / 100_000_000.0,
             entity.Destination, entity.Status, entity.IsInteractive,
             kompaktorPubKey = entity.KompaktorKeyHex,
-            entity.Label, entity.CreatedAt
+            entity.Label, entity.CreatedAt, entity.ScheduledAt
         });
     }
     catch (ArgumentException ex)
@@ -1465,7 +1469,7 @@ app.MapPost("/api/payments/batch-send", async (WalletDbContext db, HttpContext c
         {
             var expiry = item.ExpiryMinutes.HasValue ? TimeSpan.FromMinutes(item.ExpiryMinutes.Value) : (TimeSpan?)null;
             var entity = await manager.CreateOutboundPaymentAsync(
-                item.Destination, item.AmountSat, item.Interactive, item.Urgent, item.Label, expiry);
+                item.Destination, item.AmountSat, item.Interactive, item.Urgent, item.Label, expiry, item.ScheduledAt);
             created.Add(new
             {
                 entity.Id, entity.Direction, entity.AmountSat,
@@ -1572,7 +1576,7 @@ app.MapGet("/api/payments/{paymentId}/status", async (string paymentId, WalletDb
         amountBtc = entity.AmountSat / 100_000_000.0,
         entity.Destination, entity.Status, entity.IsInteractive, entity.IsUrgent,
         entity.RetryCount, entity.Label, entity.CompletedTxId, entity.ProofJson,
-        entity.CreatedAt, entity.CompletedAt, entity.ExpiresAt
+        entity.CreatedAt, entity.CompletedAt, entity.ExpiresAt, entity.ScheduledAt
     });
 }).WithTags("Payments");
 
@@ -2462,8 +2466,8 @@ record AddressBookRequest(string Label, string Address);
 record TransactionNoteRequest(string Text);
 record SendRequest(string Destination, long AmountSat, long FeeRateSatPerVb = 2, string Strategy = "PrivacyFirst", string Passphrase = "");
 record BroadcastPsbtRequest(string SignedPsbt);
-record CreatePaymentRequest(string Destination, long AmountSat, bool Interactive = true, bool Urgent = false, string? Label = null, int? ExpiryMinutes = null);
-record BatchSendRequest(string Destination, long AmountSat, bool Interactive = true, bool Urgent = false, string? Label = null, int? ExpiryMinutes = null);
+record CreatePaymentRequest(string Destination, long AmountSat, bool Interactive = true, bool Urgent = false, string? Label = null, int? ExpiryMinutes = null, DateTimeOffset? ScheduledAt = null);
+record BatchSendRequest(string Destination, long AmountSat, bool Interactive = true, bool Urgent = false, string? Label = null, int? ExpiryMinutes = null, DateTimeOffset? ScheduledAt = null);
 record CreateReceiveRequest(long AmountSat, string? Label = null, int? ExpiryMinutes = null);
 record WebhookCreateRequest(string Url, string? EventFilter = null);
 record VerifyBackupRequest(string Passphrase, VerifyBackupAnswer[] Answers);

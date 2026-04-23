@@ -1073,6 +1073,93 @@ public class WalletLifecycleE2ETests
         Assert.All(entries, e => Assert.True(e.GetProperty("isFrozen").GetBoolean()));
     }
 
+    [Fact]
+    public async Task Scheduled_payment_starts_dormant_and_activates_after_due_time()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+        var addr = (await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address"))
+            .GetProperty("address").GetString()!;
+
+        // Schedule ~2s in the future. The project's global JSON config encodes
+        // DateTimeOffset as unix-seconds, so we send an integer to match.
+        var dueAtUnix = DateTimeOffset.UtcNow.AddSeconds(2).ToUnixTimeSeconds();
+
+        var createResp = await client.PostAsJsonAsync("/api/payments/send", new
+        {
+            Destination = addr,
+            AmountSat = 50_000L,
+            Label = "payday-scheduled",
+            ScheduledAt = dueAtUnix
+        });
+        Assert.Equal(HttpStatusCode.OK, createResp.StatusCode);
+        var created = await createResp.Content.ReadFromJsonAsync<JsonElement>();
+        var paymentId = created.GetProperty("id").GetString()!;
+        Assert.Equal("Scheduled", created.GetProperty("status").GetString());
+        Assert.True(created.TryGetProperty("scheduledAt", out var sched) && sched.ValueKind != JsonValueKind.Null);
+
+        // Until the scheduled time elapses, the manager must still report it dormant.
+        var early = await client.GetFromJsonAsync<JsonElement>($"/api/payments/{paymentId}/status");
+        Assert.Equal("Scheduled", early.GetProperty("status").GetString());
+
+        // Poll /api/payments (which drives ActivateScheduledPaymentsAsync) until
+        // the payment flips to Pending.
+        var activated = await WaitForPaymentStatusAsync(client, paymentId, "Pending", timeoutSeconds: 12);
+        Assert.Equal("Pending", activated.GetProperty("status").GetString());
+    }
+
+    [Fact]
+    public async Task Scheduled_payment_at_past_time_is_immediately_pending()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+        var addr = (await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address"))
+            .GetProperty("address").GetString()!;
+
+        // A ScheduledAt in the past should be treated as "activate now": the
+        // create path checks `scheduledAt > UtcNow` before marking Scheduled.
+        var createResp = await client.PostAsJsonAsync("/api/payments/send", new
+        {
+            Destination = addr,
+            AmountSat = 12_345L,
+            ScheduledAt = DateTimeOffset.UtcNow.AddMinutes(-5).ToUnixTimeSeconds()
+        });
+        Assert.Equal(HttpStatusCode.OK, createResp.StatusCode);
+
+        var body = await createResp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("Pending", body.GetProperty("status").GetString());
+    }
+
+    [Fact]
+    public async Task Scheduled_payment_appears_in_payments_list_with_scheduledAt()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+        var addr = (await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address"))
+            .GetProperty("address").GetString()!;
+
+        await client.PostAsJsonAsync("/api/payments/send", new
+        {
+            Destination = addr,
+            AmountSat = 99_000L,
+            Label = "rent",
+            ScheduledAt = DateTimeOffset.UtcNow.AddHours(1).ToUnixTimeSeconds()
+        });
+
+        var list = await client.GetFromJsonAsync<JsonElement>("/api/payments");
+        var items = list.EnumerateArray().ToArray();
+        Assert.Single(items);
+        Assert.Equal("Scheduled", items[0].GetProperty("status").GetString());
+        Assert.True(items[0].TryGetProperty("scheduledAt", out var schedField));
+        Assert.NotEqual(JsonValueKind.Null, schedField.ValueKind);
+    }
+
     /// <summary>
     /// Stages a single confirmed UTXO on the fake backend against a fresh wallet
     /// receive address. Returns the DB-assigned utxoId once the wallet has
@@ -1148,5 +1235,26 @@ public class WalletLifecycleE2ETests
             await Task.Delay(250);
         }
         throw new TimeoutException($"Tx detail for {txId} never became available.");
+    }
+
+    /// <summary>
+    /// Polls /api/payments to keep the manager's activation sweep running,
+    /// then reads /api/payments/{id}/status until it matches the expected
+    /// state. `GET /api/payments` is what drives ActivateScheduledPaymentsAsync,
+    /// so a naive poll on the status endpoint alone would never tick.
+    /// </summary>
+    private static async Task<JsonElement> WaitForPaymentStatusAsync(
+        HttpClient client, string paymentId, string expectedStatus, int timeoutSeconds = 10)
+    {
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(timeoutSeconds);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            // Side-effect call: fetching /api/payments triggers manager activation sweep.
+            _ = await client.GetAsync("/api/payments");
+            var status = await client.GetFromJsonAsync<JsonElement>($"/api/payments/{paymentId}/status");
+            if (status.GetProperty("status").GetString() == expectedStatus) return status;
+            await Task.Delay(250);
+        }
+        throw new TimeoutException($"Payment {paymentId} never reached status={expectedStatus}.");
     }
 }

@@ -180,6 +180,8 @@ public class PendingPaymentEntity
     public int MaxRetries { get; set; } = 10;
     /// <summary>Optional expiration time — expired pending payments are auto-cancelled</summary>
     public DateTimeOffset? ExpiresAt { get; set; }
+    /// <summary>Scheduled activation time — payment stays dormant until this time</summary>
+    public DateTimeOffset? ScheduledAt { get; set; }
 }
 
 /// <summary>
