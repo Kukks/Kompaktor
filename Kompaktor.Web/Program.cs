@@ -5974,7 +5974,7 @@ internal static class TorReachability
         try
         {
             using var connectCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            connectCts.CancelAfter(TimeSpan.FromSeconds(5));
+            connectCts.CancelAfter(TimeSpan.FromSeconds(10));
             await tcp.ConnectAsync(host, port, connectCts.Token);
         }
         catch (Exception ex)
@@ -5986,7 +5986,12 @@ internal static class TorReachability
         {
             var stream = tcp.GetStream();
             using var ioCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            ioCts.CancelAfter(TimeSpan.FromSeconds(3));
+            // 10s I/O timeout: tight enough to catch a dead peer, loose enough
+            // to survive thread-pool starvation on overloaded CI runners where
+            // the fake-SOCKS5 listener's response task can be delayed seconds
+            // before getting scheduled. Real Tor responds in <100ms — this
+            // limit only matters for pathological cases.
+            ioCts.CancelAfter(TimeSpan.FromSeconds(10));
 
             // Offer both NoAuth (0x00) and UserPass (0x02); whichever the
             // server picks confirms SOCKS5 and tells us which stream

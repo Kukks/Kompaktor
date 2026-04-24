@@ -3367,7 +3367,10 @@ public class WalletLifecycleE2ETests
         var port = ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
 
         var serverDone = new TaskCompletionSource();
-        _ = Task.Run(async () =>
+        // LongRunning dedicates a thread to the listener so thread-pool
+        // starvation on overloaded CI runners can't delay the accept/read/write
+        // cycle past the probe's internal I/O timeout.
+        _ = Task.Factory.StartNew(async () =>
         {
             try
             {
@@ -3379,7 +3382,7 @@ public class WalletLifecycleE2ETests
                 await Task.Delay(100); // let client read before we close
             }
             finally { listener.Stop(); serverDone.SetResult(); }
-        });
+        }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default).Unwrap();
 
         await using var factory = new KompaktorWebFactory();
         using var client = factory.CreateClient();
