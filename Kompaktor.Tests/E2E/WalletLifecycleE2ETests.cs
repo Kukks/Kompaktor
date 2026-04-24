@@ -8910,4 +8910,124 @@ public class WalletLifecycleE2ETests
         Assert.Equal(15_000, labels[2].GetProperty("liveSat").GetInt64());
     }
 
+    [Fact]
+    public async Task BalanceBreakdown_empty_wallet_returns_zero_partitions()
+    {
+        // Pre-seed path: no UTXOs, every side must still be { count: 0, sat: 0 }
+        // so the UI can bind directly without null-guarding. All four
+        // partitions' sides sum to 0 — a trivial invariant check.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var body = await client.GetFromJsonAsync<JsonElement>("/api/wallet/balance-breakdown");
+        Assert.Equal(0, body.GetProperty("totalLiveUtxos").GetInt32());
+        Assert.Equal(0, body.GetProperty("totalLiveSat").GetInt64());
+        foreach (var partition in new[] { "byConfirmation", "byFreeze", "byMixing", "byExposure" })
+        {
+            var p = body.GetProperty(partition);
+            foreach (var side in p.EnumerateObject())
+            {
+                Assert.Equal(0, side.Value.GetProperty("count").GetInt32());
+                Assert.Equal(0, side.Value.GetProperty("sat").GetInt64());
+            }
+        }
+    }
+
+    [Fact]
+    public async Task BalanceBreakdown_four_dimensions_are_independent_cuts_of_same_set()
+    {
+        // Seed 3 UTXOs with distinct dimension combinations, then verify each
+        // partition's two sides sum to the total (the "independent cut"
+        // invariant). Also check specific placements so the classification is
+        // proven beyond shape-correctness:
+        //   U1 (10k): confirmed, unfrozen, unmixed, non-exposed  → baseline
+        //   U2 (20k): unconfirmed, frozen, mixed (CJ output), exposed address
+        //   U3 (30k): confirmed, unfrozen, mixed, exposed address
+        // So per partition, the expected split (count/sat):
+        //   byConfirmation  → confirmed 2 (40k) | unconfirmed 1 (20k)
+        //   byFreeze        → frozen 1 (20k)    | unfrozen 2 (40k)
+        //   byMixing        → mixed 2 (50k)     | unmixed 1 (10k)
+        //   byExposure      → exposed 2 (50k)   | nonExposed 1 (10k)
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+        var u1 = await SeedUtxoAsync(factory, client, amountSat: 10_000, tag: 0xF0);
+        var u2 = await SeedUtxoAsync(factory, client, amountSat: 20_000, tag: 0xF1);
+        var u3 = await SeedUtxoAsync(factory, client, amountSat: 30_000, tag: 0xF2);
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<WalletDbContext>();
+            var utxo2 = await db.Utxos.Include(u => u.Address).FirstAsync(u => u.Id == u2);
+            var utxo3 = await db.Utxos.Include(u => u.Address).FirstAsync(u => u.Id == u3);
+            utxo2.ConfirmedHeight = null; // make unconfirmed
+            utxo2.IsFrozen = true;
+            utxo2.IsCoinJoinOutput = true;
+            utxo2.Address.IsExposed = true;
+            utxo3.IsCoinJoinOutput = true;
+            utxo3.Address.IsExposed = true;
+            await db.SaveChangesAsync();
+        }
+
+        var body = await client.GetFromJsonAsync<JsonElement>("/api/wallet/balance-breakdown");
+        Assert.Equal(3, body.GetProperty("totalLiveUtxos").GetInt32());
+        Assert.Equal(60_000, body.GetProperty("totalLiveSat").GetInt64());
+
+        void AssertSide(JsonElement side, int count, long sat)
+        {
+            Assert.Equal(count, side.GetProperty("count").GetInt32());
+            Assert.Equal(sat, side.GetProperty("sat").GetInt64());
+        }
+
+        var conf = body.GetProperty("byConfirmation");
+        AssertSide(conf.GetProperty("confirmed"), 2, 40_000);
+        AssertSide(conf.GetProperty("unconfirmed"), 1, 20_000);
+
+        var frz = body.GetProperty("byFreeze");
+        AssertSide(frz.GetProperty("frozen"), 1, 20_000);
+        AssertSide(frz.GetProperty("unfrozen"), 2, 40_000);
+
+        var mix = body.GetProperty("byMixing");
+        AssertSide(mix.GetProperty("mixed"), 2, 50_000);
+        AssertSide(mix.GetProperty("unmixed"), 1, 10_000);
+
+        var exp = body.GetProperty("byExposure");
+        AssertSide(exp.GetProperty("exposed"), 2, 50_000);
+        AssertSide(exp.GetProperty("nonExposed"), 1, 10_000);
+    }
+
+    [Fact]
+    public async Task BalanceBreakdown_excludes_spent_utxos_from_every_dimension()
+    {
+        // A spent UTXO is not "live" — it must be invisible to balance-breakdown
+        // even if its flags would otherwise land it in several categories. This
+        // protects the "totalLiveSat" contract the UI relies on for the main
+        // balance number.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+        var live = await SeedUtxoAsync(factory, client, amountSat: 50_000, tag: 0x01);
+        var spent = await SeedUtxoAsync(factory, client, amountSat: 999_999, tag: 0x02);
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<WalletDbContext>();
+            var u = await db.Utxos.Include(x => x.Address).FirstAsync(x => x.Id == spent);
+            u.SpentByTxId = "forged-spender";
+            u.IsFrozen = true;                // flags must NOT contribute to any partition
+            u.IsCoinJoinOutput = true;
+            u.Address.IsExposed = true;
+            await db.SaveChangesAsync();
+        }
+
+        var body = await client.GetFromJsonAsync<JsonElement>("/api/wallet/balance-breakdown");
+        Assert.Equal(1, body.GetProperty("totalLiveUtxos").GetInt32());
+        Assert.Equal(50_000, body.GetProperty("totalLiveSat").GetInt64());
+        // Frozen pile should be empty — spent UTXOs don't count as locked-up.
+        var frz = body.GetProperty("byFreeze");
+        Assert.Equal(0, frz.GetProperty("frozen").GetProperty("count").GetInt32());
+        Assert.Equal(1, frz.GetProperty("unfrozen").GetProperty("count").GetInt32());
+    }
+
 }

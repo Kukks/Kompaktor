@@ -5410,6 +5410,79 @@ app.MapGet("/api/wallet/utxo-stats-by-label", async (WalletDbContext db) =>
     });
 }).WithTags("Wallet");
 
+// Live-UTXO balance cut across four independent boolean dimensions. Each cut
+// is a FULL partition of the live set (both sides sum to totalLive), so the UI
+// can render each as an independent progress bar without needing to figure out
+// which field "wins" when multiple apply. Dimensions:
+//   - byConfirmation: confirmed vs unconfirmed. Unconfirmed funds aren't
+//     yet spendable in most UX paths — users want this number isolated.
+//   - byFreeze: frozen vs unfrozen. Frozen UTXOs are deliberately excluded
+//     from automatic selection; seeing the frozen pile separately helps
+//     users notice when too much is locked up.
+//   - byMixing: mixed (IsCoinJoinOutput) vs unmixed. Direct proxy for
+//     "has this coin passed through a round". Doesn't account for CJ input
+//     participation — that's a separate signal (effective-score, mixing-progress).
+//   - byExposure: exposed vs not. Address-level flag raised when the address
+//     has been revealed to coordinator/peers.
+// Each side has { count, sat }. A UTXO appears in exactly one side of each
+// partition, so sides in a single partition always sum to totalLive.
+app.MapGet("/api/wallet/balance-breakdown", async (WalletDbContext db) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    object Empty() => new { count = 0, sat = 0L };
+    if (wallet is null)
+        return Results.Ok(new
+        {
+            totalLiveUtxos = 0,
+            totalLiveSat = 0L,
+            byConfirmation = new { confirmed = Empty(), unconfirmed = Empty() },
+            byFreeze = new { frozen = Empty(), unfrozen = Empty() },
+            byMixing = new { mixed = Empty(), unmixed = Empty() },
+            byExposure = new { exposed = Empty(), nonExposed = Empty() }
+        });
+
+    // Pull just the five fields we care about — no graph materialization
+    // for addresses/accounts/coinjoins. One scan, four partitions in-memory.
+    var utxos = await db.Utxos
+        .Include(u => u.Address).ThenInclude(a => a.Account)
+        .Where(u => u.Address.Account.WalletId == wallet.Id)
+        .Where(u => u.SpentByTxId == null)
+        .Select(u => new
+        {
+            u.AmountSat,
+            IsConfirmed = u.ConfirmedHeight != null,
+            u.IsFrozen,
+            u.IsCoinJoinOutput,
+            u.Address.IsExposed
+        })
+        .ToListAsync();
+
+    object Side(IEnumerable<long> sats)
+    {
+        var list = sats.ToList();
+        return new { count = list.Count, sat = list.Sum() };
+    }
+
+    var confirmed = utxos.Where(u => u.IsConfirmed).Select(u => u.AmountSat);
+    var unconfirmed = utxos.Where(u => !u.IsConfirmed).Select(u => u.AmountSat);
+    var frozen = utxos.Where(u => u.IsFrozen).Select(u => u.AmountSat);
+    var unfrozen = utxos.Where(u => !u.IsFrozen).Select(u => u.AmountSat);
+    var mixed = utxos.Where(u => u.IsCoinJoinOutput).Select(u => u.AmountSat);
+    var unmixed = utxos.Where(u => !u.IsCoinJoinOutput).Select(u => u.AmountSat);
+    var exposed = utxos.Where(u => u.IsExposed).Select(u => u.AmountSat);
+    var nonExposed = utxos.Where(u => !u.IsExposed).Select(u => u.AmountSat);
+
+    return Results.Ok(new
+    {
+        totalLiveUtxos = utxos.Count,
+        totalLiveSat = utxos.Sum(u => u.AmountSat),
+        byConfirmation = new { confirmed = Side(confirmed), unconfirmed = Side(unconfirmed) },
+        byFreeze = new { frozen = Side(frozen), unfrozen = Side(unfrozen) },
+        byMixing = new { mixed = Side(mixed), unmixed = Side(unmixed) },
+        byExposure = new { exposed = Side(exposed), nonExposed = Side(nonExposed) }
+    });
+}).WithTags("Wallet");
+
 // Label coverage metric: one-shot dashboard summary of how well the wallet is
 // tagged, broken down by entity type. Scope decisions:
 //   - UTXOs: live only (spent UTXOs aren't actionable — you can't re-tag them
