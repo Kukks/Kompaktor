@@ -9406,4 +9406,150 @@ public class WalletLifecycleE2ETests
         Assert.Equal("tiny", rows[2].GetProperty("label").GetString());
     }
 
+    [Fact]
+    public async Task RetryDistribution_empty_wallet_returns_zero_shape()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var body = await client.GetFromJsonAsync<JsonElement>("/api/payments/retry-distribution");
+        Assert.Equal(80, body.GetProperty("nearLimitPercent").GetInt32());
+        Assert.Equal(0, body.GetProperty("total").GetInt32());
+        Assert.Empty(body.GetProperty("buckets").EnumerateArray());
+        Assert.Equal(0, body.GetProperty("nearLimitCount").GetInt32());
+        Assert.Empty(body.GetProperty("nearLimitPayments").EnumerateArray());
+        Assert.Equal(0.0, body.GetProperty("medianRetriesCompleted").GetDouble());
+        Assert.Equal(0, body.GetProperty("maxRetriesCompleted").GetInt32());
+    }
+
+    [Fact]
+    public async Task RetryDistribution_buckets_split_by_status_lifecycle()
+    {
+        // Mix of retry counts across statuses: verify the histogram separates
+        // Active (Pending/Reserved/Committed), Completed, and Failed buckets
+        // at each RetryCount value and sorts by retryCount ascending.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<WalletDbContext>();
+            var wallet = await db.Wallets.FirstAsync();
+            db.PendingPayments.AddRange(
+                // retry=0: 2 completed, 1 active(Pending)
+                new PendingPaymentEntity { WalletId = wallet.Id, Direction = "Outbound", AmountSat = 1, Destination = "a", Status = "Completed", RetryCount = 0, MaxRetries = 10 },
+                new PendingPaymentEntity { WalletId = wallet.Id, Direction = "Outbound", AmountSat = 2, Destination = "b", Status = "Completed", RetryCount = 0, MaxRetries = 10 },
+                new PendingPaymentEntity { WalletId = wallet.Id, Direction = "Outbound", AmountSat = 3, Destination = "c", Status = "Pending", RetryCount = 0, MaxRetries = 10 },
+                // retry=2: 1 active(Reserved), 1 failed
+                new PendingPaymentEntity { WalletId = wallet.Id, Direction = "Outbound", AmountSat = 4, Destination = "d", Status = "Reserved", RetryCount = 2, MaxRetries = 10 },
+                new PendingPaymentEntity { WalletId = wallet.Id, Direction = "Outbound", AmountSat = 5, Destination = "e", Status = "Failed", RetryCount = 2, MaxRetries = 10 },
+                // retry=5: 1 active(Committed)
+                new PendingPaymentEntity { WalletId = wallet.Id, Direction = "Outbound", AmountSat = 6, Destination = "f", Status = "Committed", RetryCount = 5, MaxRetries = 10 });
+            await db.SaveChangesAsync();
+        }
+
+        var body = await client.GetFromJsonAsync<JsonElement>("/api/payments/retry-distribution");
+        Assert.Equal(6, body.GetProperty("total").GetInt32());
+        var buckets = body.GetProperty("buckets").EnumerateArray().ToList();
+        Assert.Equal(3, buckets.Count);
+
+        Assert.Equal(0, buckets[0].GetProperty("retryCount").GetInt32());
+        Assert.Equal(3, buckets[0].GetProperty("total").GetInt32());
+        Assert.Equal(1, buckets[0].GetProperty("active").GetInt32());
+        Assert.Equal(2, buckets[0].GetProperty("completed").GetInt32());
+        Assert.Equal(0, buckets[0].GetProperty("failed").GetInt32());
+
+        Assert.Equal(2, buckets[1].GetProperty("retryCount").GetInt32());
+        Assert.Equal(1, buckets[1].GetProperty("active").GetInt32());
+        Assert.Equal(0, buckets[1].GetProperty("completed").GetInt32());
+        Assert.Equal(1, buckets[1].GetProperty("failed").GetInt32());
+
+        Assert.Equal(5, buckets[2].GetProperty("retryCount").GetInt32());
+        Assert.Equal(1, buckets[2].GetProperty("active").GetInt32());
+    }
+
+    [Fact]
+    public async Task RetryDistribution_near_limit_flags_actives_at_or_above_threshold_only()
+    {
+        // Default threshold = 80%. Seed payments at various exhaustion levels.
+        // MaxRetries=0 (unlimited) must never flag. Resolved statuses
+        // (Completed/Failed) must never flag even at 100% exhaustion.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<WalletDbContext>();
+            var wallet = await db.Wallets.FirstAsync();
+            db.PendingPayments.AddRange(
+                // 70% exhausted active — below threshold, excluded
+                new PendingPaymentEntity { WalletId = wallet.Id, Direction = "Outbound", AmountSat = 1, Destination = "a", Status = "Pending", RetryCount = 7, MaxRetries = 10, Label = "safe" },
+                // 80% exhausted active — at threshold, included
+                new PendingPaymentEntity { WalletId = wallet.Id, Direction = "Outbound", AmountSat = 2, Destination = "b", Status = "Pending", RetryCount = 8, MaxRetries = 10, Label = "near" },
+                // 90% exhausted active — above threshold, included (higher priority)
+                new PendingPaymentEntity { WalletId = wallet.Id, Direction = "Outbound", AmountSat = 3, Destination = "c", Status = "Reserved", RetryCount = 9, MaxRetries = 10, Label = "closer" },
+                // Unlimited retries — never flagged
+                new PendingPaymentEntity { WalletId = wallet.Id, Direction = "Outbound", AmountSat = 4, Destination = "d", Status = "Pending", RetryCount = 99, MaxRetries = 0, Label = "unlimited" },
+                // Completed at 100% — resolved, never flagged
+                new PendingPaymentEntity { WalletId = wallet.Id, Direction = "Outbound", AmountSat = 5, Destination = "e", Status = "Completed", RetryCount = 10, MaxRetries = 10, Label = "done" },
+                // Failed at 100% — resolved, never flagged
+                new PendingPaymentEntity { WalletId = wallet.Id, Direction = "Outbound", AmountSat = 6, Destination = "f", Status = "Failed", RetryCount = 10, MaxRetries = 10, Label = "dead" });
+            await db.SaveChangesAsync();
+        }
+
+        var body = await client.GetFromJsonAsync<JsonElement>("/api/payments/retry-distribution");
+        Assert.Equal(2, body.GetProperty("nearLimitCount").GetInt32());
+        var arr = body.GetProperty("nearLimitPayments").EnumerateArray().ToList();
+        Assert.Equal(2, arr.Count);
+        // Sorted by exhaustionPercent desc: "closer" (90%) before "near" (80%)
+        Assert.Equal("closer", arr[0].GetProperty("label").GetString());
+        Assert.Equal(90, arr[0].GetProperty("exhaustionPercent").GetInt32());
+        Assert.Equal(1, arr[0].GetProperty("remainingAttempts").GetInt32());
+        Assert.Equal("near", arr[1].GetProperty("label").GetString());
+        Assert.Equal(80, arr[1].GetProperty("exhaustionPercent").GetInt32());
+        Assert.Equal(2, arr[1].GetProperty("remainingAttempts").GetInt32());
+    }
+
+    [Fact]
+    public async Task RetryDistribution_median_from_completed_and_custom_threshold_applied()
+    {
+        // Median is computed ONLY over Completed payments' retry counts.
+        // Active/Failed don't contribute. Also verify ?nearLimitPercent=50
+        // widens the near-limit net — a 60%-exhausted payment now qualifies.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<WalletDbContext>();
+            var wallet = await db.Wallets.FirstAsync();
+            db.PendingPayments.AddRange(
+                // Completed retries: 0, 1, 2, 3, 4 → median = 2
+                new PendingPaymentEntity { WalletId = wallet.Id, Direction = "Outbound", AmountSat = 1, Destination = "a", Status = "Completed", RetryCount = 0, MaxRetries = 10 },
+                new PendingPaymentEntity { WalletId = wallet.Id, Direction = "Outbound", AmountSat = 2, Destination = "b", Status = "Completed", RetryCount = 1, MaxRetries = 10 },
+                new PendingPaymentEntity { WalletId = wallet.Id, Direction = "Outbound", AmountSat = 3, Destination = "c", Status = "Completed", RetryCount = 2, MaxRetries = 10 },
+                new PendingPaymentEntity { WalletId = wallet.Id, Direction = "Outbound", AmountSat = 4, Destination = "d", Status = "Completed", RetryCount = 3, MaxRetries = 10 },
+                new PendingPaymentEntity { WalletId = wallet.Id, Direction = "Outbound", AmountSat = 5, Destination = "e", Status = "Completed", RetryCount = 4, MaxRetries = 10 },
+                // Failed at 10 retries — must NOT move the median
+                new PendingPaymentEntity { WalletId = wallet.Id, Direction = "Outbound", AmountSat = 6, Destination = "f", Status = "Failed", RetryCount = 10, MaxRetries = 10 },
+                // 60%-exhausted active: excluded at default 80% but included at 50%
+                new PendingPaymentEntity { WalletId = wallet.Id, Direction = "Outbound", AmountSat = 7, Destination = "g", Status = "Pending", RetryCount = 6, MaxRetries = 10, Label = "mid" });
+            await db.SaveChangesAsync();
+        }
+
+        var @default = await client.GetFromJsonAsync<JsonElement>("/api/payments/retry-distribution");
+        Assert.Equal(2.0, @default.GetProperty("medianRetriesCompleted").GetDouble());
+        Assert.Equal(4, @default.GetProperty("maxRetriesCompleted").GetInt32());
+        Assert.Equal(0, @default.GetProperty("nearLimitCount").GetInt32());
+
+        var wider = await client.GetFromJsonAsync<JsonElement>("/api/payments/retry-distribution?nearLimitPercent=50");
+        Assert.Equal(50, wider.GetProperty("nearLimitPercent").GetInt32());
+        Assert.Equal(1, wider.GetProperty("nearLimitCount").GetInt32());
+        Assert.Equal("mid", wider.GetProperty("nearLimitPayments").EnumerateArray().First()
+            .GetProperty("label").GetString());
+    }
 }

@@ -3731,6 +3731,96 @@ app.MapGet("/api/payments/stats", async (WalletDbContext db) =>
     });
 }).WithTags("Payments");
 
+// Retry-count histogram + near-limit warnings. Pairs with the auto-fail
+// retry-limit logic: helps operators spot active payments approaching their
+// MaxRetries cliff before they're auto-failed, and see whether retries are
+// clustering (possibly indicating a coordinator-side issue).
+app.MapGet("/api/payments/retry-distribution", async (WalletDbContext db, int nearLimitPercent = 80) =>
+{
+    nearLimitPercent = Math.Clamp(nearLimitPercent, 1, 100);
+
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null)
+        return Results.Ok(new
+        {
+            nearLimitPercent,
+            total = 0,
+            buckets = Array.Empty<object>(),
+            nearLimitCount = 0,
+            nearLimitPayments = Array.Empty<object>(),
+            medianRetriesCompleted = 0.0,
+            maxRetriesCompleted = 0
+        });
+
+    var payments = await db.PendingPayments
+        .Where(p => p.WalletId == wallet.Id)
+        .ToListAsync();
+
+    // Group by RetryCount; within each bucket split by status lifecycle.
+    // Active = in-flight (not yet resolved); matches the /stuck endpoint.
+    var buckets = payments
+        .GroupBy(p => p.RetryCount)
+        .OrderBy(g => g.Key)
+        .Select(g => new
+        {
+            retryCount = g.Key,
+            total = g.Count(),
+            active = g.Count(p => p.Status is "Pending" or "Reserved" or "Committed"),
+            completed = g.Count(p => p.Status == "Completed"),
+            failed = g.Count(p => p.Status == "Failed")
+        })
+        .ToList();
+
+    // Near-limit = active payment whose retry count is within nearLimitPercent
+    // of its MaxRetries. MaxRetries=0 means unlimited — never flag those.
+    var nearLimit = payments
+        .Where(p => p.Status is "Pending" or "Reserved" or "Committed")
+        .Where(p => p.MaxRetries > 0)
+        .Where(p => p.RetryCount * 100 >= p.MaxRetries * nearLimitPercent)
+        .OrderByDescending(p => (double)p.RetryCount / p.MaxRetries)
+        .ThenByDescending(p => p.RetryCount)
+        .Select(p => new
+        {
+            p.Id,
+            p.Direction,
+            p.AmountSat,
+            p.Status,
+            p.RetryCount,
+            p.MaxRetries,
+            p.Label,
+            remainingAttempts = p.MaxRetries - p.RetryCount,
+            exhaustionPercent = (int)Math.Round((double)p.RetryCount / p.MaxRetries * 100)
+        })
+        .ToList();
+
+    // Median retry count among Completed payments — tells operators what
+    // "normal" retry-to-success looks like in this wallet's environment.
+    var completedRetries = payments
+        .Where(p => p.Status == "Completed")
+        .Select(p => p.RetryCount)
+        .OrderBy(r => r)
+        .ToList();
+    double median = 0;
+    if (completedRetries.Count > 0)
+    {
+        var mid = completedRetries.Count / 2;
+        median = completedRetries.Count % 2 == 0
+            ? (completedRetries[mid - 1] + completedRetries[mid]) / 2.0
+            : completedRetries[mid];
+    }
+
+    return Results.Ok(new
+    {
+        nearLimitPercent,
+        total = payments.Count,
+        buckets,
+        nearLimitCount = nearLimit.Count,
+        nearLimitPayments = nearLimit,
+        medianRetriesCompleted = median,
+        maxRetriesCompleted = completedRetries.Count > 0 ? completedRetries[^1] : 0
+    });
+}).WithTags("Payments");
+
 app.MapGet("/api/payments/export", async (WalletDbContext db) =>
 {
     var wallet = await db.Wallets.FirstOrDefaultAsync();
