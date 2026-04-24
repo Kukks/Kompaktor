@@ -6277,4 +6277,108 @@ public class WalletLifecycleE2ETests
             e => e.GetProperty("address").GetString() == owned);
     }
 
+    [Fact]
+    public async Task DashboardUtxos_cluster_null_for_unlabelled_utxo()
+    {
+        // An unlabelled UTXO isn't a meaningful privacy compartment — the
+        // dashboard row's `cluster` field must be null so the UI can draw
+        // plain rows without cluster chrome.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var id = await SeedUtxoAsync(factory, client, amountSat: 50_000, tag: 0xF0);
+
+        var utxos = await client.GetFromJsonAsync<JsonElement>("/api/dashboard/utxos");
+        var row = utxos.EnumerateArray().Single(u => u.GetProperty("id").GetInt32() == id);
+        Assert.Equal(JsonValueKind.Null, row.GetProperty("cluster").ValueKind);
+    }
+
+    [Fact]
+    public async Task DashboardUtxos_cluster_surfaces_membership_after_labelling()
+    {
+        // Once a UTXO has a label, its dashboard row must carry the cluster
+        // annotation — that's the signal the UI uses to color-code the row
+        // and surface warnings before co-spending across clusters.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var id = await SeedUtxoAsync(factory, client, amountSat: 70_000, tag: 0xF1);
+        await client.PostAsJsonAsync($"/api/coin-control/label/{id}", new { Text = "Savings" });
+
+        var utxos = await client.GetFromJsonAsync<JsonElement>("/api/dashboard/utxos");
+        var row = utxos.EnumerateArray().Single(u => u.GetProperty("id").GetInt32() == id);
+        var cluster = row.GetProperty("cluster");
+        Assert.Equal(JsonValueKind.Object, cluster.ValueKind);
+        Assert.Equal(1, cluster.GetProperty("size").GetInt32());
+        Assert.Contains(cluster.GetProperty("labels").EnumerateArray()
+            .Select(l => l.GetString()), s => s == "Savings");
+        Assert.False(cluster.GetProperty("hasExternalSource").GetBoolean());
+    }
+
+    [Fact]
+    public async Task DashboardUtxos_cluster_id_is_shared_across_utxos_in_same_compartment()
+    {
+        // Two UTXOs with the same label belong to one cluster — their rows
+        // must carry identical `cluster.id` values so the UI can group them
+        // visually without a second round-trip to /label-clusters.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var a = await SeedUtxoAsync(factory, client, amountSat: 50_000, tag: 0xF2);
+        var b = await SeedUtxoAsync(factory, client, amountSat: 30_000, tag: 0xF3);
+        await client.PostAsJsonAsync($"/api/coin-control/label/{a}", new { Text = "Vacation" });
+        await client.PostAsJsonAsync($"/api/coin-control/label/{b}", new { Text = "Vacation" });
+
+        var utxos = await client.GetFromJsonAsync<JsonElement>("/api/dashboard/utxos");
+        var byId = utxos.EnumerateArray().ToDictionary(u => u.GetProperty("id").GetInt32());
+        var clusterA = byId[a].GetProperty("cluster").GetProperty("id").GetInt32();
+        var clusterB = byId[b].GetProperty("cluster").GetProperty("id").GetInt32();
+        Assert.Equal(clusterA, clusterB);
+        Assert.Equal(2, byId[a].GetProperty("cluster").GetProperty("size").GetInt32());
+    }
+
+    [Fact]
+    public async Task DashboardUtxos_cluster_different_labels_get_different_clusters()
+    {
+        // Two UTXOs with different labels are in different compartments —
+        // their `cluster.id` values must differ so the UI doesn't accidentally
+        // merge them in a single visual group.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var a = await SeedUtxoAsync(factory, client, amountSat: 60_000, tag: 0xF4);
+        var b = await SeedUtxoAsync(factory, client, amountSat: 40_000, tag: 0xF5);
+        await client.PostAsJsonAsync($"/api/coin-control/label/{a}", new { Text = "Rent" });
+        await client.PostAsJsonAsync($"/api/coin-control/label/{b}", new { Text = "Groceries" });
+
+        var utxos = await client.GetFromJsonAsync<JsonElement>("/api/dashboard/utxos");
+        var byId = utxos.EnumerateArray().ToDictionary(u => u.GetProperty("id").GetInt32());
+        var clusterA = byId[a].GetProperty("cluster").GetProperty("id").GetInt32();
+        var clusterB = byId[b].GetProperty("cluster").GetProperty("id").GetInt32();
+        Assert.NotEqual(clusterA, clusterB);
+    }
+
+    [Fact]
+    public async Task DashboardUtxos_cluster_flags_external_source_on_exchange_prefix()
+    {
+        // An "Exchange:" / "KYC:" / "P2P:" label taints the cluster — the UI
+        // reads `cluster.hasExternalSource` to render a quarantine badge so
+        // the user is warned before co-spending this with a clean coin.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var id = await SeedUtxoAsync(factory, client, amountSat: 90_000, tag: 0xF6);
+        await client.PostAsJsonAsync($"/api/coin-control/label/{id}",
+            new { Text = "Exchange: Coinbase" });
+
+        var utxos = await client.GetFromJsonAsync<JsonElement>("/api/dashboard/utxos");
+        var row = utxos.EnumerateArray().Single(u => u.GetProperty("id").GetInt32() == id);
+        Assert.True(row.GetProperty("cluster").GetProperty("hasExternalSource").GetBoolean());
+    }
+
 }

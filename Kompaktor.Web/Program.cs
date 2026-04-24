@@ -284,35 +284,68 @@ app.MapGet("/api/dashboard/utxos", async (WalletDbContext db) =>
     var selector = new WalletCoinSelector(db);
     var scored = await selector.GetScoredUtxosAsync(wallet.Id, includeFrozen: true);
 
+    // Annotate each UTXO with its privacy cluster. Clusters are union-find
+    // groups of UTXOs that share a label — co-spending across clusters tells
+    // an observer both are one wallet's. Only LABELLED clusters are surfaced:
+    // a singleton unlabelled UTXO is not a meaningful compartment. The cluster
+    // id is the minimum UtxoId in the group so it's stable across requests
+    // (clients can group/color by this id without server state).
+    var utxoEntities = scored.Select(s => s.Utxo).ToList();
+    var utxoClusterInfo = new Dictionary<int, (int ClusterId, int Size, string[] Labels, bool HasExternalSource)>();
+    if (utxoEntities.Count > 0)
+    {
+        var labels = await db.Labels
+            .Where(l => l.EntityType == "Utxo" || l.EntityType == "Address")
+            .ToListAsync();
+        var coinjoins = await db.CoinJoinRecords.ToListAsync();
+        var clusters = new Kompaktor.Scoring.LabelClusterAnalyzer()
+            .AnalyzeClusters(utxoEntities, labels, coinjoins);
+
+        foreach (var cluster in clusters.Where(c => c.Labels.Count > 0))
+        {
+            var clusterId = cluster.UtxoIds.Min();
+            var info = (clusterId, cluster.UtxoIds.Count, cluster.Labels.ToArray(), cluster.HasExternalSource);
+            foreach (var utxoId in cluster.UtxoIds)
+                utxoClusterInfo[utxoId] = info;
+        }
+    }
+
     var result = scored
         .OrderByDescending(s => s.Utxo.AmountSat)
         .Take(100)
-        .Select(s => new
+        .Select(s =>
         {
-            id = s.Utxo.Id,
-            txId = s.Utxo.TxId,
-            outputIndex = s.Utxo.OutputIndex,
-            amountSat = s.Utxo.AmountSat,
-            amountBtc = s.Utxo.AmountSat / 100_000_000.0,
-            confirmedHeight = s.Utxo.ConfirmedHeight,
-            isFrozen = s.Utxo.IsFrozen,
-            // An address is "exposed" if its script was revealed to other
-            // participants in a previous coinjoin round (even a failed one).
-            // Surface this so coin-control callers can steer away from
-            // intersection-attack risk; today only scoring's reuse penalty
-            // reacts to it, and only after the address has been used twice.
-            isAddressExposed = s.Utxo.Address.IsExposed,
-            rawAnonSet = s.Score.RawAnonSet,
-            effectiveScore = Math.Round(s.Score.EffectiveScore, 2),
-            coinJoinCount = s.Score.CoinJoinCount,
-            confidence = s.Score.Confidence.ToString(),
-            penalties = new
+            object? cluster = utxoClusterInfo.TryGetValue(s.Utxo.Id, out var c)
+                ? new { id = c.ClusterId, size = c.Size, labels = c.Labels, hasExternalSource = c.HasExternalSource }
+                : null;
+            return new
             {
-                amount = Math.Round(s.Score.AmountPenalty, 3),
-                cluster = Math.Round(s.Score.ClusterPenalty, 3),
-                addressReuse = Math.Round(s.Score.ReusePenalty, 3)
-            },
-            labels = s.Labels
+                id = s.Utxo.Id,
+                txId = s.Utxo.TxId,
+                outputIndex = s.Utxo.OutputIndex,
+                amountSat = s.Utxo.AmountSat,
+                amountBtc = s.Utxo.AmountSat / 100_000_000.0,
+                confirmedHeight = s.Utxo.ConfirmedHeight,
+                isFrozen = s.Utxo.IsFrozen,
+                // An address is "exposed" if its script was revealed to other
+                // participants in a previous coinjoin round (even a failed one).
+                // Surface this so coin-control callers can steer away from
+                // intersection-attack risk; today only scoring's reuse penalty
+                // reacts to it, and only after the address has been used twice.
+                isAddressExposed = s.Utxo.Address.IsExposed,
+                rawAnonSet = s.Score.RawAnonSet,
+                effectiveScore = Math.Round(s.Score.EffectiveScore, 2),
+                coinJoinCount = s.Score.CoinJoinCount,
+                confidence = s.Score.Confidence.ToString(),
+                penalties = new
+                {
+                    amount = Math.Round(s.Score.AmountPenalty, 3),
+                    cluster = Math.Round(s.Score.ClusterPenalty, 3),
+                    addressReuse = Math.Round(s.Score.ReusePenalty, 3)
+                },
+                labels = s.Labels,
+                cluster
+            };
         })
         .ToList();
 
