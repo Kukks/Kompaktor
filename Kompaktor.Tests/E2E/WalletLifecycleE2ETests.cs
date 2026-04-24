@@ -6446,6 +6446,59 @@ public class WalletLifecycleE2ETests
     }
 
     [Fact]
+    public async Task UtxoDetail_carries_bitcoin_address_string()
+    {
+        // The drawer UI needs the bitcoin-address string to render a QR /
+        // "received at" label, not just the keyPath. Confirm the endpoint
+        // resolves scriptPubKey → address so the client doesn't have to.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var id = await SeedUtxoAsync(factory, client, amountSat: 40_000, tag: 0xAB);
+
+        var detail = await client.GetFromJsonAsync<JsonElement>($"/api/coin-control/utxo/{id}");
+        var addr = detail.GetProperty("address").GetString();
+        Assert.False(string.IsNullOrEmpty(addr));
+        // Regtest Taproot starts with bcrt1p (P2TR) or bcrt1q (P2WPKH).
+        Assert.StartsWith("bcrt1", addr);
+    }
+
+    [Fact]
+    public async Task UtxoDetail_cluster_is_null_when_no_labels()
+    {
+        // Unlabelled UTXO → no meaningful compartment → cluster is null.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var id = await SeedUtxoAsync(factory, client, amountSat: 30_000, tag: 0xAC);
+
+        var detail = await client.GetFromJsonAsync<JsonElement>($"/api/coin-control/utxo/{id}");
+        Assert.Equal(JsonValueKind.Null, detail.GetProperty("cluster").ValueKind);
+    }
+
+    [Fact]
+    public async Task UtxoDetail_cluster_reflects_membership_after_labelling()
+    {
+        // Labelling a UTXO populates the cluster object on its detail view —
+        // the drawer can show "you're looking at coin in cluster X" inline.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var id = await SeedUtxoAsync(factory, client, amountSat: 55_000, tag: 0xAD);
+        await client.PostAsJsonAsync($"/api/coin-control/label/{id}",
+            new { Text = "Exchange: Bitstamp" });
+
+        var detail = await client.GetFromJsonAsync<JsonElement>($"/api/coin-control/utxo/{id}");
+        var cluster = detail.GetProperty("cluster");
+        Assert.Equal(JsonValueKind.Object, cluster.ValueKind);
+        Assert.True(cluster.GetProperty("hasExternalSource").GetBoolean());
+        Assert.Equal(1, cluster.GetProperty("size").GetInt32());
+    }
+
+    [Fact]
     public async Task FreezeExternalSource_quarantines_exchange_tainted_utxos()
     {
         // The one-click quarantine for externally-sourced coins: freeze every

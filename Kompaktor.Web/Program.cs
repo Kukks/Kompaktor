@@ -1297,6 +1297,49 @@ app.MapGet("/api/coin-control/utxo/{utxoId}", async (int utxoId, WalletDbContext
         .Where(p => p.UtxoId == utxoId)
         .ToListAsync();
 
+    // Resolve bitcoin-address string from scriptPubKey so the UI drawer can
+    // render it without a second round-trip — the same conversion used by
+    // the addresses-list endpoint.
+    string? address;
+    try { address = new Script(utxo.Address.ScriptPubKey).GetDestinationAddress(network)?.ToString(); }
+    catch { address = null; }
+
+    // Cluster membership: only load and run the analyzer if the UTXO has a
+    // label itself or sits on a labelled address. Otherwise it's a singleton
+    // unlabelled cluster and we'd return null anyway — skip the work.
+    var addrIdStr = utxo.Address.Id.ToString();
+    var utxoIdStr = utxoId.ToString();
+    var hasAnyLabel = await db.Labels.AnyAsync(l =>
+        (l.EntityType == "Utxo" && l.EntityId == utxoIdStr) ||
+        (l.EntityType == "Address" && l.EntityId == addrIdStr));
+
+    object? cluster = null;
+    if (hasAnyLabel)
+    {
+        var walletUtxos = await db.Utxos
+            .Include(u => u.Address)
+            .ThenInclude(a => a.Account)
+            .Where(u => u.Address.Account.WalletId == utxo.Address.Account.WalletId)
+            .Where(u => u.SpentByTxId == null)
+            .ToListAsync();
+        var allLabels = await db.Labels
+            .Where(l => l.EntityType == "Utxo" || l.EntityType == "Address")
+            .ToListAsync();
+        var coinjoins = await db.CoinJoinRecords.ToListAsync();
+        var clusters = new Kompaktor.Scoring.LabelClusterAnalyzer()
+            .AnalyzeClusters(walletUtxos, allLabels, coinjoins);
+        var match = clusters.FirstOrDefault(c =>
+            c.Labels.Count > 0 && c.UtxoIds.Contains(utxoId));
+        if (match is not null)
+            cluster = new
+            {
+                id = match.UtxoIds.Min(),
+                size = match.UtxoIds.Count,
+                labels = match.Labels.ToArray(),
+                hasExternalSource = match.HasExternalSource
+            };
+    }
+
     return Results.Ok(new
     {
         id = utxo.Id,
@@ -1308,6 +1351,7 @@ app.MapGet("/api/coin-control/utxo/{utxoId}", async (int utxoId, WalletDbContext
         isFrozen = utxo.IsFrozen,
         isSpent = utxo.SpentByTxId != null,
         spentByTxId = utxo.SpentByTxId,
+        address,
         keyPath = utxo.Address.KeyPath,
         isChange = utxo.Address.IsChange,
         isAddressExposed = utxo.Address.IsExposed,
@@ -1318,7 +1362,8 @@ app.MapGet("/api/coin-control/utxo/{utxoId}", async (int utxoId, WalletDbContext
             role = p.Role,
             status = p.CoinJoinRecord.Status,
             createdAt = p.CoinJoinRecord.CreatedAt
-        })
+        }),
+        cluster
     });
 }).WithTags("CoinControl");
 
