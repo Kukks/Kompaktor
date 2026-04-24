@@ -3368,6 +3368,62 @@ app.MapGet("/api/address-book", async (WalletDbContext db) =>
     return Results.Ok(entries);
 }).WithTags("AddressBook");
 
+// Derive usage stats per address book entry by joining against outbound payment
+// history. Surfaces "top contacts" data (amount sent, times used, last send) so
+// the UI can sort/highlight frequently used recipients without re-querying
+// payment history on every render. Counts only Completed payments toward
+// totalSentSat/lastUsedAt; paymentCount includes any status so users can see
+// "I tried to send here 5 times but none completed".
+app.MapGet("/api/address-book/usage", async (WalletDbContext db) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.Ok(Array.Empty<object>());
+
+    var entries = await db.AddressBook
+        .Where(a => a.WalletId == wallet.Id)
+        .ToListAsync();
+    if (entries.Count == 0) return Results.Ok(Array.Empty<object>());
+
+    var addresses = entries.Select(e => e.Address).ToHashSet();
+    var payments = await db.PendingPayments
+        .Where(p => p.WalletId == wallet.Id && p.Direction == "Outbound")
+        .Where(p => addresses.Contains(p.Destination))
+        .Select(p => new { p.Destination, p.Status, p.AmountSat, p.CompletedAt })
+        .ToListAsync();
+
+    var grouped = payments
+        .GroupBy(p => p.Destination)
+        .ToDictionary(g => g.Key, g => g.ToList());
+
+    var result = entries
+        .OrderByDescending(a => a.CreatedAt)
+        .Select(a =>
+        {
+            var matches = grouped.TryGetValue(a.Address, out var list) ? list : null;
+            var completed = matches?.Where(m => m.Status == "Completed").ToList();
+            long totalSentSat = completed?.Sum(c => c.AmountSat) ?? 0;
+            int paymentCount = matches?.Count ?? 0;
+            int completedCount = completed?.Count ?? 0;
+            DateTimeOffset? lastUsedAt = completed != null && completed.Count > 0
+                ? completed.Max(c => c.CompletedAt)
+                : null;
+            return new
+            {
+                a.Id,
+                a.Label,
+                a.Address,
+                a.CreatedAt,
+                totalSentSat,
+                paymentCount,
+                completedCount,
+                lastUsedAt
+            };
+        })
+        .ToList();
+
+    return Results.Ok(result);
+}).WithTags("AddressBook");
+
 app.MapPost("/api/address-book", async (WalletDbContext db, HttpContext ctx) =>
 {
     var wallet = await db.Wallets.FirstOrDefaultAsync();

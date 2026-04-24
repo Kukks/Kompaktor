@@ -7005,4 +7005,117 @@ public class WalletLifecycleE2ETests
         Assert.Equal(0, body.GetProperty("unfrozen").GetInt32());
     }
 
+    [Fact]
+    public async Task AddressBookUsage_is_empty_when_no_entries()
+    {
+        // Fresh wallet with no address book entries — endpoint must return
+        // an empty array (not 404, not null) so the UI can bind directly.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.GetAsync("/api/address-book/usage");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var body = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(JsonValueKind.Array, body.ValueKind);
+        Assert.Equal(0, body.GetArrayLength());
+    }
+
+    [Fact]
+    public async Task AddressBookUsage_returns_zero_counts_for_unused_entries()
+    {
+        // Entry exists but never sent to — every counter must be zero and
+        // lastUsedAt must serialize as null. Proves the LEFT JOIN shape.
+        // Seed via DbContext so we don't have to craft a valid regtest
+        // address just to test a read endpoint.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<WalletDbContext>();
+            var wallet = await db.Wallets.FirstAsync();
+            db.AddressBook.Add(new AddressBookEntry
+            {
+                WalletId = wallet.Id,
+                Label = "unused friend",
+                Address = "bcrt1qunused"
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var body = await client.GetFromJsonAsync<JsonElement>("/api/address-book/usage");
+        Assert.Equal(1, body.GetArrayLength());
+        var entry = body[0];
+        Assert.Equal("unused friend", entry.GetProperty("label").GetString());
+        Assert.Equal(0, entry.GetProperty("totalSentSat").GetInt64());
+        Assert.Equal(0, entry.GetProperty("paymentCount").GetInt32());
+        Assert.Equal(0, entry.GetProperty("completedCount").GetInt32());
+        Assert.Equal(JsonValueKind.Null, entry.GetProperty("lastUsedAt").ValueKind);
+    }
+
+    [Fact]
+    public async Task AddressBookUsage_tallies_completed_outbound_payments()
+    {
+        // Seed two outbound payments to the same saved address — one completed,
+        // one failed. Usage should report paymentCount=2, completedCount=1,
+        // totalSentSat summing only the completed one, and lastUsedAt populated.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        const string addr = "bcrt1qcontact";
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<WalletDbContext>();
+            var wallet = await db.Wallets.FirstAsync();
+            db.AddressBook.Add(new AddressBookEntry
+            {
+                WalletId = wallet.Id,
+                Label = "contact",
+                Address = addr
+            });
+            db.PendingPayments.Add(new PendingPaymentEntity
+            {
+                WalletId = wallet.Id,
+                Direction = "Outbound",
+                AmountSat = 5_000,
+                Destination = addr,
+                Status = "Completed",
+                CompletedAt = DateTimeOffset.UtcNow.AddMinutes(-10)
+            });
+            db.PendingPayments.Add(new PendingPaymentEntity
+            {
+                WalletId = wallet.Id,
+                Direction = "Outbound",
+                AmountSat = 9_999,
+                Destination = addr,
+                Status = "Failed"
+            });
+            // Inbound payment to the same address must be ignored — usage
+            // stats describe spending to a contact, not receiving from them.
+            db.PendingPayments.Add(new PendingPaymentEntity
+            {
+                WalletId = wallet.Id,
+                Direction = "Inbound",
+                AmountSat = 1_000_000,
+                Destination = addr,
+                Status = "Completed"
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var body = await client.GetFromJsonAsync<JsonElement>("/api/address-book/usage");
+        Assert.Equal(1, body.GetArrayLength());
+        var entry = body[0];
+        Assert.Equal(5_000, entry.GetProperty("totalSentSat").GetInt64());
+        Assert.Equal(2, entry.GetProperty("paymentCount").GetInt32());
+        Assert.Equal(1, entry.GetProperty("completedCount").GetInt32());
+        // The project's JSON pipeline serializes DateTimeOffset as Unix seconds.
+        var lastUsedAt = entry.GetProperty("lastUsedAt");
+        Assert.Equal(JsonValueKind.Number, lastUsedAt.ValueKind);
+        Assert.True(lastUsedAt.GetInt64() > 0);
+    }
+
 }
