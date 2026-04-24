@@ -4603,6 +4603,80 @@ app.MapPost("/api/wallet/labels/rename", async (WalletDbContext db, HttpContext 
     });
 }).WithTags("Wallet");
 
+// Bulk label delete: drop every row with text == `text` across the
+// wallet's owned UTXO/Address/Transaction labels and AddressBook entries.
+// Sister endpoint to /api/wallet/labels/rename for the "retire a tag"
+// workflow. AddressBook rows can't have an empty label — the schema
+// requires one — so if the caller asks to delete a label that's being
+// used as a contact display name, that contact is deleted too. The
+// response splits the breakdown so the caller can confirm impact before
+// showing a success toast.
+app.MapPost("/api/wallet/labels/delete-by-text", async (WalletDbContext db, HttpContext ctx) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.BadRequest("No wallet found");
+
+    var body = await ctx.Request.ReadFromJsonAsync<JsonElement>();
+    if (body.ValueKind != JsonValueKind.Object) return Results.BadRequest("Body required");
+    if (!body.TryGetProperty("text", out var textElem) || textElem.ValueKind != JsonValueKind.String)
+        return Results.BadRequest("text required");
+
+    var text = textElem.GetString()!.Trim();
+    if (text.Length == 0) return Results.BadRequest("text cannot be empty");
+
+    var ownedUtxoIds = (await db.Utxos
+            .Include(u => u.Address).ThenInclude(a => a.Account)
+            .Where(u => u.Address.Account.WalletId == wallet.Id)
+            .Select(u => u.Id).ToListAsync())
+        .Select(id => id.ToString()).ToHashSet();
+    var ownedAddrIds = (await db.Addresses
+            .Include(a => a.Account)
+            .Where(a => a.Account.WalletId == wallet.Id)
+            .Select(a => a.Id).ToListAsync())
+        .Select(id => id.ToString()).ToHashSet();
+    var walletTxIds = (await db.Utxos
+            .Include(u => u.Address).ThenInclude(a => a.Account)
+            .Where(u => u.Address.Account.WalletId == wallet.Id)
+            .Select(u => u.TxId).Distinct().ToListAsync())
+        .ToHashSet();
+
+    int utxo = 0, address = 0, transaction = 0;
+    var toRemove = new List<LabelEntity>();
+    foreach (var lab in await db.Labels.Where(l => l.Text == text).ToListAsync())
+    {
+        var owned = lab.EntityType switch
+        {
+            "Utxo" => ownedUtxoIds.Contains(lab.EntityId),
+            "Address" => ownedAddrIds.Contains(lab.EntityId),
+            "Transaction" => walletTxIds.Contains(lab.EntityId),
+            _ => false
+        };
+        if (!owned) continue;
+        toRemove.Add(lab);
+        switch (lab.EntityType)
+        {
+            case "Utxo": utxo++; break;
+            case "Address": address++; break;
+            case "Transaction": transaction++; break;
+        }
+    }
+    db.Labels.RemoveRange(toRemove);
+
+    var abMatches = await db.AddressBook
+        .Where(a => a.WalletId == wallet.Id && a.Label == text)
+        .ToListAsync();
+    db.AddressBook.RemoveRange(abMatches);
+    int addressBook = abMatches.Count;
+
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        deleted = new { utxo, address, transaction, addressBook },
+        totalDeleted = utxo + address + transaction + addressBook
+    });
+}).WithTags("Wallet");
+
 //   - xpub    : account-level extended public keys
 // The endpoint is watch-only — no key material, no proofs — so it's safe to
 // share the export with other wallets or a paper backup of label history.

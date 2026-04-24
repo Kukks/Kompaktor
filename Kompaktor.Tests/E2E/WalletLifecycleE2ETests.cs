@@ -7535,6 +7535,61 @@ public class WalletLifecycleE2ETests
     }
 
     [Fact]
+    public async Task LabelDeleteByText_rejects_empty_text()
+    {
+        // Empty text would otherwise match nothing and return 0 silently —
+        // confusing. 400 makes the client fail loudly.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.PostAsJsonAsync("/api/wallet/labels/delete-by-text", new { text = "" });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task LabelDeleteByText_removes_labels_and_matching_address_book_entries()
+    {
+        // Seed both a UTXO-label and an address-book entry with the same text.
+        // The delete must drop both, and a separately-tagged UTXO must survive.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+        var utxoId = await SeedUtxoAsync(factory, client, amountSat: 40_000, tag: 0xD0);
+        var survivorId = await SeedUtxoAsync(factory, client, amountSat: 60_000, tag: 0xD1);
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<WalletDbContext>();
+            var wallet = await db.Wallets.FirstAsync();
+            db.AddressBook.Add(new AddressBookEntry
+            {
+                WalletId = wallet.Id,
+                Label = "retired",
+                Address = "bcrt1qretired"
+            });
+            db.Labels.Add(new LabelEntity { EntityType = "Utxo", EntityId = utxoId.ToString(), Text = "retired" });
+            db.Labels.Add(new LabelEntity { EntityType = "Utxo", EntityId = survivorId.ToString(), Text = "keep" });
+            await db.SaveChangesAsync();
+        }
+
+        var resp = await client.PostAsJsonAsync("/api/wallet/labels/delete-by-text", new { text = "retired" });
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var body = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(2, body.GetProperty("totalDeleted").GetInt32());
+        Assert.Equal(1, body.GetProperty("deleted").GetProperty("utxo").GetInt32());
+        Assert.Equal(1, body.GetProperty("deleted").GetProperty("addressBook").GetInt32());
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<WalletDbContext>();
+            Assert.DoesNotContain(await db.Labels.ToListAsync(), l => l.Text == "retired");
+            Assert.Contains(await db.Labels.ToListAsync(), l => l.Text == "keep");
+            Assert.DoesNotContain(await db.AddressBook.ToListAsync(), a => a.Label == "retired");
+        }
+    }
+
+    [Fact]
     public async Task Version_endpoint_returns_build_and_runtime_info()
     {
         // Pins the shape of the diagnostics contract. Support workflows read
