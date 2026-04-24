@@ -7534,4 +7534,102 @@ public class WalletLifecycleE2ETests
         Assert.Equal(1, limitBody.GetArrayLength());
     }
 
+    [Fact]
+    public async Task LabelRename_rejects_identical_from_and_to()
+    {
+        // from == to is a user error — guard against it so the caller gets a
+        // clear 400 instead of a no-op success that looks like a rename.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.PostAsJsonAsync("/api/wallet/labels/rename",
+            new { from = "Exchange", to = "Exchange" });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task LabelRename_rewrites_labels_on_multiple_entity_types()
+    {
+        // Seed: one address-book entry labelled "exchange" and one UTXO labelled
+        // "exchange" via direct DB insert. Rename "exchange" → "Exchange". Both
+        // should flip in one go and the response must report the breakdown.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+        var utxoId = await SeedUtxoAsync(factory, client, amountSat: 50_000, tag: 0xA0);
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<WalletDbContext>();
+            var wallet = await db.Wallets.FirstAsync();
+            db.AddressBook.Add(new AddressBookEntry
+            {
+                WalletId = wallet.Id,
+                Label = "exchange",
+                Address = "bcrt1qcontact"
+            });
+            db.Labels.Add(new LabelEntity
+            {
+                EntityType = "Utxo",
+                EntityId = utxoId.ToString(),
+                Text = "exchange"
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var resp = await client.PostAsJsonAsync("/api/wallet/labels/rename",
+            new { from = "exchange", to = "Exchange" });
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var body = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(2, body.GetProperty("totalRenamed").GetInt32());
+        Assert.Equal(1, body.GetProperty("renamed").GetProperty("utxo").GetInt32());
+        Assert.Equal(1, body.GetProperty("renamed").GetProperty("addressBook").GetInt32());
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<WalletDbContext>();
+            Assert.DoesNotContain(await db.Labels.ToListAsync(), l => l.Text == "exchange");
+            Assert.Contains(await db.Labels.ToListAsync(), l => l.Text == "Exchange");
+            Assert.DoesNotContain(await db.AddressBook.ToListAsync(), a => a.Label == "exchange");
+        }
+    }
+
+    [Fact]
+    public async Task LabelRename_merges_duplicates_when_target_already_present()
+    {
+        // Seed a UTXO that has BOTH "exchange" and "Exchange" labels. Renaming
+        // "exchange" → "Exchange" would otherwise create two "Exchange" rows
+        // on the same entity; the endpoint should drop the source row and
+        // report mergedDuplicates=1 while leaving the existing target intact.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+        var utxoId = await SeedUtxoAsync(factory, client, amountSat: 50_000, tag: 0xB0);
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<WalletDbContext>();
+            db.Labels.Add(new LabelEntity { EntityType = "Utxo", EntityId = utxoId.ToString(), Text = "exchange" });
+            db.Labels.Add(new LabelEntity { EntityType = "Utxo", EntityId = utxoId.ToString(), Text = "Exchange" });
+            await db.SaveChangesAsync();
+        }
+
+        var resp = await client.PostAsJsonAsync("/api/wallet/labels/rename",
+            new { from = "exchange", to = "Exchange" });
+        var body = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(1, body.GetProperty("mergedDuplicates").GetInt32());
+        Assert.Equal(0, body.GetProperty("totalRenamed").GetInt32());
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<WalletDbContext>();
+            var labels = await db.Labels
+                .Where(l => l.EntityType == "Utxo" && l.EntityId == utxoId.ToString())
+                .ToListAsync();
+            Assert.Single(labels);
+            Assert.Equal("Exchange", labels[0].Text);
+        }
+    }
+
 }

@@ -4443,6 +4443,103 @@ app.MapGet("/api/wallet/labels/search", async (WalletDbContext db, HttpContext c
     return Results.Ok(result);
 }).WithTags("Wallet");
 
+// Bulk label rename. Rewrites every label matching `from` to `to` across
+// Utxo/Address/Transaction rows the wallet owns, plus AddressBook entries.
+// Motivation: typo recovery and tag consolidation (e.g. merging "exchange"
+// into "Exchange"). Case-sensitive exact match on `from` so the user can
+// disambiguate intentionally-cased labels. Skips labels on entities that
+// already carry the target text to avoid creating duplicate rows on the
+// same entity; AddressBook has one label per entry so no duplicate check
+// is needed there.
+app.MapPost("/api/wallet/labels/rename", async (WalletDbContext db, HttpContext ctx) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.BadRequest("No wallet found");
+
+    var body = await ctx.Request.ReadFromJsonAsync<JsonElement>();
+    if (body.ValueKind != JsonValueKind.Object) return Results.BadRequest("Body required");
+    if (!body.TryGetProperty("from", out var fromElem) || fromElem.ValueKind != JsonValueKind.String)
+        return Results.BadRequest("from required");
+    if (!body.TryGetProperty("to", out var toElem) || toElem.ValueKind != JsonValueKind.String)
+        return Results.BadRequest("to required");
+
+    var from = fromElem.GetString()!.Trim();
+    var to = toElem.GetString()!.Trim();
+    if (from.Length == 0 || to.Length == 0) return Results.BadRequest("from/to cannot be empty");
+    if (from == to) return Results.BadRequest("from and to must differ");
+
+    // Scope: owned UTXO/Address/Transaction IDs, same logic as /api/wallet/labels.
+    var ownedUtxoIds = (await db.Utxos
+            .Include(u => u.Address).ThenInclude(a => a.Account)
+            .Where(u => u.Address.Account.WalletId == wallet.Id)
+            .Select(u => u.Id).ToListAsync())
+        .Select(id => id.ToString()).ToHashSet();
+    var ownedAddrIds = (await db.Addresses
+            .Include(a => a.Account)
+            .Where(a => a.Account.WalletId == wallet.Id)
+            .Select(a => a.Id).ToListAsync())
+        .Select(id => id.ToString()).ToHashSet();
+    var walletTxIds = (await db.Utxos
+            .Include(u => u.Address).ThenInclude(a => a.Account)
+            .Where(u => u.Address.Account.WalletId == wallet.Id)
+            .Select(u => u.TxId).Distinct().ToListAsync())
+        .ToHashSet();
+
+    var allLabels = await db.Labels.ToListAsync();
+    // Fast lookup: for each entity, does a label with text==to already exist?
+    // If yes, renaming `from` on that entity would be a no-op collision, so
+    // drop the source row instead of flipping its text.
+    var existingTargets = allLabels
+        .Where(l => l.Text == to)
+        .Select(l => (l.EntityType, l.EntityId))
+        .ToHashSet();
+
+    int utxo = 0, address = 0, transaction = 0, deletedDupes = 0;
+    foreach (var lab in allLabels.Where(l => l.Text == from))
+    {
+        var owned = lab.EntityType switch
+        {
+            "Utxo" => ownedUtxoIds.Contains(lab.EntityId),
+            "Address" => ownedAddrIds.Contains(lab.EntityId),
+            "Transaction" => walletTxIds.Contains(lab.EntityId),
+            _ => false
+        };
+        if (!owned) continue;
+
+        if (existingTargets.Contains((lab.EntityType, lab.EntityId)))
+        {
+            // Entity already has `to`; just drop the old row so the user
+            // ends up with a single label (idempotent merge).
+            db.Labels.Remove(lab);
+            deletedDupes++;
+            continue;
+        }
+
+        lab.Text = to;
+        switch (lab.EntityType)
+        {
+            case "Utxo": utxo++; break;
+            case "Address": address++; break;
+            case "Transaction": transaction++; break;
+        }
+    }
+
+    var addrBookMatches = await db.AddressBook
+        .Where(a => a.WalletId == wallet.Id && a.Label == from)
+        .ToListAsync();
+    foreach (var a in addrBookMatches) a.Label = to;
+    int addressBook = addrBookMatches.Count;
+
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        renamed = new { utxo, address, transaction, addressBook },
+        totalRenamed = utxo + address + transaction + addressBook,
+        mergedDuplicates = deletedDupes
+    });
+}).WithTags("Wallet");
+
 //   - xpub    : account-level extended public keys
 // The endpoint is watch-only — no key material, no proofs — so it's safe to
 // share the export with other wallets or a paper backup of label history.
