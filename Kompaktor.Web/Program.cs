@@ -4920,6 +4920,106 @@ app.MapGet("/api/wallet/labels/search", async (WalletDbContext db, HttpContext c
 // already carry the target text to avoid creating duplicate rows on the
 // same entity; AddressBook has one label per entry so no duplicate check
 // is needed there.
+// Bulk tag: apply many (entityType, entityId, text) label rows in one call.
+// Ownership-scoped: we refuse to write a label for an entity that doesn't
+// belong to the caller's wallet (the Labels table has no FK to Wallet, so
+// this is the only guard preventing cross-wallet pollution). Duplicate
+// rows silently skip (idempotent — safe to retry). Classification:
+//   added:     row inserted
+//   duplicate: same (entityType, entityId, text) row already present
+//   notOwned:  entity exists but belongs to another wallet, or ID format
+//              invalid for that entityType
+//   invalid:   malformed row (unknown entityType, empty text/entityId)
+// Capped at 500 entries/call — above that, use bip329 import instead.
+app.MapPost("/api/wallet/labels/bulk-tag", async (WalletDbContext db, HttpContext ctx) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.BadRequest("No wallet found");
+
+    var body = await ctx.Request.ReadFromJsonAsync<JsonElement>();
+    if (body.ValueKind != JsonValueKind.Object || !body.TryGetProperty("entries", out var entriesElem)
+        || entriesElem.ValueKind != JsonValueKind.Array)
+        return Results.BadRequest("Body requires an 'entries' array");
+    var entries = entriesElem.EnumerateArray().ToList();
+    if (entries.Count == 0) return Results.BadRequest("entries cannot be empty");
+    if (entries.Count > 500) return Results.BadRequest("Maximum 500 entries per bulk-tag call");
+
+    // Scope sets — same ownership logic as other /labels endpoints.
+    var ownedUtxoIds = (await db.Utxos
+            .Include(u => u.Address).ThenInclude(a => a.Account)
+            .Where(u => u.Address.Account.WalletId == wallet.Id)
+            .Select(u => u.Id).ToListAsync())
+        .Select(id => id.ToString()).ToHashSet();
+    var ownedAddrIds = (await db.Addresses
+            .Include(a => a.Account)
+            .Where(a => a.Account.WalletId == wallet.Id)
+            .Select(a => a.Id).ToListAsync())
+        .Select(id => id.ToString()).ToHashSet();
+    var walletTxIds = (await db.Utxos
+            .Include(u => u.Address).ThenInclude(a => a.Account)
+            .Where(u => u.Address.Account.WalletId == wallet.Id)
+            .Select(u => u.TxId).Distinct().ToListAsync())
+        .ToHashSet();
+
+    // Preload the label triples we already have so we can dedupe without
+    // hammering the DB per-entry.
+    var existing = (await db.Labels.ToListAsync())
+        .Select(l => (l.EntityType, l.EntityId, l.Text))
+        .ToHashSet();
+    // Also dedupe within the request itself so sending the same row twice
+    // doesn't produce two adds.
+    var seenInBatch = new HashSet<(string, string, string)>();
+
+    int added = 0, duplicate = 0, notOwned = 0, invalid = 0;
+    foreach (var entry in entries)
+    {
+        if (entry.ValueKind != JsonValueKind.Object) { invalid++; continue; }
+        var entityType = entry.TryGetProperty("entityType", out var etElem) && etElem.ValueKind == JsonValueKind.String
+            ? etElem.GetString() : null;
+        var entityId = entry.TryGetProperty("entityId", out var eidElem) && eidElem.ValueKind == JsonValueKind.String
+            ? eidElem.GetString() : null;
+        var text = entry.TryGetProperty("text", out var textElem) && textElem.ValueKind == JsonValueKind.String
+            ? textElem.GetString()?.Trim() : null;
+        if (string.IsNullOrWhiteSpace(entityType) || string.IsNullOrWhiteSpace(entityId) || string.IsNullOrWhiteSpace(text))
+        { invalid++; continue; }
+
+        bool owned = entityType switch
+        {
+            "Utxo" => ownedUtxoIds.Contains(entityId),
+            "Address" => ownedAddrIds.Contains(entityId),
+            "Transaction" => walletTxIds.Contains(entityId),
+            _ => false
+        };
+        if (entityType != "Utxo" && entityType != "Address" && entityType != "Transaction")
+        { invalid++; continue; }
+        if (!owned) { notOwned++; continue; }
+
+        var triple = (entityType!, entityId!, text!);
+        if (existing.Contains(triple) || seenInBatch.Contains(triple))
+        { duplicate++; continue; }
+
+        db.Labels.Add(new LabelEntity
+        {
+            EntityType = entityType!,
+            EntityId = entityId!,
+            Text = text!
+        });
+        seenInBatch.Add(triple);
+        added++;
+    }
+
+    if (added > 0) await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        total = entries.Count,
+        added,
+        duplicate,
+        notOwned,
+        invalid
+    });
+}).WithTags("Wallet");
+
 app.MapPost("/api/wallet/labels/rename", async (WalletDbContext db, HttpContext ctx) =>
 {
     var wallet = await db.Wallets.FirstOrDefaultAsync();

@@ -7916,6 +7916,108 @@ public class WalletLifecycleE2ETests
     }
 
     [Fact]
+    public async Task BulkTag_requires_non_empty_entries_array()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        // Missing entries key → 400.
+        var missing = await client.PostAsJsonAsync("/api/wallet/labels/bulk-tag", new { foo = 1 });
+        Assert.Equal(HttpStatusCode.BadRequest, missing.StatusCode);
+
+        // Empty array → 400 (idempotent-add-of-nothing is user error, not no-op).
+        var empty = await client.PostAsJsonAsync("/api/wallet/labels/bulk-tag",
+            new { entries = Array.Empty<object>() });
+        Assert.Equal(HttpStatusCode.BadRequest, empty.StatusCode);
+    }
+
+    [Fact]
+    public async Task BulkTag_classifies_entries_and_persists_only_valid_owned_ones()
+    {
+        // Build a 6-row batch covering every outcome:
+        //   - 2 valid adds (a UTXO row + an Address row)
+        //   - 1 duplicate-within-batch (same UTXO+text twice)
+        //   - 1 invalid (unknown entityType)
+        //   - 1 invalid (empty text)
+        //   - 1 notOwned (UTXO id that doesn't belong to this wallet)
+        // The endpoint must report every bucket and only persist the 2 valid
+        // rows, leaving the labels table with exactly those two.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+        var utxoId = await SeedUtxoAsync(factory, client, amountSat: 90_000, tag: 0xD0);
+
+        int addrId;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<WalletDbContext>();
+            addrId = (await db.Utxos.FirstAsync(u => u.Id == utxoId)).AddressId;
+        }
+
+        var entries = new object[]
+        {
+            new { entityType = "Utxo",    entityId = utxoId.ToString(), text = "exchange" }, // add
+            new { entityType = "Address", entityId = addrId.ToString(), text = "exchange" }, // add
+            new { entityType = "Utxo",    entityId = utxoId.ToString(), text = "exchange" }, // duplicate in-batch
+            new { entityType = "Bogus",   entityId = "1",              text = "x" },         // invalid type
+            new { entityType = "Utxo",    entityId = utxoId.ToString(), text = "" },         // invalid (empty text)
+            new { entityType = "Utxo",    entityId = "999999",          text = "notmine" }   // notOwned
+        };
+        var resp = await client.PostAsJsonAsync("/api/wallet/labels/bulk-tag", new { entries });
+        var body = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(6, body.GetProperty("total").GetInt32());
+        Assert.Equal(2, body.GetProperty("added").GetInt32());
+        Assert.Equal(1, body.GetProperty("duplicate").GetInt32());
+        Assert.Equal(1, body.GetProperty("notOwned").GetInt32());
+        Assert.Equal(2, body.GetProperty("invalid").GetInt32());
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<WalletDbContext>();
+            var persisted = await db.Labels.ToListAsync();
+            Assert.Equal(2, persisted.Count);
+            Assert.All(persisted, l => Assert.Equal("exchange", l.Text));
+            Assert.Contains(persisted, l => l.EntityType == "Utxo");
+            Assert.Contains(persisted, l => l.EntityType == "Address");
+        }
+    }
+
+    [Fact]
+    public async Task BulkTag_is_idempotent_across_repeated_calls()
+    {
+        // Second call with identical payload reports 0 added, all duplicate.
+        // This is the safety guarantee for "replay on network flake" flows.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+        var utxoId = await SeedUtxoAsync(factory, client, amountSat: 50_000, tag: 0xD1);
+
+        object Payload() => new
+        {
+            entries = new[]
+            {
+                new { entityType = "Utxo", entityId = utxoId.ToString(), text = "idem-tag" }
+            }
+        };
+
+        var first = await (await client.PostAsJsonAsync("/api/wallet/labels/bulk-tag", Payload()))
+            .Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(1, first.GetProperty("added").GetInt32());
+
+        var second = await (await client.PostAsJsonAsync("/api/wallet/labels/bulk-tag", Payload()))
+            .Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(0, second.GetProperty("added").GetInt32());
+        Assert.Equal(1, second.GetProperty("duplicate").GetInt32());
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<WalletDbContext>();
+            Assert.Equal(1, await db.Labels.CountAsync());
+        }
+    }
+
+    [Fact]
     public async Task LabelSearch_empty_wallet_returns_no_suggestions()
     {
         // No labels applied anywhere → the endpoint returns an empty array
