@@ -3844,6 +3844,77 @@ app.MapGet("/api/webhooks/{webhookId}/deliveries/stats", async (int webhookId, W
     });
 }).WithTags("Webhooks");
 
+// Cross-wallet "which webhooks look broken right now" view. Fans the
+// per-webhook consecutive-failure streak across every hook in the wallet and
+// returns only those with a streak >= ?minStreak (default 1). Webhooks with
+// zero deliveries yet are omitted — they aren't "broken", they're new.
+// Sorted by streak desc so the worst offender shows first. Complements the
+// per-hook /deliveries/stats (good for drill-in after the user picks one).
+//
+// Also includes inactive hooks: a hook can be paused AFTER it starts failing,
+// and the user may still want to see it here to decide whether to rotate
+// the URL or delete the hook entirely.
+app.MapGet("/api/webhooks/failing", async (WalletDbContext db, int minStreak = 1) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null)
+        return Results.Ok(new { minStreak, count = 0, webhooks = Array.Empty<object>() });
+
+    minStreak = Math.Max(minStreak, 1);
+
+    // Pull all hooks + deliveries in two queries, then compute streaks in
+    // memory. Cross-webhook aggregation in SQL would need a correlated
+    // subquery per hook to find "timestamp of most recent success"; the
+    // in-memory pass is simpler and still cheap at realistic wallet sizes.
+    var hooks = await db.PaymentWebhooks
+        .Where(w => w.WalletId == wallet.Id)
+        .ToListAsync();
+    if (hooks.Count == 0)
+        return Results.Ok(new { minStreak, count = 0, webhooks = Array.Empty<object>() });
+
+    var hookIds = hooks.Select(h => h.Id).ToList();
+    var deliveriesByHook = (await db.WebhookDeliveries
+            .Where(d => hookIds.Contains(d.WebhookId))
+            .ToListAsync())
+        .GroupBy(d => d.WebhookId)
+        .ToDictionary(g => g.Key, g => g.OrderByDescending(d => d.Timestamp).ToList());
+
+    var failing = new List<FailingWebhookRow>();
+    foreach (var h in hooks)
+    {
+        if (!deliveriesByHook.TryGetValue(h.Id, out var deliveries) || deliveries.Count == 0)
+            continue;
+
+        var streak = 0;
+        foreach (var d in deliveries)
+        {
+            if (d.Success) break;
+            streak++;
+        }
+        if (streak < minStreak) continue;
+
+        var tailFailure = deliveries[0]; // already ordered desc
+        var lastSuccess = deliveries.FirstOrDefault(d => d.Success);
+
+        failing.Add(new FailingWebhookRow(
+            h.Id, h.Url, h.IsActive, streak, deliveries.Count,
+            tailFailure.Timestamp, tailFailure.HttpStatusCode, tailFailure.ErrorMessage,
+            lastSuccess?.Timestamp));
+    }
+
+    var ordered = failing
+        .OrderByDescending(r => r.ConsecutiveFailures)
+        .ThenByDescending(r => r.LastFailureAt)
+        .ToList();
+
+    return Results.Ok(new
+    {
+        minStreak,
+        count = ordered.Count,
+        webhooks = ordered
+    });
+}).WithTags("Webhooks");
+
 // Cross-webhook recent delivery feed. The per-webhook /deliveries endpoint is
 // good when you already know which hook you're investigating, but when a user
 // reports "my integration stopped receiving events" they often don't know or
@@ -6377,6 +6448,21 @@ record WalletSettingsUpdateRequest(
     int? TorSocksPort = null);
 record TorTestRequest(string? Host = null, int? Port = null);
 record CoordinatorTestRequest(string? Url = null);
+
+// Response shape for /api/webhooks/failing. Named so the cross-webhook
+// failure sort can be typed rather than using reflection on anonymous types.
+// Property names surface as camelCase in JSON via the default .NET web
+// serializer policy (matches the rest of the API).
+record FailingWebhookRow(
+    int Id,
+    string Url,
+    bool IsActive,
+    int ConsecutiveFailures,
+    int TotalDeliveries,
+    DateTimeOffset? LastFailureAt,
+    int LastFailureStatus,
+    string? LastFailureError,
+    DateTimeOffset? LastSuccessAt);
 
 /// <summary>
 /// Result of a SOCKS5 greeting probe against a Tor daemon (or anything

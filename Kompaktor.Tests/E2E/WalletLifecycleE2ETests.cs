@@ -9168,4 +9168,123 @@ public class WalletLifecycleE2ETests
         Assert.Equal(2, clamped.GetProperty("count").GetInt32());
     }
 
+    [Fact]
+    public async Task FailingWebhooks_empty_wallet_returns_default_min_streak_and_zero_count()
+    {
+        // Empty wallet — envelope shape must be stable (UI renders the list
+        // without null-guarding). Default minStreak=1 is echoed back.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        var body = await client.GetFromJsonAsync<JsonElement>("/api/webhooks/failing");
+        Assert.Equal(1, body.GetProperty("minStreak").GetInt32());
+        Assert.Equal(0, body.GetProperty("count").GetInt32());
+        Assert.Equal(0, body.GetProperty("webhooks").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task FailingWebhooks_omits_hooks_with_no_deliveries_and_hooks_whose_last_delivery_succeeded()
+    {
+        // Three hooks:
+        //   healthy — 1 delivery, success=true   → must NOT appear (streak=0)
+        //   new     — 0 deliveries ever           → must NOT appear (new, not broken)
+        //   broken  — 2 failing deliveries in a row → MUST appear (streak=2)
+        // Proves the "streak>=1 and deliveries.Count>0" gate.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        int healthyId, newId, brokenId;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<WalletDbContext>();
+            var wallet = await db.Wallets.FirstAsync();
+            var healthy = new PaymentWebhookEntity { WalletId = wallet.Id, Url = "https://healthy.example.com/h", Secret = "s" };
+            var brandNew = new PaymentWebhookEntity { WalletId = wallet.Id, Url = "https://new.example.com/h", Secret = "s" };
+            var broken = new PaymentWebhookEntity { WalletId = wallet.Id, Url = "https://broken.example.com/h", Secret = "s" };
+            db.PaymentWebhooks.AddRange(healthy, brandNew, broken);
+            await db.SaveChangesAsync();
+            healthyId = healthy.Id; newId = brandNew.Id; brokenId = broken.Id;
+
+            db.WebhookDeliveries.AddRange(
+                new WebhookDeliveryEntity
+                {
+                    WebhookId = healthyId, PaymentId = "p1", EventType = "Completed",
+                    HttpStatusCode = 200, Success = true, Timestamp = DateTimeOffset.UtcNow.AddMinutes(-1)
+                },
+                new WebhookDeliveryEntity
+                {
+                    WebhookId = brokenId, PaymentId = "p2", EventType = "Completed",
+                    HttpStatusCode = 500, Success = false, Timestamp = DateTimeOffset.UtcNow.AddMinutes(-10),
+                    ErrorMessage = "older failure"
+                },
+                new WebhookDeliveryEntity
+                {
+                    WebhookId = brokenId, PaymentId = "p3", EventType = "Completed",
+                    HttpStatusCode = 502, Success = false, Timestamp = DateTimeOffset.UtcNow.AddMinutes(-2),
+                    ErrorMessage = "most recent failure"
+                });
+            await db.SaveChangesAsync();
+        }
+
+        var body = await client.GetFromJsonAsync<JsonElement>("/api/webhooks/failing");
+        Assert.Equal(1, body.GetProperty("count").GetInt32());
+        var row = body.GetProperty("webhooks")[0];
+        Assert.Equal(brokenId, row.GetProperty("id").GetInt32());
+        Assert.Equal(2, row.GetProperty("consecutiveFailures").GetInt32());
+        Assert.Equal(2, row.GetProperty("totalDeliveries").GetInt32());
+        Assert.Equal(502, row.GetProperty("lastFailureStatus").GetInt32());
+        Assert.Equal("most recent failure", row.GetProperty("lastFailureError").GetString());
+        // Never had a success, so lastSuccessAt is null.
+        Assert.Equal(JsonValueKind.Null, row.GetProperty("lastSuccessAt").ValueKind);
+    }
+
+    [Fact]
+    public async Task FailingWebhooks_streak_resets_on_recent_success_and_min_streak_filter_narrows()
+    {
+        // Two hooks: "recovered" had failures then a success (streak=0) and
+        // "still-broken" has a 3-failure streak. With default minStreak=1,
+        // only still-broken shows. With ?minStreak=5 (above actual streak),
+        // zero hooks show. Proves both the streak-reset-on-success logic AND
+        // the threshold filter. Also verifies OrderByDescending on streak.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        int recoveredId, stillBrokenId;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<WalletDbContext>();
+            var wallet = await db.Wallets.FirstAsync();
+            var recovered = new PaymentWebhookEntity { WalletId = wallet.Id, Url = "https://recovered.example.com/h", Secret = "s" };
+            var stillBroken = new PaymentWebhookEntity { WalletId = wallet.Id, Url = "https://still.example.com/h", Secret = "s" };
+            db.PaymentWebhooks.AddRange(recovered, stillBroken);
+            await db.SaveChangesAsync();
+            recoveredId = recovered.Id; stillBrokenId = stillBroken.Id;
+
+            // Recovered: 2 old failures, 1 recent success → streak 0
+            db.WebhookDeliveries.AddRange(
+                new WebhookDeliveryEntity { WebhookId = recoveredId, PaymentId = "r1", EventType = "Completed", HttpStatusCode = 500, Success = false, Timestamp = DateTimeOffset.UtcNow.AddMinutes(-30) },
+                new WebhookDeliveryEntity { WebhookId = recoveredId, PaymentId = "r2", EventType = "Completed", HttpStatusCode = 500, Success = false, Timestamp = DateTimeOffset.UtcNow.AddMinutes(-20) },
+                new WebhookDeliveryEntity { WebhookId = recoveredId, PaymentId = "r3", EventType = "Completed", HttpStatusCode = 200, Success = true, Timestamp = DateTimeOffset.UtcNow.AddMinutes(-1) });
+            // Still broken: 3 failures in a row → streak 3
+            db.WebhookDeliveries.AddRange(
+                new WebhookDeliveryEntity { WebhookId = stillBrokenId, PaymentId = "b1", EventType = "Completed", HttpStatusCode = 500, Success = false, Timestamp = DateTimeOffset.UtcNow.AddMinutes(-15) },
+                new WebhookDeliveryEntity { WebhookId = stillBrokenId, PaymentId = "b2", EventType = "Completed", HttpStatusCode = 500, Success = false, Timestamp = DateTimeOffset.UtcNow.AddMinutes(-10) },
+                new WebhookDeliveryEntity { WebhookId = stillBrokenId, PaymentId = "b3", EventType = "Completed", HttpStatusCode = 500, Success = false, Timestamp = DateTimeOffset.UtcNow.AddMinutes(-5) });
+            await db.SaveChangesAsync();
+        }
+
+        var deflt = await client.GetFromJsonAsync<JsonElement>("/api/webhooks/failing");
+        Assert.Equal(1, deflt.GetProperty("count").GetInt32());
+        var onlyRow = deflt.GetProperty("webhooks")[0];
+        Assert.Equal(stillBrokenId, onlyRow.GetProperty("id").GetInt32());
+        Assert.Equal(3, onlyRow.GetProperty("consecutiveFailures").GetInt32());
+
+        // Threshold above actual streaks → empty result.
+        var strict = await client.GetFromJsonAsync<JsonElement>("/api/webhooks/failing?minStreak=5");
+        Assert.Equal(5, strict.GetProperty("minStreak").GetInt32());
+        Assert.Equal(0, strict.GetProperty("count").GetInt32());
+    }
+
 }
