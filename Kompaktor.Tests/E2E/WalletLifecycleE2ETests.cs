@@ -7571,6 +7571,120 @@ public class WalletLifecycleE2ETests
     }
 
     [Fact]
+    public async Task BulkImport_requires_entries_array()
+    {
+        // Missing or wrong-typed `entries` → 400. The request shape is specific
+        // because the response is structured per-row; sending a loose JSON blob
+        // would give ambiguous results.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var missing = await client.PostAsJsonAsync(
+            "/api/address-book/bulk-import", new { });
+        Assert.Equal(HttpStatusCode.BadRequest, missing.StatusCode);
+
+        var wrongType = await client.PostAsJsonAsync(
+            "/api/address-book/bulk-import", new { entries = "not-an-array" });
+        Assert.Equal(HttpStatusCode.BadRequest, wrongType.StatusCode);
+    }
+
+    [Fact]
+    public async Task BulkImport_classifies_each_row_and_persists_valid_ones()
+    {
+        // Feed the endpoint a realistic migration batch: two valid new
+        // contacts, a duplicate (already-saved via single POST), an invalid
+        // address, an empty row, and an in-batch duplicate. All six should be
+        // reported with the right status; only the two valid ones should be
+        // persisted.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        // /api/wallet/receive-address always returns the first unused address,
+        // so polling it gives the same string three times. For this test we
+        // need three distinct valid regtest addresses — pull them directly
+        // from the pre-generated gap-limit pool.
+        string addrA, addrB, addrC;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<WalletDbContext>();
+            var raw = await db.Addresses
+                .Include(a => a.Account)
+                .Where(a => !a.IsChange)
+                .OrderBy(a => a.Id)
+                .Take(3)
+                .Select(a => a.ScriptPubKey)
+                .ToListAsync();
+            var addrs = raw
+                .Select(bytes => new Script(bytes).GetDestinationAddress(Network.RegTest)!.ToString())
+                .ToList();
+            addrA = addrs[0];
+            addrB = addrs[1];
+            addrC = addrs[2];
+        }
+
+        // Pre-seed addrA as an existing contact so the bulk import hits the
+        // duplicate path for that row.
+        var preExisting = await client.PostAsJsonAsync(
+            "/api/address-book", new { Label = "Existing", Address = addrA });
+        Assert.Equal(HttpStatusCode.OK, preExisting.StatusCode);
+
+        // Use a uniform anonymous-type array (not object[]) — System.Text.Json
+        // serializes object-typed values by the declared type, which would
+        // strip the anonymous-type properties and send {} for each row.
+        var resp = await client.PostAsJsonAsync("/api/address-book/bulk-import", new
+        {
+            entries = new[]
+            {
+                new { address = addrA, label = "Duplicate-of-existing" },
+                new { address = addrB, label = "Friend-B" },
+                new { address = "not-a-real-address", label = "Invalid" },
+                new { address = addrC, label = "Friend-C" },
+                new { address = "", label = "Empty" },
+                new { address = addrC, label = "Friend-C-again" } // in-batch dup
+            }
+        });
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var body = await resp.Content.ReadFromJsonAsync<JsonElement>();
+
+        Assert.Equal(2, body.GetProperty("added").GetInt32());
+        Assert.Equal(2, body.GetProperty("skippedDuplicate").GetInt32()); // addrA + addrC-twice
+        Assert.Equal(1, body.GetProperty("skippedInvalid").GetInt32());
+        Assert.Equal(1, body.GetProperty("skippedEmpty").GetInt32());
+        Assert.Equal(6, body.GetProperty("total").GetInt32());
+
+        // Verify only the additions landed — total should be 1 (pre-existing) + 2 (added) = 3.
+        var list = await client.GetFromJsonAsync<JsonElement>("/api/address-book");
+        Assert.Equal(3, list.GetArrayLength());
+    }
+
+    [Fact]
+    public async Task BulkImport_is_idempotent_on_repeat()
+    {
+        // Re-running the same CSV should produce zero additions the second
+        // time — every row hits skipped-duplicate. This matters for the "oops
+        // I hit import twice" case.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var receive = await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address");
+        var addr = receive.GetProperty("address").GetString()!;
+
+        object Payload() => new { entries = new[] { new { address = addr, label = "Friend" } } };
+
+        var first = await client.PostAsJsonAsync("/api/address-book/bulk-import", Payload());
+        var firstBody = await first.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(1, firstBody.GetProperty("added").GetInt32());
+
+        var second = await client.PostAsJsonAsync("/api/address-book/bulk-import", Payload());
+        var secondBody = await second.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(0, secondBody.GetProperty("added").GetInt32());
+        Assert.Equal(1, secondBody.GetProperty("skippedDuplicate").GetInt32());
+    }
+
+    [Fact]
     public async Task LabelSearch_empty_wallet_returns_no_suggestions()
     {
         // No labels applied anywhere → the endpoint returns an empty array

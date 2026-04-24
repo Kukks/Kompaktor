@@ -3766,6 +3766,96 @@ app.MapPost("/api/address-book", async (WalletDbContext db, HttpContext ctx) =>
     return Results.Ok(new { entry.Id, entry.Label, entry.Address });
 }).WithTags("AddressBook");
 
+// Bulk import address-book entries. Primarily for wallet migration (CSV import,
+// importing a list from an old wallet). We intentionally prefer skip-and-report
+// over fail-fast: a single bad row in a 200-contact CSV shouldn't lose the
+// other 199. Each entry is classified as:
+//   - "added"       → new row written
+//   - "skipped-duplicate" → address already present (by design — use PUT to update)
+//   - "skipped-invalid"   → address failed network validation
+//   - "skipped-empty"     → label or address missing/whitespace
+// Response summary lets the UI render a success/error table in one pass.
+app.MapPost("/api/address-book/bulk-import", async (WalletDbContext db, HttpContext ctx) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.BadRequest("No wallet found");
+
+    var body = await ctx.Request.ReadFromJsonAsync<JsonElement>();
+    if (body.ValueKind != JsonValueKind.Object ||
+        !body.TryGetProperty("entries", out var entriesElem) ||
+        entriesElem.ValueKind != JsonValueKind.Array)
+        return Results.BadRequest("entries array required");
+
+    var existing = await db.AddressBook
+        .Where(a => a.WalletId == wallet.Id)
+        .Select(a => a.Address)
+        .ToListAsync();
+    var existingSet = new HashSet<string>(existing, StringComparer.Ordinal);
+    // Dedupe WITHIN this import batch too — two rows with the same address
+    // in the same CSV would otherwise both succeed and violate the
+    // "one label per address" invariant that the single-entry endpoint
+    // enforces via the exists-check.
+    var seenInBatch = new HashSet<string>(StringComparer.Ordinal);
+
+    var results = new List<object>();
+    var added = 0;
+    var skippedDuplicate = 0;
+    var skippedInvalid = 0;
+    var skippedEmpty = 0;
+
+    foreach (var entry in entriesElem.EnumerateArray())
+    {
+        var label = entry.TryGetProperty("label", out var le) && le.ValueKind == JsonValueKind.String
+            ? le.GetString()?.Trim() ?? "" : "";
+        var addr = entry.TryGetProperty("address", out var ae) && ae.ValueKind == JsonValueKind.String
+            ? ae.GetString()?.Trim() ?? "" : "";
+
+        if (label.Length == 0 || addr.Length == 0)
+        {
+            skippedEmpty++;
+            results.Add(new { address = addr, label, status = "skipped-empty" });
+            continue;
+        }
+
+        try { BitcoinAddress.Create(addr, network); }
+        catch
+        {
+            skippedInvalid++;
+            results.Add(new { address = addr, label, status = "skipped-invalid" });
+            continue;
+        }
+
+        if (existingSet.Contains(addr) || !seenInBatch.Add(addr))
+        {
+            skippedDuplicate++;
+            results.Add(new { address = addr, label, status = "skipped-duplicate" });
+            continue;
+        }
+
+        var newEntry = new AddressBookEntry
+        {
+            WalletId = wallet.Id,
+            Label = label,
+            Address = addr
+        };
+        db.AddressBook.Add(newEntry);
+        added++;
+        results.Add(new { address = addr, label, status = "added" });
+    }
+
+    if (added > 0) await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        added,
+        skippedDuplicate,
+        skippedInvalid,
+        skippedEmpty,
+        total = results.Count,
+        results
+    });
+}).WithTags("AddressBook");
+
 app.MapPut("/api/address-book/{entryId}", async (int entryId, WalletDbContext db, HttpContext ctx) =>
 {
     var entry = await db.AddressBook.FindAsync(entryId);
