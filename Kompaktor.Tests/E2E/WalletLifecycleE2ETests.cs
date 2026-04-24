@@ -7596,6 +7596,46 @@ public class WalletLifecycleE2ETests
     }
 
     [Fact]
+    public async Task Health_returns_503_when_no_wallet_is_configured()
+    {
+        // Probe semantics: a wallet-less instance isn't "ready" to serve the
+        // product. Probes should see 503 so the container doesn't start
+        // routing traffic until the wallet is created.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        var resp = await client.GetAsync("/api/health");
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, resp.StatusCode);
+        var body = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("degraded", body.GetProperty("status").GetString());
+        Assert.False(body.GetProperty("checks").GetProperty("wallet").GetProperty("ok").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Health_returns_200_with_all_checks_passing_after_wallet_creation()
+    {
+        // Once every subsystem reports ok the body must echo status="ok" and
+        // the per-check ok flags must all be true. Also pins the shape:
+        // checks.database, checks.wallet, checks.blockchain are the public
+        // contract — renaming a key would break monitoring configs.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.GetAsync("/api/health");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var body = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("ok", body.GetProperty("status").GetString());
+
+        var checks = body.GetProperty("checks");
+        Assert.True(checks.GetProperty("database").GetProperty("ok").GetBoolean());
+        Assert.True(checks.GetProperty("wallet").GetProperty("ok").GetBoolean());
+        Assert.True(checks.GetProperty("wallet").GetProperty("configured").GetBoolean());
+        Assert.True(checks.GetProperty("blockchain").GetProperty("ok").GetBoolean());
+        Assert.Equal(800_000, checks.GetProperty("blockchain").GetProperty("blockHeight").GetInt32());
+    }
+
+    [Fact]
     public async Task LabelRename_merges_duplicates_when_target_already_present()
     {
         // Seed a UTXO that has BOTH "exchange" and "Exchange" labels. Renaming

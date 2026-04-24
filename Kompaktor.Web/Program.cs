@@ -4179,6 +4179,69 @@ app.MapGet("/api/blockchain/info", async (IBlockchainBackend chain) =>
     });
 }).WithTags("Blockchain");
 
+// Liveness + readiness in one endpoint. Designed for k8s probes and uptime
+// monitors: returns 200 with status:"ok" when every check passes, 503 with
+// status:"degraded" otherwise — so a probe can just assert 2xx. Each check
+// is isolated so a slow/broken subsystem can't mask another one. We report
+// the degraded subcomponents in the body, but never throw — a health endpoint
+// that throws is itself the outage.
+app.MapGet("/api/health", async (WalletDbContext db, IBlockchainBackend chain) =>
+{
+    var checks = new Dictionary<string, object>();
+    bool dbOk = false;
+    bool walletOk = false;
+    bool chainOk = false;
+
+    try
+    {
+        dbOk = await db.Database.CanConnectAsync();
+        checks["database"] = new { ok = dbOk };
+    }
+    catch (Exception ex)
+    {
+        checks["database"] = new { ok = false, error = ex.Message };
+    }
+
+    try
+    {
+        var wallet = await db.Wallets.FirstOrDefaultAsync();
+        walletOk = wallet is not null;
+        checks["wallet"] = new
+        {
+            ok = walletOk,
+            configured = walletOk,
+            walletId = wallet?.Id,
+            network = network.Name
+        };
+    }
+    catch (Exception ex)
+    {
+        checks["wallet"] = new { ok = false, error = ex.Message };
+    }
+
+    try
+    {
+        int? height = null;
+        try { height = await chain.GetBlockHeightAsync(); }
+        catch { /* disconnected — chainOk stays false */ }
+        chainOk = chain.IsConnected && height is not null;
+        checks["blockchain"] = new { ok = chainOk, connected = chain.IsConnected, blockHeight = height };
+    }
+    catch (Exception ex)
+    {
+        checks["blockchain"] = new { ok = false, error = ex.Message };
+    }
+
+    var allOk = dbOk && walletOk && chainOk;
+    var payload = new
+    {
+        status = allOk ? "ok" : "degraded",
+        timestamp = DateTimeOffset.UtcNow,
+        checks
+    };
+    return allOk ? Results.Ok(payload) : Results.Json(payload, statusCode: 503);
+}).WithTags("Health");
+
 // Wallet data export (labels, address book, coinjoin history)
 app.MapGet("/api/wallet/export", async (WalletDbContext db) =>
 {
