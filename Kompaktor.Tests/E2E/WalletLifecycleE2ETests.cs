@@ -589,10 +589,15 @@ public class WalletLifecycleE2ETests
         Assert.Contains("label=Alice%27s%20Coffee", uri);
 
         // amountSat takes precedence over amount when both supplied.
+        // Check only the query string for "999" — bech32 addresses can contain
+        // any digit sequence and have produced false positives here.
         var priority = await client.GetFromJsonAsync<JsonElement>(
             "/api/wallet/receive-uri?amountSat=50000000&amount=999");
-        Assert.Contains("amount=0.5", priority.GetProperty("uri").GetString()!);
-        Assert.DoesNotContain("999", priority.GetProperty("uri").GetString()!);
+        var priorityUri = priority.GetProperty("uri").GetString()!;
+        Assert.Contains("amount=0.5", priorityUri);
+        var queryStart = priorityUri.IndexOf('?');
+        var query = queryStart >= 0 ? priorityUri[queryStart..] : "";
+        Assert.DoesNotContain("999", query);
     }
 
     [Fact]
