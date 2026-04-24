@@ -1015,6 +1015,59 @@ app.MapGet("/api/wallet/addresses", async (
     return Results.Ok(new { total, offset, limit, items });
 }).WithTags("Wallet");
 
+// Label clusters: groups of UTXOs linked by shared labels (on the UTXOs
+// themselves OR on the addresses that received them). A cluster is a
+// privacy "compartment" — co-spending across clusters reveals to an
+// observer that both belong to one wallet. Surface this so the UI can show
+// the user their privacy compartments and warn before a co-spend that
+// would merge them. Clusters containing an "Exchange:" / "KYC:" / "P2P:"
+// prefix label are flagged as having an external source (deanonymizable).
+app.MapGet("/api/wallet/label-clusters", async (WalletDbContext db) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null)
+        return Results.Ok(new { totalClusters = 0, clusters = Array.Empty<object>() });
+
+    var utxos = await db.Utxos
+        .Include(u => u.Address)
+        .ThenInclude(a => a.Account)
+        .Where(u => u.Address.Account.WalletId == wallet.Id)
+        .Where(u => u.SpentByTxId == null)
+        .ToListAsync();
+
+    if (utxos.Count == 0)
+        return Results.Ok(new { totalClusters = 0, clusters = Array.Empty<object>() });
+
+    var labels = await db.Labels
+        .Where(l => l.EntityType == "Utxo" || l.EntityType == "Address")
+        .ToListAsync();
+    var coinjoins = await db.CoinJoinRecords.ToListAsync();
+
+    var analyzer = new Kompaktor.Scoring.LabelClusterAnalyzer();
+    var clusters = analyzer.AnalyzeClusters(utxos, labels, coinjoins);
+
+    // Only surface clusters that actually have labels — singletons with no
+    // labels aren't useful privacy compartments to show the user.
+    var interesting = clusters
+        .Where(c => c.Labels.Count > 0)
+        .OrderByDescending(c => c.UtxoIds.Count)
+        .Select(c =>
+        {
+            var clusterUtxos = utxos.Where(u => c.UtxoIds.Contains(u.Id)).ToList();
+            return new
+            {
+                utxoIds = c.UtxoIds.ToArray(),
+                utxoCount = c.UtxoIds.Count,
+                totalSat = clusterUtxos.Sum(u => u.AmountSat),
+                labels = c.Labels.ToArray(),
+                hasExternalSource = c.HasExternalSource
+            };
+        })
+        .ToList();
+
+    return Results.Ok(new { totalClusters = interesting.Count, clusters = interesting });
+}).WithTags("Wallet");
+
 // Manually flip an owned address's exposure flag. Exposure is normally set
 // automatically when the address is revealed during a coinjoin round, but
 // users sometimes have out-of-band knowledge — "I posted this on Twitter",

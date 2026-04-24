@@ -6070,6 +6070,116 @@ public class WalletLifecycleE2ETests
     }
 
     [Fact]
+    public async Task LabelClusters_empty_wallet_returns_no_clusters()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.GetFromJsonAsync<JsonElement>("/api/wallet/label-clusters");
+        Assert.Equal(0, resp.GetProperty("totalClusters").GetInt32());
+        Assert.Equal(0, resp.GetProperty("clusters").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task LabelClusters_utxos_sharing_label_are_grouped()
+    {
+        // Two UTXOs labelled with the same text form one privacy compartment.
+        // Co-spending them would still not merge them externally (they already
+        // share a label in the user's view), but this is the foundation the UI
+        // uses to warn about cross-cluster co-spends.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var id1 = await SeedUtxoAsync(factory, client, amountSat: 50_000, tag: 0xE4);
+        var id2 = await SeedUtxoAsync(factory, client, amountSat: 30_000, tag: 0xE5);
+        await client.PostAsJsonAsync($"/api/coin-control/label/{id1}", new { Text = "Vacation" });
+        await client.PostAsJsonAsync($"/api/coin-control/label/{id2}", new { Text = "Vacation" });
+
+        var resp = await client.GetFromJsonAsync<JsonElement>("/api/wallet/label-clusters");
+        var clusters = resp.GetProperty("clusters").EnumerateArray().ToList();
+        var vacationCluster = clusters.Single(c =>
+            c.GetProperty("labels").EnumerateArray().Any(l => l.GetString() == "Vacation"));
+        Assert.Equal(2, vacationCluster.GetProperty("utxoCount").GetInt32());
+        Assert.Equal(80_000, vacationCluster.GetProperty("totalSat").GetInt64());
+        Assert.False(vacationCluster.GetProperty("hasExternalSource").GetBoolean());
+    }
+
+    [Fact]
+    public async Task LabelClusters_flag_external_source_on_exchange_prefix()
+    {
+        // Labels starting with "Exchange:" / "KYC:" / "P2P:" taint the whole
+        // cluster as externally sourced — coin selection uses this as a strong
+        // signal to keep those UTXOs quarantined until mixed.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var id = await SeedUtxoAsync(factory, client, amountSat: 100_000, tag: 0xE6);
+        await client.PostAsJsonAsync(
+            $"/api/coin-control/label/{id}", new { Text = "Exchange: Kraken" });
+
+        var resp = await client.GetFromJsonAsync<JsonElement>("/api/wallet/label-clusters");
+        var exchangeCluster = resp.GetProperty("clusters").EnumerateArray()
+            .Single(c => c.GetProperty("labels").EnumerateArray()
+                .Any(l => l.GetString() == "Exchange: Kraken"));
+        Assert.True(exchangeCluster.GetProperty("hasExternalSource").GetBoolean());
+    }
+
+    [Fact]
+    public async Task LabelClusters_unlabelled_utxos_are_not_listed()
+    {
+        // A singleton UTXO with no labels is not a meaningful privacy
+        // compartment — omit it so the UI's cluster view stays focused.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        await SeedUtxoAsync(factory, client, amountSat: 40_000, tag: 0xE7);
+        // Intentionally no label applied.
+
+        var resp = await client.GetFromJsonAsync<JsonElement>("/api/wallet/label-clusters");
+        Assert.Equal(0, resp.GetProperty("totalClusters").GetInt32());
+    }
+
+    [Fact]
+    public async Task LabelClusters_address_label_propagates_to_utxos_at_that_address()
+    {
+        // Labelling an address should propagate into any UTXO received at it —
+        // that's exactly how LabelClusterAnalyzer merges address-level and
+        // utxo-level labels. Prove the wiring end-to-end.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        // Seed a UTXO at a known receive address; then label that address.
+        var utxoId = await SeedUtxoAsync(factory, client, amountSat: 66_000, tag: 0xE8);
+        var utxoRow = (await client.GetFromJsonAsync<JsonElement>("/api/dashboard/utxos"))
+            .EnumerateArray()
+            .Single(u => u.GetProperty("id").GetInt32() == utxoId);
+
+        // Resolve the bitcoin-address string for that UTXO's scriptPubKey via
+        // the address-list endpoint we shipped earlier — avoids leaking DB
+        // internals into the test.
+        var list = await client.GetFromJsonAsync<JsonElement>("/api/wallet/addresses?used=true");
+        var ownedAddr = list.GetProperty("items").EnumerateArray()
+            .First(i => i.GetProperty("totalReceivedSat").GetInt64() == 66_000)
+            .GetProperty("address").GetString()!;
+
+        await client.PostAsJsonAsync(
+            $"/api/wallet/addresses/{ownedAddr}/label", new { Text = "Rent address" });
+
+        var resp = await client.GetFromJsonAsync<JsonElement>("/api/wallet/label-clusters");
+        var match = resp.GetProperty("clusters").EnumerateArray()
+            .SingleOrDefault(c => c.GetProperty("labels").EnumerateArray()
+                .Any(l => l.GetString() == "Rent address"));
+        Assert.NotEqual(JsonValueKind.Undefined, match.ValueKind);
+        Assert.Contains(match.GetProperty("utxoIds").EnumerateArray()
+            .Select(v => v.GetInt32()), id => id == utxoId);
+    }
+
+    [Fact]
     public async Task AddressExposure_manual_toggle_sets_and_clears_flag()
     {
         // Users with out-of-band exposure knowledge (posted on Twitter, gave
