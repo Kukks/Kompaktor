@@ -6826,6 +6826,85 @@ public class WalletLifecycleE2ETests
     }
 
     [Fact]
+    public async Task MixingReadiness_empty_wallet_blocks_with_no_utxos()
+    {
+        // Newly-created wallet with no funds can't start mixing — blockers
+        // should include no_utxos and ready must be false.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.GetFromJsonAsync<JsonElement>("/api/wallet/mixing-readiness");
+
+        Assert.False(resp.GetProperty("ready").GetBoolean());
+        var blockerCodes = resp.GetProperty("blockers").EnumerateArray()
+            .Select(b => b.GetProperty("code").GetString()).ToList();
+        Assert.Contains("no_utxos", blockerCodes);
+    }
+
+    [Fact]
+    public async Task MixingReadiness_funded_unmixed_wallet_reports_ready()
+    {
+        // Seed an unfrozen UTXO — preflight should return ready=true with
+        // no blockers (the backup-unverified warning may fire but it is not
+        // a blocker, just an advisory).
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+        await SeedUtxoAsync(factory, client, amountSat: 200_000, tag: 0xD0);
+
+        var resp = await client.GetFromJsonAsync<JsonElement>("/api/wallet/mixing-readiness");
+
+        Assert.True(resp.GetProperty("ready").GetBoolean());
+        Assert.Equal(0, resp.GetProperty("blockers").GetArrayLength());
+        Assert.Equal(1, resp.GetProperty("signals").GetProperty("unmixed").GetInt32());
+    }
+
+    [Fact]
+    public async Task MixingReadiness_all_frozen_blocks_mixing()
+    {
+        // Seed + freeze — the only UTXO now blocks mixing (coin selection
+        // refuses frozen rows). Blocker code must be all_frozen.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+        var id = await SeedUtxoAsync(factory, client, amountSat: 300_000, tag: 0xD1);
+        await client.PostAsync($"/api/coin-control/freeze/{id}", null);
+
+        var resp = await client.GetFromJsonAsync<JsonElement>("/api/wallet/mixing-readiness");
+
+        Assert.False(resp.GetProperty("ready").GetBoolean());
+        var blockerCodes = resp.GetProperty("blockers").EnumerateArray()
+            .Select(b => b.GetProperty("code").GetString()).ToList();
+        Assert.Contains("all_frozen", blockerCodes);
+    }
+
+    [Fact]
+    public async Task MixingReadiness_tor_unreachable_is_blocker()
+    {
+        // Configure a bogus Tor host and verify the preflight probe trips
+        // the tor_unreachable blocker. Uses a guaranteed-closed port so the
+        // SOCKS5 greeting fails fast — CI runners don't run Tor.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+        await SeedUtxoAsync(factory, client, amountSat: 200_000, tag: 0xD2);
+        await client.PostAsJsonAsync("/api/wallet/settings", new
+        {
+            TorEnabled = true,
+            TorSocksHost = "127.0.0.1",
+            TorSocksPort = 1
+        });
+
+        var resp = await client.GetFromJsonAsync<JsonElement>("/api/wallet/mixing-readiness");
+
+        Assert.False(resp.GetProperty("ready").GetBoolean());
+        var blockerCodes = resp.GetProperty("blockers").EnumerateArray()
+            .Select(b => b.GetProperty("code").GetString()).ToList();
+        Assert.Contains("tor_unreachable", blockerCodes);
+    }
+
+    [Fact]
     public async Task PaymentsBulkCancel_cancels_all_pending_outbound()
     {
         // Seed three outbound payments. Bulk-cancel must flip all three to

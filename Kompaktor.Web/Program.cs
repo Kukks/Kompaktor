@@ -1772,6 +1772,88 @@ app.MapGet("/api/wallet/profile-recommendation", async (WalletDbContext db) =>
     });
 }).WithTags("Wallet");
 
+// Preflight diagnostic for the "Start Mixing" button. Reports whether the
+// wallet is in a state where a mixing session could begin and, if not,
+// enumerates the specific blockers. The UI polls this to enable/disable
+// the CTA and display actionable hints ("no unmixed UTXOs", "Tor daemon
+// unreachable", etc). Read-only — does NOT start or stop anything.
+app.MapGet("/api/wallet/mixing-readiness", async (WalletDbContext db, MixingManager mixer) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null)
+    {
+        return Results.Ok(new
+        {
+            ready = false,
+            blockers = new[] { new { code = "no_wallet", message = "No wallet found" } },
+            warnings = Array.Empty<object>()
+        });
+    }
+
+    var blockers = new List<object>();
+    var warnings = new List<object>();
+
+    // Already running — mixing can't be started twice, so this is a blocker
+    // specifically for "start", not a generic red flag.
+    if (mixer.IsRunning)
+        blockers.Add(new { code = "already_running", message = "Mixing is already running" });
+
+    var selector = new WalletCoinSelector(db);
+    var scored = await selector.GetScoredUtxosAsync(wallet.Id, includeFrozen: true);
+    var totalUtxos = scored.Count;
+    var unfrozen = scored.Count(s => !s.Utxo.IsFrozen);
+    var unmixed = scored.Count(s => !s.Utxo.IsFrozen && s.Score.CoinJoinCount == 0);
+
+    if (totalUtxos == 0)
+        blockers.Add(new { code = "no_utxos", message = "Wallet has no UTXOs to mix" });
+    else if (unfrozen == 0)
+        blockers.Add(new { code = "all_frozen", message = "Every UTXO is frozen — unfreeze at least one to mix" });
+    else if (unmixed == 0)
+        warnings.Add(new { code = "all_mixed", message = "Every unfrozen UTXO has already been mixed; another pass would add little privacy" });
+
+    // Fresh receive / change addresses must exist or the coinjoin client
+    // can't assign outputs. We surface this as a blocker because there's no
+    // auto-extension path outside the wallet-signing flow.
+    var freshChangeCount = await db.Addresses
+        .Include(a => a.Account)
+        .Where(a => a.Account.WalletId == wallet.Id)
+        .CountAsync(a => !a.IsUsed && !a.IsExposed && a.IsChange);
+    if (freshChangeCount == 0)
+        blockers.Add(new { code = "no_fresh_change_addresses", message = "No fresh change addresses available — receive some funds or extend your xpub" });
+
+    // Tor preflight: if the wallet has Tor enabled, check reachability NOW
+    // instead of discovering it at mixing start time (where the error path
+    // currently falls back to clearnet without warning).
+    if (wallet.TorEnabled && !string.IsNullOrWhiteSpace(wallet.TorSocksHost))
+    {
+        var probe = await TorReachability.ProbeAsync(
+            wallet.TorSocksHost!, wallet.TorSocksPort ?? 9050);
+        if (!probe.Reachable)
+        {
+            blockers.Add(new
+            {
+                code = "tor_unreachable",
+                message = $"Tor daemon unreachable at {wallet.TorSocksHost}:{wallet.TorSocksPort ?? 9050} — {probe.Error}"
+            });
+        }
+    }
+
+    // Backup not verified is a warning, not a blocker — the user can still
+    // mix but they're risking funds on a key they've never confirmed they
+    // have written down.
+    if (!wallet.IsBackupVerified)
+        warnings.Add(new { code = "backup_unverified", message = "Wallet backup has not been verified — confirm your mnemonic before large mixing sessions" });
+
+    return Results.Ok(new
+    {
+        ready = blockers.Count == 0,
+        profile = wallet.MixingProfile,
+        signals = new { totalUtxos, unfrozen, unmixed, freshChangeAddresses = freshChangeCount },
+        blockers,
+        warnings
+    });
+}).WithTags("Wallet");
+
 // Decodes a profile spec into the list of behavior traits the mixer will run
 // for that preset, each with a plain-language purpose string. Lets the UI
 // show "if you pick X, your wallet will run A, B, C and here's what each
