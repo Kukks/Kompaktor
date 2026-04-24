@@ -9287,4 +9287,123 @@ public class WalletLifecycleE2ETests
         Assert.Equal(0, strict.GetProperty("count").GetInt32());
     }
 
+    [Fact]
+    public async Task TxSummaryByLabel_empty_wallet_returns_zero_shape()
+    {
+        // Before any wallet exists: envelope must still be stable.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        var body = await client.GetFromJsonAsync<JsonElement>("/api/wallet/transactions/summary-by-label");
+        Assert.Equal(0, body.GetProperty("labelCount").GetInt32());
+        Assert.Equal(0, body.GetProperty("totalTransactions").GetInt32());
+        Assert.Equal(0, body.GetProperty("labels").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task TxSummaryByLabel_inbound_tx_contributes_to_inbound_bucket_only()
+    {
+        // Seed an inbound UTXO (50k), tag its TxId with "gift". Expect:
+        //   transactionCount=1, totalInboundSat=50k, totalOutboundSat=0, net=+50k
+        // A pure receive — no owned-UTXO was spent by this tx.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+        var utxoId = await SeedUtxoAsync(factory, client, amountSat: 50_000, tag: 0x1A);
+
+        string txId;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<WalletDbContext>();
+            txId = (await db.Utxos.FirstAsync(u => u.Id == utxoId)).TxId;
+            db.Labels.Add(new LabelEntity { EntityType = "Transaction", EntityId = txId, Text = "gift" });
+            await db.SaveChangesAsync();
+        }
+
+        var body = await client.GetFromJsonAsync<JsonElement>("/api/wallet/transactions/summary-by-label");
+        Assert.Equal(1, body.GetProperty("labelCount").GetInt32());
+        var row = body.GetProperty("labels")[0];
+        Assert.Equal("gift", row.GetProperty("label").GetString());
+        Assert.Equal(1, row.GetProperty("transactionCount").GetInt32());
+        Assert.Equal(50_000, row.GetProperty("totalInboundSat").GetInt64());
+        Assert.Equal(0, row.GetProperty("totalOutboundSat").GetInt64());
+        Assert.Equal(50_000, row.GetProperty("netAmountSat").GetInt64());
+    }
+
+    [Fact]
+    public async Task TxSummaryByLabel_outbound_tx_contributes_to_outbound_bucket_and_multi_label_contributes_to_each()
+    {
+        // Seed a UTXO (100k) and mark it as spent by a forged tx "outboundtx".
+        // That "outboundtx" is a pure outbound: we lost 100k, got 0 back.
+        // Tag it with BOTH "rent" AND "bills" — same tx, two categorizations.
+        // Each label should independently report net=-100k, outbound=100k.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+        var utxoId = await SeedUtxoAsync(factory, client, amountSat: 100_000, tag: 0x2B);
+
+        const string outboundTxId = "0000000000000000000000000000000000000000000000000000000000000042";
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<WalletDbContext>();
+            (await db.Utxos.FirstAsync(u => u.Id == utxoId)).SpentByTxId = outboundTxId;
+            db.Labels.AddRange(
+                new LabelEntity { EntityType = "Transaction", EntityId = outboundTxId, Text = "rent" },
+                new LabelEntity { EntityType = "Transaction", EntityId = outboundTxId, Text = "bills" });
+            await db.SaveChangesAsync();
+        }
+
+        var body = await client.GetFromJsonAsync<JsonElement>("/api/wallet/transactions/summary-by-label");
+        Assert.Equal(2, body.GetProperty("labelCount").GetInt32());
+        var rows = body.GetProperty("labels").EnumerateArray().ToList();
+        Assert.All(rows, r =>
+        {
+            Assert.Equal(1, r.GetProperty("transactionCount").GetInt32());
+            Assert.Equal(0, r.GetProperty("totalInboundSat").GetInt64());
+            Assert.Equal(100_000, r.GetProperty("totalOutboundSat").GetInt64());
+            Assert.Equal(-100_000, r.GetProperty("netAmountSat").GetInt64());
+        });
+        // Alphabetical within same |net| — "bills" < "rent".
+        Assert.Equal("bills", rows[0].GetProperty("label").GetString());
+        Assert.Equal("rent", rows[1].GetProperty("label").GetString());
+    }
+
+    [Fact]
+    public async Task TxSummaryByLabel_sorts_by_absolute_net_amount_descending()
+    {
+        // Three labelled txs, distinct |net|:
+        //   "tiny" — pure receive 5k  →  +5k
+        //   "mid"  — pure outbound 50k → -50k
+        //   "huge" — pure receive 300k → +300k
+        // Expected order: huge (300k) > mid (50k) > tiny (5k) regardless of
+        // sign. Proves the Math.Abs in the OrderByDescending.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+        var tinyUtxo = await SeedUtxoAsync(factory, client, amountSat: 5_000, tag: 0xAA);
+        var spentUtxo = await SeedUtxoAsync(factory, client, amountSat: 50_000, tag: 0xBB);
+        var hugeUtxo = await SeedUtxoAsync(factory, client, amountSat: 300_000, tag: 0xCC);
+
+        const string midOutboundTx = "0000000000000000000000000000000000000000000000000000000000000055";
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<WalletDbContext>();
+            var tinyTxId = (await db.Utxos.FirstAsync(u => u.Id == tinyUtxo)).TxId;
+            var hugeTxId = (await db.Utxos.FirstAsync(u => u.Id == hugeUtxo)).TxId;
+            (await db.Utxos.FirstAsync(u => u.Id == spentUtxo)).SpentByTxId = midOutboundTx;
+            db.Labels.AddRange(
+                new LabelEntity { EntityType = "Transaction", EntityId = tinyTxId, Text = "tiny" },
+                new LabelEntity { EntityType = "Transaction", EntityId = midOutboundTx, Text = "mid" },
+                new LabelEntity { EntityType = "Transaction", EntityId = hugeTxId, Text = "huge" });
+            await db.SaveChangesAsync();
+        }
+
+        var body = await client.GetFromJsonAsync<JsonElement>("/api/wallet/transactions/summary-by-label");
+        var rows = body.GetProperty("labels").EnumerateArray().ToList();
+        Assert.Equal(3, rows.Count);
+        Assert.Equal("huge", rows[0].GetProperty("label").GetString());
+        Assert.Equal("mid", rows[1].GetProperty("label").GetString());
+        Assert.Equal("tiny", rows[2].GetProperty("label").GetString());
+    }
+
 }

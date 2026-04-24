@@ -839,6 +839,114 @@ app.MapGet("/api/dashboard/transactions/export", async (WalletDbContext db) =>
     return Results.Text(csv.ToString(), "text/csv", System.Text.Encoding.UTF8);
 }).WithTags("Dashboard");
 
+// Aggregate wallet activity by Transaction-scope label. For every label text
+// attached to at least one wallet-participating tx, return:
+//   - transactionCount (distinct tagged tx ids)
+//   - totalInboundSat  (Σ received amounts on txs where net > 0)
+//   - totalOutboundSat (Σ |spent| amounts on txs where net < 0)
+//   - netAmountSat     (sum of per-tx net; positive = money came in net)
+//   - earliestAt / latestAt (tx timestamps)
+// "Per-tx net" mirrors the transactions/export logic — (received) minus
+// (owned UTXOs spent). Self-send transactions where in==out net to zero and
+// are counted toward the label's transactionCount but not toward in/out sums.
+// A tx can have multiple tx-scope labels — it contributes independently to
+// each label's totals (labels are categorizations, not partitions).
+// Sort is descending |netAmountSat| so the biggest-impact bucket surfaces
+// first, matching how users think about "where did my biggest spend go".
+app.MapGet("/api/wallet/transactions/summary-by-label", async (WalletDbContext db) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null)
+        return Results.Ok(new { labelCount = 0, totalTransactions = 0, labels = Array.Empty<object>() });
+
+    // Fetch all UTXOs we own (received + spent) — single scan, then bucket
+    // per-tx in memory. For walletId over millions of UTXOs this might not
+    // scale, but at realistic wallet sizes it's still one query + O(N).
+    var utxos = await db.Utxos
+        .Include(u => u.Address).ThenInclude(a => a.Account)
+        .Where(u => u.Address.Account.WalletId == wallet.Id)
+        .Select(u => new { u.TxId, u.SpentByTxId, u.AmountSat })
+        .ToListAsync();
+
+    // Build per-tx (received, spent) sums. A given tx might only appear as
+    // SpentByTxId (pure outbound consolidation of dust, nothing returned to
+    // us), only as TxId (pure inbound), or both (self-send / partial spend).
+    var receivedByTx = utxos.GroupBy(u => u.TxId)
+        .ToDictionary(g => g.Key, g => g.Sum(u => u.AmountSat));
+    var spentByTx = utxos.Where(u => u.SpentByTxId != null)
+        .GroupBy(u => u.SpentByTxId!)
+        .ToDictionary(g => g.Key, g => g.Sum(u => u.AmountSat));
+
+    var allTxIds = receivedByTx.Keys.Union(spentByTx.Keys).ToHashSet();
+    if (allTxIds.Count == 0)
+        return Results.Ok(new { labelCount = 0, totalTransactions = 0, labels = Array.Empty<object>() });
+
+    // Fetch tx-scope labels referencing any of OUR tx ids. Polymorphic table,
+    // no FK to Transaction, so we filter in-app.
+    var labels = await db.Labels
+        .Where(l => l.EntityType == "Transaction")
+        .Select(l => new { l.EntityId, l.Text })
+        .ToListAsync();
+    var ownedLabels = labels.Where(l => allTxIds.Contains(l.EntityId)).ToList();
+    if (ownedLabels.Count == 0)
+        return Results.Ok(new { labelCount = 0, totalTransactions = allTxIds.Count, labels = Array.Empty<object>() });
+
+    // Fetch the tx timestamps for earliestAt/latestAt. Not every tx has a
+    // stored TransactionEntity (we only store ones we broadcast or see
+    // explicitly) — missing timestamps are null.
+    var taggedTxIds = ownedLabels.Select(l => l.EntityId).Distinct().ToList();
+    var timestamps = (await db.Transactions
+            .Where(t => taggedTxIds.Contains(t.Id))
+            .Select(t => new { t.Id, t.Timestamp })
+            .ToListAsync())
+        .ToDictionary(t => t.Id, t => t.Timestamp);
+
+    var byLabel = ownedLabels
+        .GroupBy(l => l.Text)
+        .Select(g =>
+        {
+            var txIds = g.Select(l => l.EntityId).Distinct().ToList();
+            long inbound = 0, outbound = 0, net = 0;
+            DateTimeOffset? earliest = null, latest = null;
+            foreach (var txId in txIds)
+            {
+                var r = receivedByTx.TryGetValue(txId, out var rv) ? rv : 0;
+                var s = spentByTx.TryGetValue(txId, out var sv) ? sv : 0;
+                var txNet = r - s;
+                if (txNet > 0) inbound += txNet;
+                else if (txNet < 0) outbound += -txNet;
+                net += txNet;
+
+                if (timestamps.TryGetValue(txId, out var ts))
+                {
+                    if (earliest == null || ts < earliest) earliest = ts;
+                    if (latest == null || ts > latest) latest = ts;
+                }
+            }
+            return new
+            {
+                label = g.Key,
+                transactionCount = txIds.Count,
+                totalInboundSat = inbound,
+                totalOutboundSat = outbound,
+                netAmountSat = net,
+                earliestAt = earliest,
+                latestAt = latest
+            };
+        })
+        .OrderByDescending(x => Math.Abs(x.netAmountSat))
+        .ThenByDescending(x => x.transactionCount)
+        .ThenBy(x => x.label, StringComparer.Ordinal)
+        .ToList();
+
+    return Results.Ok(new
+    {
+        labelCount = byLabel.Count,
+        totalTransactions = allTxIds.Count,
+        labels = byLabel
+    });
+}).WithTags("Wallet");
+
 // Attach a free-text note to a transaction. Notes are user-private — they never
 // leave the local DB and are not broadcast to the network.
 app.MapPost("/api/dashboard/transactions/{txId}/note", async (
