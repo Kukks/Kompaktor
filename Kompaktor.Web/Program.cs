@@ -1184,6 +1184,31 @@ app.MapPost("/api/coin-control/batch-freeze", async (WalletDbContext db, HttpCon
 // address so it can't be co-spent with non-exposed coins until the
 // user explicitly unfreezes or remixes. Only touches still-unspent,
 // not-already-frozen rows so it's safe to call repeatedly.
+// Panic button: clears IsFrozen across every UTXO on the wallet. Counterpart
+// to the freeze-exposed / freeze-external-source "bulk freeze" shortcuts —
+// when a user has over-quarantined and wants every UTXO selectable again
+// without clicking through individual rows. Returns the count that was
+// actually unfrozen so the UI can confirm the blast radius.
+app.MapPost("/api/coin-control/unfreeze-all", async (WalletDbContext db, DashboardEventBus bus) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.Ok(new { unfrozen = 0 });
+
+    var frozen = await db.Utxos
+        .Include(u => u.Address)
+        .ThenInclude(a => a.Account)
+        .Where(u => u.Address.Account.WalletId == wallet.Id)
+        .Where(u => u.SpentByTxId == null && u.IsFrozen)
+        .ToListAsync();
+
+    foreach (var utxo in frozen)
+        utxo.IsFrozen = false;
+
+    await db.SaveChangesAsync();
+    if (frozen.Count > 0) bus.Publish("utxos");
+    return Results.Ok(new { unfrozen = frozen.Count });
+}).WithTags("CoinControl");
+
 app.MapPost("/api/coin-control/freeze-exposed", async (WalletDbContext db, DashboardEventBus bus) =>
 {
     var candidates = await db.Utxos

@@ -6801,4 +6801,43 @@ public class WalletLifecycleE2ETests
         Assert.Equal("PrivacyFocused", resp.GetProperty("currentProfile").GetString());
     }
 
+    [Fact]
+    public async Task UnfreezeAll_clears_frozen_state_on_every_utxo()
+    {
+        // Seed two UTXOs, freeze both, then fire the panic button. Both
+        // rows must report frozen=false and the response count must match
+        // the number actually unfrozen.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+        var a = await SeedUtxoAsync(factory, client, amountSat: 100_000, tag: 0xC0);
+        var b = await SeedUtxoAsync(factory, client, amountSat: 200_000, tag: 0xC1);
+        await client.PostAsync($"/api/coin-control/freeze/{a}", null);
+        await client.PostAsync($"/api/coin-control/freeze/{b}", null);
+
+        var resp = await client.PostAsync("/api/coin-control/unfreeze-all", null);
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var body = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(2, body.GetProperty("unfrozen").GetInt32());
+
+        var utxos = await client.GetFromJsonAsync<JsonElement>("/api/dashboard/utxos?includeFrozen=true");
+        foreach (var u in utxos.EnumerateArray())
+            Assert.False(u.GetProperty("isFrozen").GetBoolean());
+    }
+
+    [Fact]
+    public async Task UnfreezeAll_is_idempotent_when_nothing_frozen()
+    {
+        // Fresh wallet with no freezes — endpoint must no-op and return
+        // unfrozen=0, not flip the event bus or touch the DB unnecessarily.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+        await SeedUtxoAsync(factory, client, amountSat: 100_000, tag: 0xC2);
+
+        var resp = await client.PostAsync("/api/coin-control/unfreeze-all", null);
+        var body = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(0, body.GetProperty("unfrozen").GetInt32());
+    }
+
 }
