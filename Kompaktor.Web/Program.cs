@@ -3657,6 +3657,104 @@ app.MapPost("/api/wallet/import", async (WalletDbContext db, HttpContext ctx, Da
 //   - addr    : address book entries
 //   - tx      : transaction notes (LabelEntity EntityType=Transaction)
 //   - output  : UTXO labels, ref normalised to "txid:vout" as the spec requires
+// Lists every distinct label text the user has applied, with counts by
+// entity type. Powers the label-autocomplete and tag-cloud views: the UI
+// can show "what labels do I use, and how often" without scanning every
+// UTXO/address row client-side. Includes AddressBook labels too since
+// they're part of the same user-facing taxonomy even though they live in
+// a separate table.
+app.MapGet("/api/wallet/labels", async (WalletDbContext db) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.Ok(new { totalDistinct = 0, labels = Array.Empty<object>() });
+
+    // Polymorphic Labels table: only rows pertaining to owned entities. For
+    // Address/Utxo we can filter by walletId via joins; Transaction rows need
+    // a scoped check too. We read them all and filter in memory — the label
+    // table isn't large enough to care about query-shape perfection here.
+    var allLabels = await db.Labels.ToListAsync();
+    var addressBook = await db.AddressBook
+        .Where(a => a.WalletId == wallet.Id)
+        .ToListAsync();
+
+    // Scope: labels on entities this wallet owns. Utxo label's EntityId is
+    // the UtxoEntity.Id; Address label's EntityId is AddressEntity.Id.
+    var ownedUtxoIds = (await db.Utxos
+            .Include(u => u.Address)
+            .ThenInclude(a => a.Account)
+            .Where(u => u.Address.Account.WalletId == wallet.Id)
+            .Select(u => u.Id)
+            .ToListAsync())
+        .Select(id => id.ToString()).ToHashSet();
+    var ownedAddrIds = (await db.Addresses
+            .Include(a => a.Account)
+            .Where(a => a.Account.WalletId == wallet.Id)
+            .Select(a => a.Id)
+            .ToListAsync())
+        .Select(id => id.ToString()).ToHashSet();
+    var walletTxIds = (await db.Utxos
+            .Include(u => u.Address)
+            .ThenInclude(a => a.Account)
+            .Where(u => u.Address.Account.WalletId == wallet.Id)
+            .Select(u => u.TxId)
+            .Distinct()
+            .ToListAsync())
+        .ToHashSet();
+
+    var aggregates = new Dictionary<string, (int utxo, int address, int transaction, int addressBook)>(
+        StringComparer.Ordinal);
+
+    void Bump(string text, string kind)
+    {
+        (int utxo, int address, int transaction, int addressBook) cur =
+            aggregates.TryGetValue(text, out var v) ? v : (0, 0, 0, 0);
+        aggregates[text] = kind switch
+        {
+            "Utxo" => (cur.utxo + 1, cur.address, cur.transaction, cur.addressBook),
+            "Address" => (cur.utxo, cur.address + 1, cur.transaction, cur.addressBook),
+            "Transaction" => (cur.utxo, cur.address, cur.transaction + 1, cur.addressBook),
+            "AddressBook" => (cur.utxo, cur.address, cur.transaction, cur.addressBook + 1),
+            _ => cur
+        };
+    }
+
+    foreach (var l in allLabels)
+    {
+        var belongs = l.EntityType switch
+        {
+            "Utxo" => ownedUtxoIds.Contains(l.EntityId),
+            "Address" => ownedAddrIds.Contains(l.EntityId),
+            "Transaction" => walletTxIds.Contains(l.EntityId),
+            _ => false
+        };
+        if (belongs) Bump(l.Text, l.EntityType);
+    }
+    foreach (var a in addressBook)
+        Bump(a.Label, "AddressBook");
+
+    var sorted = aggregates
+        .Select(kv => new
+        {
+            text = kv.Key,
+            total = kv.Value.utxo + kv.Value.address + kv.Value.transaction + kv.Value.addressBook,
+            utxoCount = kv.Value.utxo,
+            addressCount = kv.Value.address,
+            transactionCount = kv.Value.transaction,
+            addressBookCount = kv.Value.addressBook,
+            // Flag externally-sourced convention prefixes so the UI can render
+            // the tag with a taint badge without re-parsing the text.
+            hasExternalSource =
+                kv.Key.StartsWith("Exchange:", StringComparison.OrdinalIgnoreCase) ||
+                kv.Key.StartsWith("KYC:", StringComparison.OrdinalIgnoreCase) ||
+                kv.Key.StartsWith("P2P:", StringComparison.OrdinalIgnoreCase)
+        })
+        .OrderByDescending(x => x.total)
+        .ThenBy(x => x.text, StringComparer.Ordinal)
+        .ToList();
+
+    return Results.Ok(new { totalDistinct = sorted.Count, labels = sorted });
+}).WithTags("Wallet");
+
 //   - xpub    : account-level extended public keys
 // The endpoint is watch-only — no key material, no proofs — so it's safe to
 // share the export with other wallets or a paper backup of label history.

@@ -6446,6 +6446,83 @@ public class WalletLifecycleE2ETests
     }
 
     [Fact]
+    public async Task LabelCatalog_empty_wallet_returns_no_labels()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.GetFromJsonAsync<JsonElement>("/api/wallet/labels");
+        Assert.Equal(0, resp.GetProperty("totalDistinct").GetInt32());
+        Assert.Equal(0, resp.GetProperty("labels").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task LabelCatalog_aggregates_counts_across_entity_types()
+    {
+        // One label applied across a UTXO and the address-book must show up
+        // as ONE catalog entry with the counts split by entity type.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var id = await SeedUtxoAsync(factory, client, amountSat: 100_000, tag: 0xAE);
+        await client.PostAsJsonAsync($"/api/coin-control/label/{id}", new { Text = "Alice" });
+        await client.PostAsJsonAsync("/api/address-book", new
+        {
+            Label = "Alice",
+            Address = "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080"
+        });
+
+        var resp = await client.GetFromJsonAsync<JsonElement>("/api/wallet/labels");
+        var labels = resp.GetProperty("labels").EnumerateArray().ToList();
+        var alice = labels.Single(l => l.GetProperty("text").GetString() == "Alice");
+        Assert.Equal(1, alice.GetProperty("utxoCount").GetInt32());
+        Assert.Equal(1, alice.GetProperty("addressBookCount").GetInt32());
+        Assert.Equal(2, alice.GetProperty("total").GetInt32());
+        Assert.False(alice.GetProperty("hasExternalSource").GetBoolean());
+    }
+
+    [Fact]
+    public async Task LabelCatalog_flags_external_source_prefix()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var id = await SeedUtxoAsync(factory, client, amountSat: 60_000, tag: 0xAF);
+        await client.PostAsJsonAsync($"/api/coin-control/label/{id}",
+            new { Text = "Exchange: Bitfinex" });
+
+        var resp = await client.GetFromJsonAsync<JsonElement>("/api/wallet/labels");
+        var entry = resp.GetProperty("labels").EnumerateArray()
+            .Single(l => l.GetProperty("text").GetString() == "Exchange: Bitfinex");
+        Assert.True(entry.GetProperty("hasExternalSource").GetBoolean());
+    }
+
+    [Fact]
+    public async Task LabelCatalog_sorts_most_used_first()
+    {
+        // The UI renders the tag cloud by popularity — the most-used labels
+        // should land at the top so common tags are always one click away.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var a = await SeedUtxoAsync(factory, client, amountSat: 50_000, tag: 0xB0);
+        var b = await SeedUtxoAsync(factory, client, amountSat: 40_000, tag: 0xB1);
+        var c = await SeedUtxoAsync(factory, client, amountSat: 30_000, tag: 0xB2);
+        await client.PostAsJsonAsync($"/api/coin-control/label/{a}", new { Text = "Common" });
+        await client.PostAsJsonAsync($"/api/coin-control/label/{b}", new { Text = "Common" });
+        await client.PostAsJsonAsync($"/api/coin-control/label/{c}", new { Text = "Rare" });
+
+        var resp = await client.GetFromJsonAsync<JsonElement>("/api/wallet/labels");
+        var labels = resp.GetProperty("labels").EnumerateArray().ToList();
+        Assert.Equal("Common", labels[0].GetProperty("text").GetString());
+        Assert.Equal("Rare", labels[1].GetProperty("text").GetString());
+    }
+
+    [Fact]
     public async Task UtxoDetail_carries_bitcoin_address_string()
     {
         // The drawer UI needs the bitcoin-address string to render a QR /
