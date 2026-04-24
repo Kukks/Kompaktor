@@ -4977,6 +4977,88 @@ public class WalletLifecycleE2ETests
     }
 
     [Fact]
+    public async Task Payment_patch_renames_label_when_provided()
+    {
+        // The label is user-private display text; the PATCH endpoint lets
+        // the user rename it post-creation without rebuilding the payment.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var recv = await client.PostAsJsonAsync("/api/payments/receive",
+            new { AmountSat = 123_456L, Label = "old label" });
+        recv.EnsureSuccessStatusCode();
+        var paymentId = (await recv.Content.ReadFromJsonAsync<JsonElement>())
+            .GetProperty("id").GetString()!;
+
+        var patch = await client.PatchAsJsonAsync(
+            $"/api/payments/{paymentId}", new { Label = "new label" });
+        Assert.Equal(HttpStatusCode.OK, patch.StatusCode);
+        var patched = await patch.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("new label", patched.GetProperty("label").GetString());
+
+        // Verify persisted on subsequent reads.
+        var status = await client.GetFromJsonAsync<JsonElement>(
+            $"/api/payments/{paymentId}/status");
+        Assert.Equal("new label", status.GetProperty("label").GetString());
+    }
+
+    [Fact]
+    public async Task Payment_patch_clears_label_when_empty()
+    {
+        // Whitespace-only or empty label means "clear" — we store null so
+        // the list renders the '+ label' affordance instead of blank text.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var recv = await client.PostAsJsonAsync("/api/payments/receive",
+            new { AmountSat = 50_000L, Label = "initial" });
+        var paymentId = (await recv.Content.ReadFromJsonAsync<JsonElement>())
+            .GetProperty("id").GetString()!;
+
+        var patch = await client.PatchAsJsonAsync(
+            $"/api/payments/{paymentId}", new { Label = "   " });
+        patch.EnsureSuccessStatusCode();
+        var patched = await patch.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(JsonValueKind.Null, patched.GetProperty("label").ValueKind);
+    }
+
+    [Fact]
+    public async Task Payment_patch_returns_404_for_unknown_payment()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.PatchAsJsonAsync(
+            "/api/payments/not-a-real-id", new { Label = "whatever" });
+        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Payment_patch_without_label_leaves_value_untouched()
+    {
+        // Omitting the Label field entirely (different from passing empty)
+        // should be a no-op mutation — idempotent for clients that round-trip
+        // payment objects.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var recv = await client.PostAsJsonAsync("/api/payments/receive",
+            new { AmountSat = 12_000L, Label = "keep me" });
+        var paymentId = (await recv.Content.ReadFromJsonAsync<JsonElement>())
+            .GetProperty("id").GetString()!;
+
+        var patch = await client.PatchAsJsonAsync(
+            $"/api/payments/{paymentId}", new { });
+        patch.EnsureSuccessStatusCode();
+        var patched = await patch.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("keep me", patched.GetProperty("label").GetString());
+    }
+
+    [Fact]
     public async Task Transaction_note_multiple_notes_all_surface_in_list()
     {
         // Users can pile on multiple observations ("client X invoice",

@@ -2154,6 +2154,35 @@ app.MapPost("/api/payments/{paymentId}/retry", async (string paymentId, WalletDb
     return Results.Ok(new { paymentId, status = "pending", retryCount = 0 });
 }).WithTags("Payments");
 
+// Rename/clear a payment's label after the fact. Label is user-private
+// display text — editing it never affects protocol behavior. Allowed at
+// any status because the user might classify historical payments for
+// their own accounting.
+app.MapPatch("/api/payments/{paymentId}", async (
+    string paymentId, WalletDbContext db, HttpContext ctx, DashboardEventBus bus) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.BadRequest("No wallet found");
+
+    var entity = await db.PendingPayments.FindAsync(paymentId);
+    if (entity is null || entity.WalletId != wallet.Id) return Results.NotFound();
+
+    var body = await ctx.Request.ReadFromJsonAsync<PaymentPatchRequest>();
+    if (body is null) return Results.BadRequest("Request body required");
+
+    // Omitting Label leaves it untouched; passing null/empty clears it.
+    if (body.Label is not null)
+        entity.Label = string.IsNullOrWhiteSpace(body.Label) ? null : body.Label.Trim();
+
+    await db.SaveChangesAsync();
+    bus.Publish("payments");
+
+    return Results.Ok(new
+    {
+        entity.Id, entity.Label, entity.Status, entity.AmountSat, entity.Destination
+    });
+}).WithTags("Payments");
+
 app.MapGet("/api/payments/{paymentId}/qr", async (string paymentId, WalletDbContext db) =>
 {
     var entity = await db.PendingPayments.FindAsync(paymentId);
@@ -3305,6 +3334,7 @@ record SendRequest(string Destination, long AmountSat, long FeeRateSatPerVb = 2,
 record BroadcastPsbtRequest(string SignedPsbt);
 record CreatePaymentRequest(string Destination, long AmountSat, bool Interactive = true, bool Urgent = false, string? Label = null, int? ExpiryMinutes = null, DateTimeOffset? ScheduledAt = null, int? MaxRetries = null);
 record BatchSendRequest(string Destination, long AmountSat, bool Interactive = true, bool Urgent = false, string? Label = null, int? ExpiryMinutes = null, DateTimeOffset? ScheduledAt = null, int? MaxRetries = null);
+record PaymentPatchRequest(string? Label = null);
 record CreateReceiveRequest(long AmountSat, string? Label = null, int? ExpiryMinutes = null);
 record WebhookCreateRequest(string Url, string? EventFilter = null);
 record WebhookUpdateRequest(bool? IsActive = null);

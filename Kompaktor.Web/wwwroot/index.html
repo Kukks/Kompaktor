@@ -3100,7 +3100,7 @@
                     <td class="truncate" title="${esc(p.destination)}">${truncate(p.destination, 16)}</td>
                     <td><span style="color:${statusColor};font-weight:600;font-size:12px">${esc(p.status)}</span>${p.retryCount > 0 ? ` <span style="font-size:10px;color:${p.maxRetries > 0 && p.retryCount >= p.maxRetries - 1 ? 'var(--red)' : 'var(--yellow)'}" title="${p.retryCount}${p.maxRetries > 0 ? '/' + p.maxRetries : ''} round retry attempt(s)">retry ${p.retryCount}${p.maxRetries > 0 ? '/' + p.maxRetries : ''}</span>` : ''}${expiryHtml} ${proofHtml}</td>
                     <td style="font-size:12px">${typeLabel}</td>
-                    <td>${p.label ? esc(p.label) : '<span style="color:var(--text-muted)">-</span>'}</td>
+                    <td style="cursor:pointer" onclick="editPaymentLabel('${esc(p.id)}', ${JSON.stringify(p.label || '')})" title="Click to rename label">${p.label ? esc(p.label) : '<span style="color:var(--text-muted)">+ label</span>'}</td>
                     <td>${p.completedTxId ? txLink(p.completedTxId, truncate(p.completedTxId, 10)) : '-'}</td>
                     <td style="font-size:12px">${formatDate(p.createdAt)}</td>
                     <td>${canCancel ? `<button class="freeze-btn" onclick="cancelPayment('${esc(p.id)}')" title="Cancel this payment">Cancel</button>` : canRetry ? `<button class="freeze-btn" onclick="retryPayment('${esc(p.id)}')" title="Retry this failed payment">Retry</button>` : ''}</td>
@@ -3335,6 +3335,28 @@
                     const msg = await res.text().catch(() => 'Retry failed');
                     showToast(msg || 'Retry failed', 'warning');
                 }
+            } catch (err) {
+                showToast('Error: ' + err.message, 'warning');
+            }
+        }
+
+        async function editPaymentLabel(paymentId, currentLabel) {
+            const next = prompt('Edit payment label (leave empty to clear):', currentLabel || '');
+            if (next === null) return;
+            if ((next || '') === (currentLabel || '')) return;
+            try {
+                const res = await fetch(`/api/payments/${encodeURIComponent(paymentId)}`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ label: next })
+                });
+                if (!res.ok) {
+                    const msg = await res.text().catch(() => 'Rename failed');
+                    showToast(msg || 'Rename failed', 'warning');
+                    return;
+                }
+                showToast(next ? 'Label updated' : 'Label cleared', 'success');
+                await loadPayments();
             } catch (err) {
                 showToast('Error: ' + err.message, 'warning');
             }
