@@ -6070,6 +6070,58 @@ public class WalletLifecycleE2ETests
     }
 
     [Fact]
+    public async Task AddressExposure_manual_toggle_sets_and_clears_flag()
+    {
+        // Users with out-of-band exposure knowledge (posted on Twitter, gave
+        // to an exchange, etc.) need a way to taint an address by hand so the
+        // privacy-aware coin selector reacts to it. The toggle must be
+        // reversible — otherwise a misclick permanently blacklists an address.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var receive = await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address");
+        var addr = receive.GetProperty("address").GetString()!;
+
+        // Confirm it starts unexposed in the list endpoint.
+        var before = await client.GetFromJsonAsync<JsonElement>(
+            $"/api/wallet/addresses?limit=1000");
+        var beforeRow = before.GetProperty("items").EnumerateArray()
+            .Single(i => i.GetProperty("address").GetString() == addr);
+        Assert.False(beforeRow.GetProperty("isExposed").GetBoolean());
+
+        var onResp = await client.PatchAsJsonAsync(
+            $"/api/wallet/addresses/{addr}/exposure", new { Exposed = true });
+        Assert.Equal(HttpStatusCode.OK, onResp.StatusCode);
+        var onBody = await onResp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(onBody.GetProperty("exposed").GetBoolean());
+
+        var afterOn = await client.GetFromJsonAsync<JsonElement>(
+            $"/api/wallet/addresses?limit=1000");
+        var afterOnRow = afterOn.GetProperty("items").EnumerateArray()
+            .Single(i => i.GetProperty("address").GetString() == addr);
+        Assert.True(afterOnRow.GetProperty("isExposed").GetBoolean());
+
+        var offResp = await client.PatchAsJsonAsync(
+            $"/api/wallet/addresses/{addr}/exposure", new { Exposed = false });
+        var offBody = await offResp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.False(offBody.GetProperty("exposed").GetBoolean());
+    }
+
+    [Fact]
+    public async Task AddressExposure_rejects_non_owned_address()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var foreign = new Key().PubKey.GetAddress(ScriptPubKeyType.Segwit, Network.RegTest).ToString();
+        var resp = await client.PatchAsJsonAsync(
+            $"/api/wallet/addresses/{foreign}/exposure", new { Exposed = true });
+        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+    }
+
+    [Fact]
     public async Task AddressList_rejects_unknown_type()
     {
         await using var factory = new KompaktorWebFactory();

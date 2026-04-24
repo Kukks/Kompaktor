@@ -1015,6 +1015,40 @@ app.MapGet("/api/wallet/addresses", async (
     return Results.Ok(new { total, offset, limit, items });
 }).WithTags("Wallet");
 
+// Manually flip an owned address's exposure flag. Exposure is normally set
+// automatically when the address is revealed during a coinjoin round, but
+// users sometimes have out-of-band knowledge — "I posted this on Twitter",
+// "I gave this to a KYC exchange" — and want to force privacy-aware coin
+// selection to treat the address as tainted. Symmetric undo is allowed so a
+// mis-click doesn't permanently blacklist an address.
+app.MapPatch("/api/wallet/addresses/{address}/exposure", async (
+    string address, WalletDbContext db, HttpContext ctx, DashboardEventBus bus) =>
+{
+    var body = await ctx.Request.ReadFromJsonAsync<ExposureRequest>();
+    if (body is null)
+        return Results.BadRequest("Body required with { exposed: true|false }");
+
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.BadRequest("No wallet found");
+
+    byte[] scriptBytes;
+    try { scriptBytes = BitcoinAddress.Create(address, network).ScriptPubKey.ToBytes(); }
+    catch { return Results.BadRequest("Invalid bitcoin address"); }
+
+    var addrEntity = await db.Addresses
+        .Include(a => a.Account)
+        .Where(a => a.Account.WalletId == wallet.Id)
+        .FirstOrDefaultAsync(a => a.ScriptPubKey == scriptBytes);
+    if (addrEntity is null)
+        return Results.NotFound("Address is not owned by this wallet");
+
+    addrEntity.IsExposed = body.Exposed;
+    await db.SaveChangesAsync();
+    bus.Publish("addresses");
+
+    return Results.Ok(new { address, exposed = addrEntity.IsExposed });
+}).WithTags("Wallet");
+
 // Coin control: freeze/unfreeze UTXOs
 app.MapPost("/api/coin-control/freeze/{utxoId}", async (int utxoId, WalletDbContext db, DashboardEventBus bus) =>
 {
@@ -3996,6 +4030,7 @@ record MixingStartRequest(string Passphrase, string? CoordinatorUrl = null, stri
 record AddressBookRequest(string Label, string Address);
 record TransactionNoteRequest(string Text);
 record AddressLabelRequest(string Text);
+record ExposureRequest(bool Exposed);
 record SendRequest(string Destination, long AmountSat, long FeeRateSatPerVb = 2, string Strategy = "PrivacyFirst", string Passphrase = "", string[]? SelectedOutpoints = null);
 record BroadcastPsbtRequest(string SignedPsbt);
 record CreatePaymentRequest(string Destination, long AmountSat, bool Interactive = true, bool Urgent = false, string? Label = null, int? ExpiryMinutes = null, DateTimeOffset? ScheduledAt = null, int? MaxRetries = null);
