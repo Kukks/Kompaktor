@@ -3218,6 +3218,236 @@ app.MapPost("/api/wallet/import", async (WalletDbContext db, HttpContext ctx, Da
     return Results.Ok(new { labelsImported = labelsAdded, addressBookImported = abAdded });
 }).WithTags("Wallet");
 
+// BIP329 labels export: JSONL format for wallet portability. Emits one JSON
+// object per line so labels can be streamed and appended across tools that
+// implement the standard (Sparrow, Electrum, etc.). Covers:
+//   - addr    : address book entries
+//   - tx      : transaction notes (LabelEntity EntityType=Transaction)
+//   - output  : UTXO labels, ref normalised to "txid:vout" as the spec requires
+//   - xpub    : account-level extended public keys
+// The endpoint is watch-only — no key material, no proofs — so it's safe to
+// share the export with other wallets or a paper backup of label history.
+app.MapGet("/api/wallet/labels/bip329", async (WalletDbContext db) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.NotFound("No wallet found");
+
+    var lines = new List<string>();
+    var jsonOpts = new JsonSerializerOptions { WriteIndented = false };
+
+    // addr: counterparty labels from the address book.
+    var addressBook = await db.AddressBook
+        .Where(a => a.WalletId == wallet.Id)
+        .ToListAsync();
+    foreach (var entry in addressBook)
+    {
+        lines.Add(JsonSerializer.Serialize(new
+        {
+            type = "addr",
+            @ref = entry.Address,
+            label = entry.Label
+        }, jsonOpts));
+    }
+
+    // tx: transaction notes. Multiple notes per tx collapse into one label
+    // separated by " | " — BIP329 has no notion of multiple labels for a ref.
+    var txLabels = await db.Labels
+        .Where(l => l.EntityType == "Transaction")
+        .ToListAsync();
+    foreach (var group in txLabels.GroupBy(l => l.EntityId))
+    {
+        lines.Add(JsonSerializer.Serialize(new
+        {
+            type = "tx",
+            @ref = group.Key,
+            label = string.Join(" | ", group.Select(l => l.Text))
+        }, jsonOpts));
+    }
+
+    // output: UTXO labels. Internal EntityId is the UtxoEntity primary-key int,
+    // so we join back to the Utxos table to reconstruct the "txid:vout" form
+    // BIP329 consumers expect.
+    var utxoLabels = await db.Labels
+        .Where(l => l.EntityType == "Utxo")
+        .ToListAsync();
+    if (utxoLabels.Count > 0)
+    {
+        var utxoIds = utxoLabels
+            .Select(l => int.TryParse(l.EntityId, out var id) ? id : 0)
+            .Where(id => id > 0)
+            .Distinct()
+            .ToList();
+        var utxos = await db.Utxos
+            .Where(u => utxoIds.Contains(u.Id))
+            .ToDictionaryAsync(u => u.Id, u => $"{u.TxId}:{u.OutputIndex}");
+        foreach (var group in utxoLabels.GroupBy(l => l.EntityId))
+        {
+            if (!int.TryParse(group.Key, out var utxoId)) continue;
+            if (!utxos.TryGetValue(utxoId, out var outpoint)) continue;
+            lines.Add(JsonSerializer.Serialize(new
+            {
+                type = "output",
+                @ref = outpoint,
+                label = string.Join(" | ", group.Select(l => l.Text))
+            }, jsonOpts));
+        }
+    }
+
+    // xpub: one line per account-level xpub. The label is the account's purpose
+    // so the consuming wallet can tell P2TR from P2WPKH at a glance.
+    var accounts = await db.Accounts
+        .Where(a => a.WalletId == wallet.Id && a.AccountXPub != null)
+        .ToListAsync();
+    foreach (var acct in accounts)
+    {
+        var purposeLabel = acct.Purpose switch
+        {
+            86 => "Kompaktor P2TR account",
+            84 => "Kompaktor P2WPKH account",
+            _ => $"Kompaktor account (purpose {acct.Purpose})"
+        };
+        lines.Add(JsonSerializer.Serialize(new
+        {
+            type = "xpub",
+            @ref = acct.AccountXPub,
+            label = purposeLabel
+        }, jsonOpts));
+    }
+
+    // application/jsonl is the registered media type for JSON Lines.
+    var body = string.Join("\n", lines);
+    return Results.Text(body, "application/jsonl", System.Text.Encoding.UTF8);
+}).WithTags("Wallet");
+
+// BIP329 labels import: accepts JSONL text. Recognized types are applied to
+// our internal storage (addr → AddressBook, tx → Transaction labels,
+// output → UTXO labels). Unknown types and malformed lines are skipped
+// silently rather than failing the whole batch — this matches the
+// "be lenient in what you accept" spirit of the spec and keeps a partial
+// import from the user's other wallet from being rejected over one odd line.
+app.MapPost("/api/wallet/labels/bip329", async (WalletDbContext db, HttpContext ctx, DashboardEventBus bus) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.BadRequest("No wallet found");
+
+    using var reader = new StreamReader(ctx.Request.Body, System.Text.Encoding.UTF8);
+    var payload = await reader.ReadToEndAsync();
+    if (string.IsNullOrWhiteSpace(payload))
+        return Results.BadRequest("Empty body — expected JSONL");
+
+    int addrAdded = 0, txAdded = 0, outputAdded = 0, skipped = 0;
+
+    // Pre-index UTXOs by outpoint so the per-line lookup stays cheap even for
+    // large imports. Only needed if there are any output lines.
+    Dictionary<string, int>? utxoByOutpoint = null;
+
+    foreach (var raw in payload.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+    {
+        var line = raw.Trim();
+        if (line.Length == 0) continue;
+        JsonElement parsed;
+        try
+        {
+            parsed = JsonSerializer.Deserialize<JsonElement>(line);
+            if (parsed.ValueKind != JsonValueKind.Object) { skipped++; continue; }
+        }
+        catch { skipped++; continue; }
+
+        if (!parsed.TryGetProperty("type", out var typeEl) || typeEl.ValueKind != JsonValueKind.String
+            || !parsed.TryGetProperty("ref", out var refEl) || refEl.ValueKind != JsonValueKind.String
+            || !parsed.TryGetProperty("label", out var labelEl) || labelEl.ValueKind != JsonValueKind.String)
+        {
+            skipped++;
+            continue;
+        }
+
+        var type = typeEl.GetString()!;
+        var refVal = refEl.GetString()!.Trim();
+        var label = labelEl.GetString()!.Trim();
+        if (string.IsNullOrEmpty(refVal) || string.IsNullOrEmpty(label))
+        {
+            skipped++;
+            continue;
+        }
+
+        switch (type)
+        {
+            case "addr":
+            {
+                try { BitcoinAddress.Create(refVal, network); }
+                catch { skipped++; continue; }
+                var exists = await db.AddressBook.AnyAsync(a =>
+                    a.WalletId == wallet.Id && a.Address == refVal);
+                if (exists) { skipped++; continue; }
+                db.AddressBook.Add(new AddressBookEntry
+                {
+                    WalletId = wallet.Id,
+                    Address = refVal,
+                    Label = label
+                });
+                addrAdded++;
+                break;
+            }
+            case "tx":
+            {
+                var exists = await db.Labels.AnyAsync(l =>
+                    l.EntityType == "Transaction" && l.EntityId == refVal && l.Text == label);
+                if (exists) { skipped++; continue; }
+                db.Labels.Add(new LabelEntity
+                {
+                    EntityType = "Transaction",
+                    EntityId = refVal,
+                    Text = label
+                });
+                txAdded++;
+                break;
+            }
+            case "output":
+            {
+                // Lazy-build the outpoint index on first output-line we see.
+                if (utxoByOutpoint is null)
+                {
+                    utxoByOutpoint = (await db.Utxos.ToListAsync())
+                        .ToDictionary(u => $"{u.TxId}:{u.OutputIndex}", u => u.Id);
+                }
+                if (!utxoByOutpoint.TryGetValue(refVal, out var utxoId))
+                {
+                    // Orphan output — wallet hasn't synced the tx this labels.
+                    // Skip rather than storing a dangling label.
+                    skipped++;
+                    continue;
+                }
+                var utxoIdStr = utxoId.ToString();
+                var exists = await db.Labels.AnyAsync(l =>
+                    l.EntityType == "Utxo" && l.EntityId == utxoIdStr && l.Text == label);
+                if (exists) { skipped++; continue; }
+                db.Labels.Add(new LabelEntity
+                {
+                    EntityType = "Utxo",
+                    EntityId = utxoIdStr,
+                    Text = label
+                });
+                outputAdded++;
+                break;
+            }
+            default:
+                // xpub / input / pubkey: not stored locally, ignore.
+                skipped++;
+                break;
+        }
+    }
+
+    await db.SaveChangesAsync();
+    bus.Publish("utxos");
+    return Results.Ok(new
+    {
+        addrImported = addrAdded,
+        txImported = txAdded,
+        outputImported = outputAdded,
+        skipped
+    });
+}).WithTags("Wallet");
+
 // Mixing statistics summary
 app.MapGet("/api/mixing/statistics", async (WalletDbContext db) =>
 {

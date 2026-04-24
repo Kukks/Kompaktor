@@ -5527,4 +5527,202 @@ public class WalletLifecycleE2ETests
             Assert.Contains(text, notes);
     }
 
+    [Fact]
+    public async Task Bip329_export_emits_address_book_as_addr_lines()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var counterparty = new Key().PubKey.GetAddress(ScriptPubKeyType.Segwit, Network.RegTest).ToString();
+        await client.PostAsJsonAsync("/api/address-book", new { Label = "Alice", Address = counterparty });
+
+        var resp = await client.GetAsync("/api/wallet/labels/bip329");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        Assert.Equal("application/jsonl", resp.Content.Headers.ContentType?.MediaType);
+
+        var body = await resp.Content.ReadAsStringAsync();
+        var lines = body.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+
+        var addrLines = lines
+            .Select(l => JsonSerializer.Deserialize<JsonElement>(l))
+            .Where(e => e.GetProperty("type").GetString() == "addr")
+            .ToList();
+
+        var alice = addrLines.SingleOrDefault(e => e.GetProperty("label").GetString() == "Alice");
+        Assert.Equal(JsonValueKind.Object, alice.ValueKind);
+        Assert.Equal(counterparty, alice.GetProperty("ref").GetString());
+    }
+
+    [Fact]
+    public async Task Bip329_export_emits_tx_notes_as_tx_lines_one_per_txid()
+    {
+        // Multiple notes on the same tx should collapse into one BIP329 line,
+        // since the format carries one label per ref. The individual note texts
+        // are joined so no content is lost on export.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        await SeedUtxoAsync(factory, client, amountSat: 40_000, tag: 0xD1);
+        var utxos = await client.GetFromJsonAsync<JsonElement>("/api/dashboard/utxos");
+        var txId = utxos.EnumerateArray().First().GetProperty("txId").GetString()!;
+
+        await client.PostAsJsonAsync($"/api/dashboard/transactions/{txId}/note", new { Text = "rent" });
+        await client.PostAsJsonAsync($"/api/dashboard/transactions/{txId}/note", new { Text = "march" });
+
+        var body = await (await client.GetAsync("/api/wallet/labels/bip329")).Content.ReadAsStringAsync();
+        var txLine = body.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Select(l => JsonSerializer.Deserialize<JsonElement>(l))
+            .Single(e => e.GetProperty("type").GetString() == "tx"
+                         && e.GetProperty("ref").GetString() == txId);
+        var label = txLine.GetProperty("label").GetString()!;
+        Assert.Contains("rent", label);
+        Assert.Contains("march", label);
+    }
+
+    [Fact]
+    public async Task Bip329_export_emits_utxo_labels_as_output_with_txid_vout_ref()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var utxoId = await SeedUtxoAsync(factory, client, amountSat: 50_000, tag: 0xD2);
+        await client.PostAsJsonAsync(
+            $"/api/coin-control/label/{utxoId}", new { Text = "post-mix" });
+
+        var utxos = await client.GetFromJsonAsync<JsonElement>("/api/dashboard/utxos");
+        var utxo = utxos.EnumerateArray().Single(u => u.GetProperty("id").GetInt32() == utxoId);
+        var expectedRef = $"{utxo.GetProperty("txId").GetString()}:{utxo.GetProperty("outputIndex").GetInt32()}";
+
+        var body = await (await client.GetAsync("/api/wallet/labels/bip329")).Content.ReadAsStringAsync();
+        var outputLine = body.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Select(l => JsonSerializer.Deserialize<JsonElement>(l))
+            .Single(e => e.GetProperty("type").GetString() == "output");
+        Assert.Equal(expectedRef, outputLine.GetProperty("ref").GetString());
+        Assert.Equal("post-mix", outputLine.GetProperty("label").GetString());
+    }
+
+    [Fact]
+    public async Task Bip329_export_emits_xpub_lines_with_account_purpose()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var body = await (await client.GetAsync("/api/wallet/labels/bip329")).Content.ReadAsStringAsync();
+        var xpubLines = body.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Select(l => JsonSerializer.Deserialize<JsonElement>(l))
+            .Where(e => e.GetProperty("type").GetString() == "xpub")
+            .ToList();
+
+        // Fresh wallet should create at least one xpub-backed account.
+        Assert.NotEmpty(xpubLines);
+        foreach (var line in xpubLines)
+        {
+            var label = line.GetProperty("label").GetString() ?? "";
+            Assert.StartsWith("Kompaktor", label);
+            Assert.False(string.IsNullOrEmpty(line.GetProperty("ref").GetString()));
+        }
+    }
+
+    [Fact]
+    public async Task Bip329_import_creates_address_book_entries_and_is_idempotent()
+    {
+        // Round-trip: import the same addr line twice and verify the second
+        // import reports a skip instead of a duplicate entry. Idempotency is
+        // important — users will often re-run imports across wallet restores.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var addr = new Key().PubKey.GetAddress(ScriptPubKeyType.Segwit, Network.RegTest).ToString();
+        var jsonl = JsonSerializer.Serialize(new { type = "addr", @ref = addr, label = "Bob" });
+
+        var first = await client.PostAsync("/api/wallet/labels/bip329",
+            new StringContent(jsonl, System.Text.Encoding.UTF8, "application/jsonl"));
+        var firstBody = await first.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(1, firstBody.GetProperty("addrImported").GetInt32());
+
+        var second = await client.PostAsync("/api/wallet/labels/bip329",
+            new StringContent(jsonl, System.Text.Encoding.UTF8, "application/jsonl"));
+        var secondBody = await second.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(0, secondBody.GetProperty("addrImported").GetInt32());
+        Assert.Equal(1, secondBody.GetProperty("skipped").GetInt32());
+
+        var list = await client.GetFromJsonAsync<JsonElement>("/api/address-book");
+        Assert.Single(list.EnumerateArray(), e => e.GetProperty("address").GetString() == addr);
+    }
+
+    [Fact]
+    public async Task Bip329_import_skips_malformed_lines_without_failing_batch()
+    {
+        // BIP329 consumers are expected to be lenient: one broken line must
+        // not poison the entire batch. The endpoint should accept what it can
+        // and report skip counts for what it couldn't.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var goodAddr = new Key().PubKey.GetAddress(ScriptPubKeyType.Segwit, Network.RegTest).ToString();
+        var lines = new[]
+        {
+            JsonSerializer.Serialize(new { type = "addr", @ref = goodAddr, label = "OK" }),
+            "not even json",
+            JsonSerializer.Serialize(new { type = "addr", label = "missing ref" }),
+            JsonSerializer.Serialize(new { type = "addr", @ref = "not-a-bitcoin-address", label = "invalid" }),
+            JsonSerializer.Serialize(new { type = "unknown-type", @ref = "x", label = "y" })
+        };
+        var jsonl = string.Join("\n", lines);
+
+        var resp = await client.PostAsync("/api/wallet/labels/bip329",
+            new StringContent(jsonl, System.Text.Encoding.UTF8, "application/jsonl"));
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var body = await resp.Content.ReadFromJsonAsync<JsonElement>();
+
+        Assert.Equal(1, body.GetProperty("addrImported").GetInt32());
+        // 4 bad lines: non-json, missing ref, invalid address, unknown type.
+        Assert.Equal(4, body.GetProperty("skipped").GetInt32());
+    }
+
+    [Fact]
+    public async Task Bip329_import_orphan_output_is_skipped()
+    {
+        // Output labels that reference an outpoint we haven't synced can't be
+        // applied — there's no UTXO row to attach them to. Rather than storing
+        // a dangling label, the endpoint skips them and the user can re-import
+        // after syncing.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var jsonl = JsonSerializer.Serialize(new
+        {
+            type = "output",
+            @ref = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef:0",
+            label = "ghost"
+        });
+
+        var resp = await client.PostAsync("/api/wallet/labels/bip329",
+            new StringContent(jsonl, System.Text.Encoding.UTF8, "application/jsonl"));
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var body = await resp.Content.ReadFromJsonAsync<JsonElement>();
+
+        Assert.Equal(0, body.GetProperty("outputImported").GetInt32());
+        Assert.Equal(1, body.GetProperty("skipped").GetInt32());
+    }
+
+    [Fact]
+    public async Task Bip329_import_empty_body_is_rejected()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.PostAsync("/api/wallet/labels/bip329",
+            new StringContent("   \n\n  ", System.Text.Encoding.UTF8, "application/jsonl"));
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
 }
