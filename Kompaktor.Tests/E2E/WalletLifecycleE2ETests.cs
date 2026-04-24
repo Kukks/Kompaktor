@@ -7299,4 +7299,57 @@ public class WalletLifecycleE2ETests
         Assert.Equal(0, buckets["10M+"].GetProperty("count").GetInt32());
     }
 
+    [Fact]
+    public async Task FreezeBelowThreshold_rejects_missing_body()
+    {
+        // The endpoint needs an explicit threshold — no sensible default is
+        // safe to assume (freezing zero is a no-op, freezing everything is
+        // destructive). Missing body must 400, not silently no-op.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.PostAsync("/api/coin-control/freeze-below-threshold", null);
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task FreezeBelowThreshold_rejects_non_positive_threshold()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.PostAsJsonAsync(
+            "/api/coin-control/freeze-below-threshold", new { thresholdSat = 0 });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task FreezeBelowThreshold_freezes_only_utxos_below_cap()
+    {
+        // Seed one 30k-sat UTXO (below the 50k cap) and one 200k-sat UTXO
+        // (above). Only the small one must end up frozen, and the response
+        // must report frozen=1 plus the threshold echoed back.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+        var smallId = await SeedUtxoAsync(factory, client, amountSat: 30_000, tag: 0xE0);
+        var largeId = await SeedUtxoAsync(factory, client, amountSat: 200_000, tag: 0xE1);
+
+        var resp = await client.PostAsJsonAsync(
+            "/api/coin-control/freeze-below-threshold", new { thresholdSat = 50_000 });
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var body = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(1, body.GetProperty("frozen").GetInt32());
+        Assert.Equal(50_000, body.GetProperty("thresholdSat").GetInt64());
+
+        var utxos = (await client.GetFromJsonAsync<JsonElement>(
+                "/api/dashboard/utxos?includeFrozen=true"))
+            .EnumerateArray()
+            .ToDictionary(u => u.GetProperty("id").GetInt32(), u => u);
+        Assert.True(utxos[smallId].GetProperty("isFrozen").GetBoolean());
+        Assert.False(utxos[largeId].GetProperty("isFrozen").GetBoolean());
+    }
+
 }

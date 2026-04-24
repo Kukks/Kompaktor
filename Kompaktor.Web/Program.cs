@@ -1324,6 +1324,54 @@ app.MapPost("/api/coin-control/freeze-external-source", async (WalletDbContext d
     return Results.Ok(new { frozen = candidates.Count });
 }).WithTags("CoinControl");
 
+// Dust-quarantine shortcut: freezes every live UTXO below a user-set sat
+// threshold in one call. Companion to freeze-exposed/freeze-external-source
+// — here the axis is economic size rather than privacy taint. Small UTXOs
+// are expensive to include in spends (fee > value) and drag down mixing
+// efficiency (coordinators often have minimum-value floors), so locking
+// them away until the user chooses to consolidate them is a common flow.
+// Idempotent: only touches not-already-frozen, still-unspent rows.
+app.MapPost("/api/coin-control/freeze-below-threshold",
+    async (WalletDbContext db, HttpContext ctx, DashboardEventBus bus) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.BadRequest("No wallet found");
+
+    long threshold;
+    try
+    {
+        var body = await ctx.Request.ReadFromJsonAsync<JsonElement>();
+        if (body.ValueKind != JsonValueKind.Object
+            || !body.TryGetProperty("thresholdSat", out var thresholdEl)
+            || thresholdEl.ValueKind != JsonValueKind.Number)
+            return Results.BadRequest("thresholdSat (integer) is required");
+        threshold = thresholdEl.GetInt64();
+    }
+    catch
+    {
+        return Results.BadRequest("Invalid request body");
+    }
+
+    if (threshold <= 0)
+        return Results.BadRequest("thresholdSat must be positive");
+
+    var candidates = await db.Utxos
+        .Include(u => u.Address)
+        .ThenInclude(a => a.Account)
+        .Where(u => u.Address.Account.WalletId == wallet.Id)
+        .Where(u => u.SpentByTxId == null && !u.IsFrozen)
+        .Where(u => u.AmountSat < threshold)
+        .ToListAsync();
+
+    foreach (var utxo in candidates)
+        utxo.IsFrozen = true;
+
+    await db.SaveChangesAsync();
+    if (candidates.Count > 0) bus.Publish("utxos");
+
+    return Results.Ok(new { frozen = candidates.Count, thresholdSat = threshold });
+}).WithTags("CoinControl");
+
 // Labels: add label to a UTXO
 app.MapPost("/api/coin-control/label/{utxoId}", async (int utxoId, WalletDbContext db, HttpContext ctx, DashboardEventBus bus) =>
 {
