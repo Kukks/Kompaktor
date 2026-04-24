@@ -3265,6 +3265,55 @@ app.MapGet("/api/webhooks/{webhookId}/deliveries", async (int webhookId, WalletD
     return Results.Ok(deliveries);
 }).WithTags("Webhooks");
 
+// Per-webhook delivery health summary. Aggregated counts + last success/failure
+// timestamps + a consecutive-failure streak so the UI can tell "this hook is
+// currently broken" apart from "this hook had a blip six months ago". Kept
+// distinct from the paginated deliveries list so the list UI doesn't need to
+// scan the whole history to decide a row colour.
+app.MapGet("/api/webhooks/{webhookId}/deliveries/stats", async (int webhookId, WalletDbContext db) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.BadRequest("No wallet found");
+
+    var webhook = await db.PaymentWebhooks.FindAsync(webhookId);
+    if (webhook is null || webhook.WalletId != wallet.Id) return Results.NotFound();
+
+    // Pull to memory — SQLite can't sort/aggregate DateTimeOffset with filters
+    // in one shot, and the per-webhook volume is bounded enough not to matter.
+    var all = await db.WebhookDeliveries
+        .Where(d => d.WebhookId == webhookId)
+        .ToListAsync();
+
+    var successCount = all.Count(d => d.Success);
+    var failureCount = all.Count(d => !d.Success);
+
+    DateTimeOffset? lastSuccessAt = all.Where(d => d.Success).Any()
+        ? all.Where(d => d.Success).Max(d => d.Timestamp)
+        : null;
+    DateTimeOffset? lastFailureAt = all.Where(d => !d.Success).Any()
+        ? all.Where(d => !d.Success).Max(d => d.Timestamp)
+        : null;
+
+    // Consecutive failures at the tail — the "currently broken" signal.
+    // Count from most recent back until we hit a success.
+    var consecutiveFailures = 0;
+    foreach (var d in all.OrderByDescending(d => d.Timestamp))
+    {
+        if (d.Success) break;
+        consecutiveFailures++;
+    }
+
+    return Results.Ok(new
+    {
+        totalDeliveries = all.Count,
+        successCount,
+        failureCount,
+        lastSuccessAt,
+        lastFailureAt,
+        consecutiveFailures
+    });
+}).WithTags("Webhooks");
+
 // Manually retry a past delivery. Sends a fresh POST to the same webhook using the
 // payment's current state with the original event type — we don't persist the original
 // payload, so this is "replay the event against current state" rather than "replay the

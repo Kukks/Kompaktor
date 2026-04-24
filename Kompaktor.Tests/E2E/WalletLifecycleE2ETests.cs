@@ -7118,4 +7118,127 @@ public class WalletLifecycleE2ETests
         Assert.True(lastUsedAt.GetInt64() > 0);
     }
 
+    [Fact]
+    public async Task WebhookDeliveryStats_returns_zeros_for_webhook_with_no_deliveries()
+    {
+        // Newly created webhook — every count must be zero and both timestamps
+        // must be null (the nullable DateTimeOffset path in the aggregation).
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var create = await client.PostAsJsonAsync("/api/webhooks", new
+        {
+            Url = "https://example.com/h"
+        });
+        var createBody = await create.Content.ReadFromJsonAsync<JsonElement>();
+        var id = createBody.GetProperty("id").GetInt32();
+
+        var resp = await client.GetAsync($"/api/webhooks/{id}/deliveries/stats");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var body = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(0, body.GetProperty("totalDeliveries").GetInt32());
+        Assert.Equal(0, body.GetProperty("successCount").GetInt32());
+        Assert.Equal(0, body.GetProperty("failureCount").GetInt32());
+        Assert.Equal(0, body.GetProperty("consecutiveFailures").GetInt32());
+        Assert.Equal(JsonValueKind.Null, body.GetProperty("lastSuccessAt").ValueKind);
+        Assert.Equal(JsonValueKind.Null, body.GetProperty("lastFailureAt").ValueKind);
+    }
+
+    [Fact]
+    public async Task WebhookDeliveryStats_counts_consecutive_tail_failures()
+    {
+        // Seed a realistic sequence: 1 success, then 3 failures in a row
+        // (most recent). consecutiveFailures must be 3 — not 4, not "all".
+        // Also checks that the success/failure split + last timestamps land
+        // on the right rows.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var create = await client.PostAsJsonAsync("/api/webhooks", new
+        {
+            Url = "https://example.com/h"
+        });
+        var createBody = await create.Content.ReadFromJsonAsync<JsonElement>();
+        var webhookId = createBody.GetProperty("id").GetInt32();
+
+        var successAt = DateTimeOffset.UtcNow.AddMinutes(-40);
+        var failAt1 = DateTimeOffset.UtcNow.AddMinutes(-30);
+        var failAt2 = DateTimeOffset.UtcNow.AddMinutes(-20);
+        var failAt3 = DateTimeOffset.UtcNow.AddMinutes(-10);
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<WalletDbContext>();
+            db.WebhookDeliveries.AddRange(
+                new WebhookDeliveryEntity
+                {
+                    WebhookId = webhookId,
+                    PaymentId = "p-ok",
+                    EventType = "Completed",
+                    HttpStatusCode = 200,
+                    Success = true,
+                    Timestamp = successAt
+                },
+                new WebhookDeliveryEntity
+                {
+                    WebhookId = webhookId,
+                    PaymentId = "p-err-1",
+                    EventType = "Completed",
+                    HttpStatusCode = 500,
+                    Success = false,
+                    ErrorMessage = "server err",
+                    Timestamp = failAt1
+                },
+                new WebhookDeliveryEntity
+                {
+                    WebhookId = webhookId,
+                    PaymentId = "p-err-2",
+                    EventType = "Completed",
+                    HttpStatusCode = 502,
+                    Success = false,
+                    Timestamp = failAt2
+                },
+                new WebhookDeliveryEntity
+                {
+                    WebhookId = webhookId,
+                    PaymentId = "p-err-3",
+                    EventType = "Completed",
+                    HttpStatusCode = 0,
+                    Success = false,
+                    ErrorMessage = "timeout",
+                    Timestamp = failAt3
+                });
+            await db.SaveChangesAsync();
+        }
+
+        var body = await client.GetFromJsonAsync<JsonElement>(
+            $"/api/webhooks/{webhookId}/deliveries/stats");
+
+        Assert.Equal(4, body.GetProperty("totalDeliveries").GetInt32());
+        Assert.Equal(1, body.GetProperty("successCount").GetInt32());
+        Assert.Equal(3, body.GetProperty("failureCount").GetInt32());
+        Assert.Equal(3, body.GetProperty("consecutiveFailures").GetInt32());
+        // Both timestamps present — not every delivery was one-sided.
+        Assert.Equal(JsonValueKind.Number, body.GetProperty("lastSuccessAt").ValueKind);
+        Assert.Equal(JsonValueKind.Number, body.GetProperty("lastFailureAt").ValueKind);
+        // lastFailureAt must be the most recent failure (failAt3), not the oldest.
+        Assert.Equal(failAt3.ToUnixTimeSeconds(), body.GetProperty("lastFailureAt").GetInt64());
+    }
+
+    [Fact]
+    public async Task WebhookDeliveryStats_returns_404_for_unknown_webhook()
+    {
+        // Guard against a UI bug that holds on to a stale id — returning stats
+        // for someone else's webhook would be a data leak in a multi-wallet
+        // setup. 404 also matches the deliveries list behaviour.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.GetAsync("/api/webhooks/99999/deliveries/stats");
+        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+    }
+
 }
