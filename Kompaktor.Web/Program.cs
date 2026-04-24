@@ -3581,6 +3581,57 @@ app.MapGet("/api/address-book/usage", async (WalletDbContext db) =>
     return Results.Ok(result);
 }).WithTags("AddressBook");
 
+// Batch address → contact-label lookup for UI enrichment. Clients rendering
+// payment history often have many unique destinations — instead of fetching
+// the full address book and joining client-side, POST the observed addresses
+// and get back just the matches. Unknown addresses return label=null so the
+// caller can render them as raw. Preserves input order and deduplicates.
+app.MapPost("/api/address-book/resolve", async (WalletDbContext db, HttpContext ctx) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.Ok(Array.Empty<object>());
+
+    var body = await ctx.Request.ReadFromJsonAsync<JsonElement>();
+    if (body.ValueKind != JsonValueKind.Object ||
+        !body.TryGetProperty("addresses", out var addrsElem) ||
+        addrsElem.ValueKind != JsonValueKind.Array)
+    {
+        return Results.BadRequest("addresses array required");
+    }
+
+    var requested = new List<string>();
+    var seen = new HashSet<string>(StringComparer.Ordinal);
+    foreach (var el in addrsElem.EnumerateArray())
+    {
+        if (el.ValueKind != JsonValueKind.String) continue;
+        var s = el.GetString();
+        if (string.IsNullOrWhiteSpace(s)) continue;
+        var trimmed = s.Trim();
+        if (seen.Add(trimmed)) requested.Add(trimmed);
+    }
+
+    if (requested.Count == 0) return Results.Ok(Array.Empty<object>());
+
+    var matches = await db.AddressBook
+        .Where(a => a.WalletId == wallet.Id && requested.Contains(a.Address))
+        .Select(a => new { a.Id, a.Label, a.Address })
+        .ToListAsync();
+    var byAddress = matches.ToDictionary(m => m.Address, StringComparer.Ordinal);
+
+    var result = requested.Select(addr =>
+    {
+        byAddress.TryGetValue(addr, out var match);
+        return new
+        {
+            address = addr,
+            label = match?.Label,
+            addressBookEntryId = (int?)match?.Id
+        };
+    }).ToList();
+
+    return Results.Ok(result);
+}).WithTags("AddressBook");
+
 app.MapPost("/api/address-book", async (WalletDbContext db, HttpContext ctx) =>
 {
     var wallet = await db.Wallets.FirstOrDefaultAsync();

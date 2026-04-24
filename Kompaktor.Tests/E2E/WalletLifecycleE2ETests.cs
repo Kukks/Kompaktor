@@ -7357,4 +7357,107 @@ public class WalletLifecycleE2ETests
         Assert.False(utxos[largeId].GetProperty("isFrozen").GetBoolean());
     }
 
+    [Fact]
+    public async Task ResolveAddressBook_rejects_missing_addresses_field()
+    {
+        // Malformed request body (not an object, or missing the "addresses" key)
+        // must return 400 so the client gets a clear signal instead of an empty
+        // array that could be misinterpreted as "nothing matched".
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.PostAsJsonAsync("/api/address-book/resolve", new { other = "x" });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task ResolveAddressBook_returns_empty_for_empty_address_list()
+    {
+        // Empty input is a valid no-op — clients may POST whatever list they
+        // currently have, and an empty history shouldn't error.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.PostAsJsonAsync(
+            "/api/address-book/resolve", new { addresses = Array.Empty<string>() });
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var body = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(0, body.GetArrayLength());
+    }
+
+    [Fact]
+    public async Task ResolveAddressBook_returns_null_label_for_unknown_addresses()
+    {
+        // No address book entries → every result row must report label=null
+        // and entryId=null. The count must match the (deduplicated) input.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.PostAsJsonAsync("/api/address-book/resolve", new
+        {
+            addresses = new[] { "bcrt1qa", "bcrt1qb" }
+        });
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var body = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(2, body.GetArrayLength());
+        foreach (var row in body.EnumerateArray())
+        {
+            Assert.Equal(JsonValueKind.Null, row.GetProperty("label").ValueKind);
+            Assert.Equal(JsonValueKind.Null, row.GetProperty("addressBookEntryId").ValueKind);
+        }
+    }
+
+    [Fact]
+    public async Task ResolveAddressBook_maps_known_addresses_and_preserves_order()
+    {
+        // Seed two contacts. Post three addresses — known1, unknown, known2 —
+        // in that exact order. Response must preserve input order (so clients
+        // can render in lockstep) and decorate only the matching rows.
+        // Duplicate input addresses must be collapsed to a single output row.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        const string aliceAddr = "bcrt1qalice";
+        const string bobAddr = "bcrt1qbob";
+        const string strangerAddr = "bcrt1qstranger";
+
+        int aliceId, bobId;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<WalletDbContext>();
+            var wallet = await db.Wallets.FirstAsync();
+            var alice = new AddressBookEntry { WalletId = wallet.Id, Label = "Alice", Address = aliceAddr };
+            var bob = new AddressBookEntry { WalletId = wallet.Id, Label = "Bob", Address = bobAddr };
+            db.AddressBook.AddRange(alice, bob);
+            await db.SaveChangesAsync();
+            aliceId = alice.Id;
+            bobId = bob.Id;
+        }
+
+        var resp = await client.PostAsJsonAsync("/api/address-book/resolve", new
+        {
+            addresses = new[] { aliceAddr, strangerAddr, bobAddr, aliceAddr }
+        });
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var body = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(3, body.GetArrayLength());
+
+        var rows = body.EnumerateArray().ToArray();
+        Assert.Equal(aliceAddr, rows[0].GetProperty("address").GetString());
+        Assert.Equal("Alice", rows[0].GetProperty("label").GetString());
+        Assert.Equal(aliceId, rows[0].GetProperty("addressBookEntryId").GetInt32());
+
+        Assert.Equal(strangerAddr, rows[1].GetProperty("address").GetString());
+        Assert.Equal(JsonValueKind.Null, rows[1].GetProperty("label").ValueKind);
+        Assert.Equal(JsonValueKind.Null, rows[1].GetProperty("addressBookEntryId").ValueKind);
+
+        Assert.Equal(bobAddr, rows[2].GetProperty("address").GetString());
+        Assert.Equal("Bob", rows[2].GetProperty("label").GetString());
+        Assert.Equal(bobId, rows[2].GetProperty("addressBookEntryId").GetInt32());
+    }
+
 }
