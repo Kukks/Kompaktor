@@ -2738,6 +2738,42 @@ app.MapPost("/api/payments/receive", async (WalletDbContext db, HttpContext ctx,
     }
 }).WithTags("Payments");
 
+// Bulk cancel: loops over every cancellable outbound payment on the wallet
+// and flips it to Failed. Skips rows that are already Completed or Committed
+// (those are irreversible). Fires one webhook per cancelled payment so each
+// receiver sees a distinct "Failed" event — this matches the single-delete
+// semantics so webhook consumers can reuse the same handler code path.
+// Intended use: "stop everything" during a reconfiguration or emergency.
+app.MapPost("/api/payments/bulk-cancel", async (WalletDbContext db, DashboardEventBus bus) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.BadRequest("No wallet found");
+
+    var manager = new WalletPaymentManager(db, wallet.Id, network);
+    var cancellable = await db.PendingPayments
+        .Where(p => p.WalletId == wallet.Id && p.Direction == "Outbound")
+        .Where(p => p.Status != "Completed" && p.Status != "Committed" && p.Status != "Failed")
+        .Select(p => p.Id)
+        .ToListAsync();
+
+    var cancelled = 0;
+    var webhookSvc = new PaymentWebhookService(db, wallet.Id);
+    foreach (var id in cancellable)
+    {
+        if (!await manager.CancelPaymentAsync(id)) continue;
+        cancelled++;
+        // Fire webhook post-cancellation so the receiver sees a Failed
+        // event for each payment individually — consistent with the
+        // single-payment DELETE path.
+        var entity = await db.PendingPayments.FindAsync(id);
+        if (entity is not null)
+            _ = webhookSvc.DeliverAsync(entity, "Failed");
+    }
+
+    if (cancelled > 0) bus.Publish("payments");
+    return Results.Ok(new { cancelled, considered = cancellable.Count });
+}).WithTags("Payments");
+
 app.MapDelete("/api/payments/{paymentId}", async (string paymentId, WalletDbContext db, DashboardEventBus bus) =>
 {
     var wallet = await db.Wallets.FirstOrDefaultAsync();

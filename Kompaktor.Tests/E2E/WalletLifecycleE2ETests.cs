@@ -6826,6 +6826,50 @@ public class WalletLifecycleE2ETests
     }
 
     [Fact]
+    public async Task PaymentsBulkCancel_cancels_all_pending_outbound()
+    {
+        // Seed three outbound payments. Bulk-cancel must flip all three to
+        // Failed and report cancelled=3. A fresh search for Pending should
+        // come back empty afterward.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+        var receive = await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address");
+        var addr = receive.GetProperty("address").GetString()!;
+
+        for (var i = 0; i < 3; i++)
+        {
+            await client.PostAsJsonAsync("/api/payments/send", new
+            {
+                Destination = addr, AmountSat = 1000 + i, Label = $"bulk-{i}"
+            });
+        }
+
+        var resp = await client.PostAsync("/api/payments/bulk-cancel", null);
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var body = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(3, body.GetProperty("cancelled").GetInt32());
+
+        var pending = await client.GetFromJsonAsync<JsonElement>("/api/payments/search?status=Pending");
+        Assert.Equal(0, pending.GetProperty("total").GetInt32());
+    }
+
+    [Fact]
+    public async Task PaymentsBulkCancel_no_op_when_nothing_cancellable()
+    {
+        // Fresh wallet with no payments — endpoint must return cancelled=0
+        // and considered=0 without churning the event bus.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.PostAsync("/api/payments/bulk-cancel", null);
+        var body = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(0, body.GetProperty("cancelled").GetInt32());
+        Assert.Equal(0, body.GetProperty("considered").GetInt32());
+    }
+
+    [Fact]
     public async Task UnfreezeAll_is_idempotent_when_nothing_frozen()
     {
         // Fresh wallet with no freezes — endpoint must no-op and return
