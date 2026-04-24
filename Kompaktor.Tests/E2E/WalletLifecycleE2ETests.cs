@@ -728,6 +728,33 @@ public class WalletLifecycleE2ETests
     }
 
     [Fact]
+    public async Task Payments_search_surfaces_scheduled_status()
+    {
+        // Filtering by Scheduled status must return payments created with a
+        // future ScheduledAt — this is what the UI's "Scheduled" filter relies
+        // on to let users find dormant payments before they activate.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var future = DateTimeOffset.UtcNow.AddHours(3).ToUnixTimeSeconds();
+        await client.PostAsJsonAsync("/api/payments/send", new
+        {
+            Destination = new Key().PubKey
+                .GetAddress(ScriptPubKeyType.Segwit, NBitcoin.Network.RegTest).ToString(),
+            AmountSat = 10_000L,
+            Interactive = false,
+            ScheduledAt = future
+        });
+
+        var onlyScheduled = await client.GetFromJsonAsync<JsonElement>(
+            "/api/payments/search?status=Scheduled");
+        Assert.Equal(1, onlyScheduled.GetProperty("total").GetInt32());
+        var first = onlyScheduled.GetProperty("items").EnumerateArray().First();
+        Assert.Equal("Scheduled", first.GetProperty("status").GetString());
+    }
+
+    [Fact]
     public async Task Batch_send_rejects_empty_array()
     {
         await using var factory = new KompaktorWebFactory();
