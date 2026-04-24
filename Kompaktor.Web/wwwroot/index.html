@@ -889,6 +889,14 @@
                             <button class="copy-btn" onclick="copyBip21()" title="Copy as bitcoin: payment URI" style="background:var(--bg)">URI</button>
                         </div>
                         <div class="addr-meta" id="receiveAddrMeta"></div>
+                        <div style="margin-top:8px;display:flex;align-items:center;gap:8px;font-size:12px">
+                            <label for="receiveType" style="color:var(--text-muted)">Address type:</label>
+                            <select id="receiveType" onchange="loadReceiveAddress()" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:2px 6px;border-radius:3px;font-size:12px">
+                                <option value="">Default (Taproot)</option>
+                                <option value="p2tr">Taproot (bc1p)</option>
+                                <option value="p2wpkh">SegWit (bc1q) — use if payer rejects Taproot</option>
+                            </select>
+                        </div>
                         <details style="margin-top:8px">
                             <summary style="cursor:pointer;font-size:12px;color:var(--text-muted)">Request a specific amount</summary>
                             <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
@@ -2053,17 +2061,25 @@
         }
 
         let _receiveQrTimer = null;
+        function receiveTypeParam() {
+            const type = document.getElementById('receiveType')?.value?.trim();
+            return type ? 'type=' + encodeURIComponent(type) : '';
+        }
         function buildBip21Query() {
             const amt = document.getElementById('reqAmountSat')?.value?.trim();
             const lbl = document.getElementById('reqLabel')?.value?.trim();
             const parts = [];
             if (amt && Number(amt) > 0) parts.push('amountSat=' + Number(amt));
             if (lbl) parts.push('label=' + encodeURIComponent(lbl));
+            const typeQ = receiveTypeParam();
+            if (typeQ) parts.push(typeQ);
             return parts.length ? '?' + parts.join('&') : '';
         }
 
         async function loadReceiveAddress() {
-            const data = await fetchJson('/api/wallet/receive-address');
+            const typeQ = receiveTypeParam();
+            const url = '/api/wallet/receive-address' + (typeQ ? '?' + typeQ : '');
+            const data = await fetchJson(url);
             const addrEl = document.getElementById('receiveAddr');
             const metaEl = document.getElementById('receiveAddrMeta');
             const qrEl = document.getElementById('receiveQr');

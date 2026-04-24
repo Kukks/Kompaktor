@@ -4846,4 +4846,82 @@ public class WalletLifecycleE2ETests
         Assert.Equal("Alice", items[0].GetProperty("label").GetString());
         Assert.Equal(addr, items[0].GetProperty("address").GetString());
     }
+
+    [Fact]
+    public async Task Receive_address_default_is_taproot()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var data = await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address");
+        Assert.Equal("P2TR", data.GetProperty("type").GetString());
+        Assert.Equal(86, data.GetProperty("purpose").GetInt32());
+        // Regtest Taproot addresses start with bcrt1p
+        Assert.StartsWith("bcrt1p", data.GetProperty("address").GetString()!);
+    }
+
+    [Fact]
+    public async Task Receive_address_filters_by_type_param()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var taproot = await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address?type=p2tr");
+        Assert.Equal("P2TR", taproot.GetProperty("type").GetString());
+        Assert.StartsWith("bcrt1p", taproot.GetProperty("address").GetString()!);
+
+        var segwit = await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address?type=p2wpkh");
+        Assert.Equal("P2WPKH", segwit.GetProperty("type").GetString());
+        Assert.Equal(84, segwit.GetProperty("purpose").GetInt32());
+        // Regtest SegWit v0 addresses start with bcrt1q (not bcrt1p)
+        var segwitAddr = segwit.GetProperty("address").GetString()!;
+        Assert.StartsWith("bcrt1q", segwitAddr);
+        Assert.DoesNotMatch("^bcrt1p", segwitAddr);
+
+        // Case-insensitive + alias parsing.
+        var aliasUpper = await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address?type=TAPROOT");
+        Assert.Equal("P2TR", aliasUpper.GetProperty("type").GetString());
+        var aliasSegwit = await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address?type=segwit");
+        Assert.Equal("P2WPKH", aliasSegwit.GetProperty("type").GetString());
+    }
+
+    [Fact]
+    public async Task Receive_address_rejects_unknown_type()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.GetAsync("/api/wallet/receive-address?type=legacy");
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Receive_uri_and_qr_honour_type_param()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        // URI endpoint: the BIP-21 string embeds the raw address, so we can
+        // prove the type filter threaded through without parsing the QR SVG.
+        var uri = await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-uri?type=p2wpkh");
+        Assert.Contains("bcrt1q", uri.GetProperty("uri").GetString()!);
+
+        var uriTaproot = await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-uri?type=p2tr");
+        Assert.Contains("bcrt1p", uriTaproot.GetProperty("uri").GetString()!);
+
+        // QR endpoint: just verify the request succeeds with a valid type.
+        var qrResp = await client.GetAsync("/api/wallet/receive-qr?type=p2wpkh");
+        Assert.Equal(HttpStatusCode.OK, qrResp.StatusCode);
+
+        var qrBadResp = await client.GetAsync("/api/wallet/receive-qr?type=junk");
+        Assert.Equal(HttpStatusCode.BadRequest, qrBadResp.StatusCode);
+    }
 }

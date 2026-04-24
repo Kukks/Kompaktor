@@ -1271,21 +1271,31 @@ app.MapPost("/api/wallet/test-coordinator", async (HttpContext ctx) =>
 }).WithTags("Wallet");
 
 // Get receive address
-app.MapGet("/api/wallet/receive-address", async (WalletDbContext db) =>
+app.MapGet("/api/wallet/receive-address", async (WalletDbContext db, string? type = null) =>
 {
     var wallet = await db.Wallets.FirstOrDefaultAsync();
     if (wallet is null) return Results.BadRequest("No wallet found");
 
-    // Find fresh P2TR address (purpose 86 preferred)
-    var address = await db.Addresses
+    int? purposeFilter;
+    try { purposeFilter = ParseAddressType(type); }
+    catch (FormatException ex) { return Results.BadRequest(ex.Message); }
+
+    var q = db.Addresses
         .Include(a => a.Account)
         .Where(a => a.Account.WalletId == wallet.Id)
-        .Where(a => !a.IsUsed && !a.IsExposed && !a.IsChange)
+        .Where(a => !a.IsUsed && !a.IsExposed && !a.IsChange);
+    if (purposeFilter.HasValue)
+        q = q.Where(a => a.Account.Purpose == purposeFilter.Value);
+
+    var address = await q
         .OrderByDescending(a => a.Account.Purpose) // Prefer P2TR (86)
         .ThenBy(a => a.Id)
         .FirstOrDefaultAsync();
 
-    if (address is null) return Results.BadRequest("No fresh addresses available");
+    if (address is null) return Results.BadRequest(
+        purposeFilter.HasValue
+            ? $"No fresh addresses available of type '{type}'"
+            : "No fresh addresses available");
 
     var script = new Script(address.ScriptPubKey);
     var btcAddress = script.GetDestinationAddress(network);
@@ -1308,20 +1318,32 @@ app.MapGet("/api/wallet/receive-qr", async (
     long? amountSat = null,
     decimal? amount = null,
     string? label = null,
-    string? message = null) =>
+    string? message = null,
+    string? type = null) =>
 {
     var wallet = await db.Wallets.FirstOrDefaultAsync();
     if (wallet is null) return Results.BadRequest("No wallet found");
 
-    var address = await db.Addresses
+    int? purposeFilter;
+    try { purposeFilter = ParseAddressType(type); }
+    catch (FormatException ex) { return Results.BadRequest(ex.Message); }
+
+    var q = db.Addresses
         .Include(a => a.Account)
         .Where(a => a.Account.WalletId == wallet.Id)
-        .Where(a => !a.IsUsed && !a.IsExposed && !a.IsChange)
+        .Where(a => !a.IsUsed && !a.IsExposed && !a.IsChange);
+    if (purposeFilter.HasValue)
+        q = q.Where(a => a.Account.Purpose == purposeFilter.Value);
+
+    var address = await q
         .OrderByDescending(a => a.Account.Purpose)
         .ThenBy(a => a.Id)
         .FirstOrDefaultAsync();
 
-    if (address is null) return Results.BadRequest("No fresh addresses available");
+    if (address is null) return Results.BadRequest(
+        purposeFilter.HasValue
+            ? $"No fresh addresses available of type '{type}'"
+            : "No fresh addresses available");
 
     var script = new Script(address.ScriptPubKey);
     var btcAddress = script.GetDestinationAddress(network);
@@ -1342,20 +1364,32 @@ app.MapGet("/api/wallet/receive-uri", async (
     long? amountSat = null,
     decimal? amount = null,
     string? label = null,
-    string? message = null) =>
+    string? message = null,
+    string? type = null) =>
 {
     var wallet = await db.Wallets.FirstOrDefaultAsync();
     if (wallet is null) return Results.BadRequest("No wallet found");
 
-    var address = await db.Addresses
+    int? purposeFilter;
+    try { purposeFilter = ParseAddressType(type); }
+    catch (FormatException ex) { return Results.BadRequest(ex.Message); }
+
+    var q = db.Addresses
         .Include(a => a.Account)
         .Where(a => a.Account.WalletId == wallet.Id)
-        .Where(a => !a.IsUsed && !a.IsExposed && !a.IsChange)
+        .Where(a => !a.IsUsed && !a.IsExposed && !a.IsChange);
+    if (purposeFilter.HasValue)
+        q = q.Where(a => a.Account.Purpose == purposeFilter.Value);
+
+    var address = await q
         .OrderByDescending(a => a.Account.Purpose)
         .ThenBy(a => a.Id)
         .FirstOrDefaultAsync();
 
-    if (address is null) return Results.BadRequest("No fresh addresses available");
+    if (address is null) return Results.BadRequest(
+        purposeFilter.HasValue
+            ? $"No fresh addresses available of type '{type}'"
+            : "No fresh addresses available");
 
     var script = new Script(address.ScriptPubKey);
     var btcAddress = script.GetDestinationAddress(network);
@@ -1379,6 +1413,21 @@ static string BuildBip21Uri(string address, long? amountSat, decimal? amount, st
 
     var query = parts.Count > 0 ? "?" + string.Join("&", parts) : "";
     return $"bitcoin:{address}{query}";
+}
+
+// Maps the user-facing "type" query param on /receive-* endpoints to the
+// BIP-43 purpose number stored on the account. Returns null when no type
+// was requested (caller falls back to P2TR-preferred default). Throws
+// FormatException when the value is present but unrecognised.
+static int? ParseAddressType(string? type)
+{
+    if (string.IsNullOrWhiteSpace(type)) return null;
+    return type.Trim().ToUpperInvariant() switch
+    {
+        "P2TR" or "TAPROOT" => 86,
+        "P2WPKH" or "SEGWIT" => 84,
+        _ => throw new FormatException($"Unknown address type '{type}'. Use 'p2tr' or 'p2wpkh'.")
+    };
 }
 
 // Parses "txid:vout" strings into outpoint tuples. Returns null when the
