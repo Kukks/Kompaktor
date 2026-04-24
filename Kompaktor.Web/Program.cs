@@ -3472,6 +3472,60 @@ app.MapGet("/api/webhooks/{webhookId}/deliveries/stats", async (int webhookId, W
     });
 }).WithTags("Webhooks");
 
+// Cross-webhook recent delivery feed. The per-webhook /deliveries endpoint is
+// good when you already know which hook you're investigating, but when a user
+// reports "my integration stopped receiving events" they often don't know or
+// care which hook is the culprit. This endpoint answers "what have I sent
+// lately?" across the wallet. Each row carries webhookId + webhookUrl so the
+// UI can colour by hook without a join on the client.
+//
+// Query params:
+//   ?limit=N (default 50, capped at 500 — this is meant for a feed, not a full export)
+//   ?onlyFailures=true to filter to the troubleshooting subset
+app.MapGet("/api/webhooks/deliveries/recent", async (HttpContext ctx, WalletDbContext db) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.Ok(Array.Empty<object>());
+
+    var limit = 50;
+    if (int.TryParse(ctx.Request.Query["limit"], out var parsed))
+        limit = Math.Clamp(parsed, 1, 500);
+    var onlyFailures = string.Equals(
+        ctx.Request.Query["onlyFailures"], "true", StringComparison.OrdinalIgnoreCase);
+
+    var walletWebhooks = await db.PaymentWebhooks
+        .Where(w => w.WalletId == wallet.Id)
+        .ToDictionaryAsync(w => w.Id, w => w.Url);
+    if (walletWebhooks.Count == 0) return Results.Ok(Array.Empty<object>());
+
+    var webhookIds = walletWebhooks.Keys.ToHashSet();
+
+    // Same SQLite DateTimeOffset sorting trap the per-webhook feeds dodge —
+    // materialize, sort in memory, cap. For a bounded wallet-scoped query this
+    // is fine even with onlyFailures=false.
+    var rows = (await db.WebhookDeliveries
+            .Where(d => webhookIds.Contains(d.WebhookId))
+            .Where(d => !onlyFailures || !d.Success)
+            .ToListAsync())
+        .OrderByDescending(d => d.Timestamp)
+        .Take(limit)
+        .Select(d => new
+        {
+            id = d.Id,
+            webhookId = d.WebhookId,
+            webhookUrl = walletWebhooks[d.WebhookId],
+            paymentId = d.PaymentId,
+            eventType = d.EventType,
+            httpStatusCode = d.HttpStatusCode,
+            success = d.Success,
+            errorMessage = d.ErrorMessage,
+            timestamp = d.Timestamp
+        })
+        .ToList();
+
+    return Results.Ok(rows);
+}).WithTags("Webhooks");
+
 // Manually retry a past delivery. Sends a fresh POST to the same webhook using the
 // payment's current state with the original event type — we don't persist the original
 // payload, so this is "replay the event against current state" rather than "replay the

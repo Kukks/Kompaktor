@@ -7253,6 +7253,110 @@ public class WalletLifecycleE2ETests
     }
 
     [Fact]
+    public async Task RecentDeliveries_returns_empty_when_no_webhooks_exist()
+    {
+        // Fresh wallet, no webhooks → [] (not 500, not error). This path also
+        // protects callers from crashing when they poll the feed during
+        // initial setup before any hook has been registered.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var body = await client.GetFromJsonAsync<JsonElement>(
+            "/api/webhooks/deliveries/recent");
+        Assert.Equal(0, body.GetArrayLength());
+    }
+
+    [Fact]
+    public async Task RecentDeliveries_merges_rows_across_webhooks_and_carries_url()
+    {
+        // Two webhooks each with one delivery. The feed must surface both,
+        // newest first, and each row must carry webhookId + webhookUrl so the
+        // UI doesn't need a second lookup to colour-code the rows.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var w1 = await client.PostAsJsonAsync("/api/webhooks", new { Url = "https://a.example.com/h" });
+        var w2 = await client.PostAsJsonAsync("/api/webhooks", new { Url = "https://b.example.com/h" });
+        var w1Id = (await w1.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetInt32();
+        var w2Id = (await w2.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetInt32();
+
+        var older = DateTimeOffset.UtcNow.AddMinutes(-20);
+        var newer = DateTimeOffset.UtcNow.AddMinutes(-5);
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<WalletDbContext>();
+            db.WebhookDeliveries.AddRange(
+                new WebhookDeliveryEntity
+                {
+                    WebhookId = w1Id, PaymentId = "p-old", EventType = "Completed",
+                    HttpStatusCode = 200, Success = true, Timestamp = older
+                },
+                new WebhookDeliveryEntity
+                {
+                    WebhookId = w2Id, PaymentId = "p-new", EventType = "Completed",
+                    HttpStatusCode = 200, Success = true, Timestamp = newer
+                });
+            await db.SaveChangesAsync();
+        }
+
+        var body = await client.GetFromJsonAsync<JsonElement>(
+            "/api/webhooks/deliveries/recent");
+        Assert.Equal(2, body.GetArrayLength());
+        // Newest first.
+        var first = body[0];
+        Assert.Equal("p-new", first.GetProperty("paymentId").GetString());
+        Assert.Equal(w2Id, first.GetProperty("webhookId").GetInt32());
+        Assert.Equal("https://b.example.com/h", first.GetProperty("webhookUrl").GetString());
+        var second = body[1];
+        Assert.Equal("p-old", second.GetProperty("paymentId").GetString());
+        Assert.Equal("https://a.example.com/h", second.GetProperty("webhookUrl").GetString());
+    }
+
+    [Fact]
+    public async Task RecentDeliveries_filters_to_failures_when_flag_set()
+    {
+        // One success + one failure. With onlyFailures=true, only the failure
+        // surfaces. Also verifies the limit param is honoured.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var w = await client.PostAsJsonAsync("/api/webhooks", new { Url = "https://c.example.com/h" });
+        var wId = (await w.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetInt32();
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<WalletDbContext>();
+            db.WebhookDeliveries.AddRange(
+                new WebhookDeliveryEntity
+                {
+                    WebhookId = wId, PaymentId = "p-ok", EventType = "Completed",
+                    HttpStatusCode = 200, Success = true,
+                    Timestamp = DateTimeOffset.UtcNow.AddMinutes(-10)
+                },
+                new WebhookDeliveryEntity
+                {
+                    WebhookId = wId, PaymentId = "p-err", EventType = "Completed",
+                    HttpStatusCode = 500, Success = false, ErrorMessage = "boom",
+                    Timestamp = DateTimeOffset.UtcNow.AddMinutes(-5)
+                });
+            await db.SaveChangesAsync();
+        }
+
+        var failuresOnly = await client.GetFromJsonAsync<JsonElement>(
+            "/api/webhooks/deliveries/recent?onlyFailures=true");
+        Assert.Equal(1, failuresOnly.GetArrayLength());
+        Assert.Equal("p-err", failuresOnly[0].GetProperty("paymentId").GetString());
+
+        var capped = await client.GetFromJsonAsync<JsonElement>(
+            "/api/webhooks/deliveries/recent?limit=1");
+        Assert.Equal(1, capped.GetArrayLength());
+    }
+
+    [Fact]
     public async Task UtxoHistogram_empty_wallet_returns_zero_totals_with_six_buckets()
     {
         // Wallet exists but no UTXOs — totals must be 0 and the bucket array
