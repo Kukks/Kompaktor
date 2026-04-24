@@ -59,6 +59,33 @@ public class PaymentWebhookService
             .FirstAsync();
     }
 
+    /// <summary>
+    /// Sends a synthetic "Test" event so the user can verify their receiver
+    /// end-to-end (URL reachable, signature verification passes, their handler
+    /// parses JSON) without waiting for a real payment. Bypasses active/filter
+    /// checks — if the user hit Test, they want the ping even if the hook is
+    /// paused. Receivers should branch on eventType=="Test" and skip business
+    /// logic. Returns the delivery record so callers can surface status.
+    /// </summary>
+    public async Task<WebhookDeliveryEntity> SendTestAsync(PaymentWebhookEntity webhook)
+    {
+        var testPayment = new PendingPaymentEntity
+        {
+            Id = $"test-ping-{Guid.NewGuid():N}",
+            WalletId = webhook.WalletId,
+            Direction = "Test",
+            AmountSat = 0,
+            Destination = "",
+            Status = "Test",
+            Label = "Kompaktor webhook test delivery"
+        };
+        await DeliverToWebhookAsync(webhook, testPayment, "Test");
+        return await _db.WebhookDeliveries
+            .Where(d => d.WebhookId == webhook.Id && d.PaymentId == testPayment.Id)
+            .OrderByDescending(d => d.Id)
+            .FirstAsync();
+    }
+
     private async Task DeliverToWebhookAsync(
         PaymentWebhookEntity webhook, PendingPaymentEntity payment, string eventType)
     {

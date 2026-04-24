@@ -4977,6 +4977,89 @@ public class WalletLifecycleE2ETests
     }
 
     [Fact]
+    public async Task Webhook_test_endpoint_records_delivery_attempt()
+    {
+        // POST /api/webhooks/{id}/test sends a synthetic "Test" event so the
+        // user can verify their receiver before real payments flow. The receiver
+        // URL here points to example.com (not reachable end-to-end under test)
+        // but the endpoint must still record a delivery attempt so the result
+        // shows up in the deliveries history.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var created = await (await client.PostAsJsonAsync("/api/webhooks", new
+        {
+            Url = "https://example.invalid/kompaktor",
+            EventFilter = "*"
+        })).Content.ReadFromJsonAsync<JsonElement>();
+        var webhookId = created.GetProperty("id").GetInt32();
+
+        // Baseline: no deliveries yet.
+        var before = await client.GetFromJsonAsync<JsonElement>(
+            $"/api/webhooks/{webhookId}/deliveries");
+        Assert.Empty(before.EnumerateArray());
+
+        // Fire the test.
+        var testResp = await client.PostAsync($"/api/webhooks/{webhookId}/test", null);
+        Assert.Equal(HttpStatusCode.OK, testResp.StatusCode);
+        var body = await testResp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(body.TryGetProperty("deliveryId", out _));
+        // Reaching example.invalid fails — that's fine. We want to verify the
+        // attempt was MADE, not that the receiver was online.
+        Assert.False(body.GetProperty("success").GetBoolean(),
+            "example.invalid should not actually accept the delivery");
+
+        // A delivery row should now exist, labelled as a Test event.
+        var after = await client.GetFromJsonAsync<JsonElement>(
+            $"/api/webhooks/{webhookId}/deliveries");
+        var deliveries = after.EnumerateArray().ToList();
+        Assert.Single(deliveries);
+        Assert.Equal("Test", deliveries[0].GetProperty("eventType").GetString());
+    }
+
+    [Fact]
+    public async Task Webhook_test_fires_even_when_paused()
+    {
+        // Regular deliveries are gated on IsActive, but a Test ping must go
+        // through even on a paused hook — if the user clicks Test, they want
+        // the synthetic event regardless.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var created = await (await client.PostAsJsonAsync("/api/webhooks", new
+        {
+            Url = "https://example.invalid/paused-hook",
+            EventFilter = "Completed"
+        })).Content.ReadFromJsonAsync<JsonElement>();
+        var webhookId = created.GetProperty("id").GetInt32();
+
+        // Pause it.
+        await client.PatchAsJsonAsync($"/api/webhooks/{webhookId}", new { IsActive = false });
+
+        var testResp = await client.PostAsync($"/api/webhooks/{webhookId}/test", null);
+        Assert.Equal(HttpStatusCode.OK, testResp.StatusCode);
+
+        // Delivery still recorded even though the hook is paused and filter
+        // doesn't include "Test".
+        var deliveries = await client.GetFromJsonAsync<JsonElement>(
+            $"/api/webhooks/{webhookId}/deliveries");
+        Assert.Single(deliveries.EnumerateArray());
+    }
+
+    [Fact]
+    public async Task Webhook_test_returns_404_for_unknown_webhook()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.PostAsync("/api/webhooks/999999/test", null);
+        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+    }
+
+    [Fact]
     public async Task Payment_patch_renames_label_when_provided()
     {
         // The label is user-private display text; the PATCH endpoint lets

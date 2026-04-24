@@ -4175,6 +4175,7 @@
                 <td>${w.eventFilter === '*' ? 'All' : w.eventFilter}</td>
                 <td>${formatDate(w.createdAt)}</td>
                 <td><button class="refresh-btn" onclick="showDeliveries(${w.id})" style="font-size:11px;padding:2px 8px">History</button>
+                    <button class="refresh-btn" onclick="testWebhook(${w.id})" style="font-size:11px;padding:2px 8px;margin-left:4px" title="Send a synthetic Test event so you can verify your receiver">Test</button>
                     <button class="refresh-btn" onclick="toggleWebhookActive(${w.id}, ${!(w.isActive === false)})" style="font-size:11px;padding:2px 8px;margin-left:4px">${w.isActive === false ? 'Resume' : 'Pause'}</button></td>
                 <td><button class="refresh-btn" onclick="deleteWebhook(${w.id})" style="font-size:11px;padding:2px 8px;color:var(--red)">Delete</button></td>
             </tr>`).join('');
@@ -4219,6 +4220,20 @@
                 await fetch(`/api/webhooks/${id}`, { method: 'DELETE' });
                 showToast('Webhook deleted', 'success');
                 loadWebhooks();
+            } catch (err) { showToast('Failed: ' + err.message, 'warning'); }
+        }
+
+        async function testWebhook(id) {
+            try {
+                const res = await fetch(`/api/webhooks/${id}/test`, { method: 'POST' });
+                if (!res.ok) { showToast('Test delivery failed to initiate', 'warning'); return; }
+                const data = await res.json();
+                if (data.success) {
+                    showToast(`Test delivered — receiver responded ${data.httpStatusCode}`, 'success');
+                } else {
+                    const detail = data.errorMessage || `HTTP ${data.httpStatusCode}`;
+                    showToast(`Test delivery reached receiver but failed: ${detail}`, 'warning');
+                }
             } catch (err) { showToast('Failed: ' + err.message, 'warning'); }
         }
 

@@ -2431,6 +2431,31 @@ app.MapPost("/api/webhooks/{webhookId}/deliveries/{deliveryId}/redeliver",
     });
 }).WithTags("Webhooks");
 
+// Sends a synthetic "Test" event to the webhook URL so the user can verify
+// their receiver is wired up correctly before counting on it for real
+// payment events. Records a delivery like any other attempt so the result
+// is visible in the deliveries history.
+app.MapPost("/api/webhooks/{webhookId}/test", async (int webhookId, WalletDbContext db) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.BadRequest("No wallet found");
+
+    var webhook = await db.PaymentWebhooks.FindAsync(webhookId);
+    if (webhook is null || webhook.WalletId != wallet.Id) return Results.NotFound();
+
+    var svc = new PaymentWebhookService(db, wallet.Id);
+    var delivery = await svc.SendTestAsync(webhook);
+
+    return Results.Ok(new
+    {
+        deliveryId = delivery.Id,
+        httpStatusCode = delivery.HttpStatusCode,
+        success = delivery.Success,
+        errorMessage = delivery.ErrorMessage,
+        timestamp = delivery.Timestamp
+    });
+}).WithTags("Webhooks");
+
 // Address book CRUD
 app.MapGet("/api/address-book", async (WalletDbContext db) =>
 {
