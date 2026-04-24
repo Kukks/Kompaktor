@@ -1,6 +1,7 @@
 bin/
 obj/
 /packages/
+.claude/
 riderModule.iml
 /_ReSharper.Caches/
 .aider*
