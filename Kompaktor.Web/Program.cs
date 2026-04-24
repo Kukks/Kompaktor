@@ -5321,6 +5321,95 @@ app.MapGet("/api/wallet/labels/untagged-addresses", async (WalletDbContext db) =
     });
 }).WithTags("Wallet");
 
+// Flat rollup of UTXOs grouped by label text. A UTXO counts toward label "X"
+// if EITHER the UTXO itself carries that label (Utxo-scope) OR its receive
+// address does (Address-scope). This merged view matches how users actually
+// think about their funds — "how much is in my 'savings' bucket?" should not
+// care whether they tagged the address or the individual coin.
+// Returns per-label: liveCount/liveSat (unspent, actionable now), totalCount
+// /totalSat (includes history, useful for "how much has flowed through this
+// bucket"). Sort key is liveSat desc so the biggest active compartments
+// surface first. Labels covering zero owned UTXOs are omitted.
+app.MapGet("/api/wallet/utxo-stats-by-label", async (WalletDbContext db) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null)
+        return Results.Ok(new { labelCount = 0, totalLiveSat = 0L, labels = Array.Empty<object>() });
+
+    var utxos = await db.Utxos
+        .Include(u => u.Address).ThenInclude(a => a.Account)
+        .Where(u => u.Address.Account.WalletId == wallet.Id)
+        .Select(u => new { u.Id, u.AmountSat, u.SpentByTxId, AddressId = u.Address.Id })
+        .ToListAsync();
+    if (utxos.Count == 0)
+        return Results.Ok(new { labelCount = 0, totalLiveSat = 0L, labels = Array.Empty<object>() });
+
+    var ownedUtxoIds = utxos.Select(u => u.Id).ToHashSet();
+    var ownedAddrIds = utxos.Select(u => u.AddressId).ToHashSet();
+
+    // Pull just the labels that might reference something we own — scope-aware
+    // filter keeps the scan small even for wallets with lots of foreign labels
+    // (no polymorphic FK means we can't JOIN, we filter in-memory).
+    var labels = await db.Labels
+        .Where(l => l.EntityType == "Utxo" || l.EntityType == "Address")
+        .Select(l => new { l.EntityType, l.EntityId, l.Text })
+        .ToListAsync();
+
+    // Build label text → set of covered UTXO IDs. Address-scope labels expand
+    // to every UTXO on that address; Utxo-scope labels map 1:1. We dedupe per
+    // label via HashSet so a UTXO tagged both directly AND via its address
+    // isn't double-counted.
+    var byLabel = new Dictionary<string, HashSet<int>>(StringComparer.Ordinal);
+    var utxosByAddress = utxos.GroupBy(u => u.AddressId)
+        .ToDictionary(g => g.Key, g => g.Select(u => u.Id).ToList());
+
+    foreach (var l in labels)
+    {
+        if (!int.TryParse(l.EntityId, out var id)) continue;
+
+        if (l.EntityType == "Utxo" && ownedUtxoIds.Contains(id))
+        {
+            if (!byLabel.TryGetValue(l.Text, out var set))
+                byLabel[l.Text] = set = new HashSet<int>();
+            set.Add(id);
+        }
+        else if (l.EntityType == "Address" && ownedAddrIds.Contains(id))
+        {
+            if (!utxosByAddress.TryGetValue(id, out var utxoIds)) continue;
+            if (!byLabel.TryGetValue(l.Text, out var set))
+                byLabel[l.Text] = set = new HashSet<int>();
+            foreach (var uId in utxoIds) set.Add(uId);
+        }
+    }
+
+    var utxoById = utxos.ToDictionary(u => u.Id);
+    var results = byLabel
+        .Select(kv =>
+        {
+            var covered = kv.Value.Select(id => utxoById[id]).ToList();
+            var live = covered.Where(u => u.SpentByTxId == null).ToList();
+            return new
+            {
+                label = kv.Key,
+                totalCount = covered.Count,
+                totalSat = covered.Sum(u => u.AmountSat),
+                liveCount = live.Count,
+                liveSat = live.Sum(u => u.AmountSat)
+            };
+        })
+        .OrderByDescending(r => r.liveSat)
+        .ThenByDescending(r => r.totalSat)
+        .ThenBy(r => r.label, StringComparer.Ordinal)
+        .ToList();
+
+    return Results.Ok(new
+    {
+        labelCount = results.Count,
+        totalLiveSat = results.Sum(r => r.liveSat),
+        labels = results
+    });
+}).WithTags("Wallet");
+
 // Label coverage metric: one-shot dashboard summary of how well the wallet is
 // tagged, broken down by entity type. Scope decisions:
 //   - UTXOs: live only (spent UTXOs aren't actionable — you can't re-tag them

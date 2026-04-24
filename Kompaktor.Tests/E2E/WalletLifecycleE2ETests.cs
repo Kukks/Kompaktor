@@ -8786,4 +8786,128 @@ public class WalletLifecycleE2ETests
         }
     }
 
+    [Fact]
+    public async Task UtxoStatsByLabel_empty_wallet_returns_zero_shape()
+    {
+        // No UTXOs exist at all, so the endpoint short-circuits before touching
+        // the labels table. Shape must still be present for UI consumers that
+        // render a progress bar per label.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var body = await client.GetFromJsonAsync<JsonElement>("/api/wallet/utxo-stats-by-label");
+        Assert.Equal(0, body.GetProperty("labelCount").GetInt32());
+        Assert.Equal(0, body.GetProperty("totalLiveSat").GetInt64());
+        Assert.Equal(0, body.GetProperty("labels").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task UtxoStatsByLabel_merges_utxo_scope_and_address_scope_labels_without_double_counting()
+    {
+        // Three UTXOs:
+        //   A (10k) — tagged directly with Utxo-scope "savings"
+        //   B (20k) — tagged via Address-scope "savings" on its receive address
+        //   C (30k) — BOTH a Utxo-scope "savings" AND Address-scope "savings" on its address
+        // Expected: one "savings" label rolling up to 3 UTXOs / 60k sat, with C
+        // appearing exactly once (HashSet de-dup of utxo-id across scope sources).
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+        var idA = await SeedUtxoAsync(factory, client, amountSat: 10_000, tag: 0xA0);
+        var idB = await SeedUtxoAsync(factory, client, amountSat: 20_000, tag: 0xA1);
+        var idC = await SeedUtxoAsync(factory, client, amountSat: 30_000, tag: 0xA2);
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<WalletDbContext>();
+            var addrB = (await db.Utxos.FirstAsync(u => u.Id == idB)).AddressId;
+            var addrC = (await db.Utxos.FirstAsync(u => u.Id == idC)).AddressId;
+            db.Labels.AddRange(
+                new LabelEntity { EntityType = "Utxo", EntityId = idA.ToString(), Text = "savings" },
+                new LabelEntity { EntityType = "Address", EntityId = addrB.ToString(), Text = "savings" },
+                new LabelEntity { EntityType = "Utxo", EntityId = idC.ToString(), Text = "savings" },
+                new LabelEntity { EntityType = "Address", EntityId = addrC.ToString(), Text = "savings" });
+            await db.SaveChangesAsync();
+        }
+
+        var body = await client.GetFromJsonAsync<JsonElement>("/api/wallet/utxo-stats-by-label");
+        Assert.Equal(1, body.GetProperty("labelCount").GetInt32());
+        Assert.Equal(60_000, body.GetProperty("totalLiveSat").GetInt64());
+        var row = body.GetProperty("labels")[0];
+        Assert.Equal("savings", row.GetProperty("label").GetString());
+        Assert.Equal(3, row.GetProperty("totalCount").GetInt32());
+        Assert.Equal(60_000, row.GetProperty("totalSat").GetInt64());
+        Assert.Equal(3, row.GetProperty("liveCount").GetInt32());
+        Assert.Equal(60_000, row.GetProperty("liveSat").GetInt64());
+    }
+
+    [Fact]
+    public async Task UtxoStatsByLabel_distinguishes_live_from_spent()
+    {
+        // Two UTXOs tagged "rent" — one is still live, one has been spent (we
+        // forge a SpentByTxId). The spent one must contribute to totalCount /
+        // totalSat ("how much has flowed through this bucket") but NOT to
+        // liveCount / liveSat ("what's actionable now").
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+        var liveId = await SeedUtxoAsync(factory, client, amountSat: 40_000, tag: 0xD0);
+        var spentId = await SeedUtxoAsync(factory, client, amountSat: 60_000, tag: 0xD1);
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<WalletDbContext>();
+            (await db.Utxos.FirstAsync(u => u.Id == spentId)).SpentByTxId = "forged-spender";
+            db.Labels.AddRange(
+                new LabelEntity { EntityType = "Utxo", EntityId = liveId.ToString(), Text = "rent" },
+                new LabelEntity { EntityType = "Utxo", EntityId = spentId.ToString(), Text = "rent" });
+            await db.SaveChangesAsync();
+        }
+
+        var body = await client.GetFromJsonAsync<JsonElement>("/api/wallet/utxo-stats-by-label");
+        Assert.Equal(1, body.GetProperty("labelCount").GetInt32());
+        Assert.Equal(40_000, body.GetProperty("totalLiveSat").GetInt64());
+        var row = body.GetProperty("labels")[0];
+        Assert.Equal("rent", row.GetProperty("label").GetString());
+        Assert.Equal(2, row.GetProperty("totalCount").GetInt32());
+        Assert.Equal(100_000, row.GetProperty("totalSat").GetInt64());
+        Assert.Equal(1, row.GetProperty("liveCount").GetInt32());
+        Assert.Equal(40_000, row.GetProperty("liveSat").GetInt64());
+    }
+
+    [Fact]
+    public async Task UtxoStatsByLabel_orders_rows_by_live_sat_descending()
+    {
+        // Three distinct label buckets with different live sizes. Verify the
+        // sort key is liveSat desc so the biggest active compartment surfaces
+        // first — that's how the UI will render the list.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+        var small = await SeedUtxoAsync(factory, client, amountSat: 15_000, tag: 0xE0);
+        var medium = await SeedUtxoAsync(factory, client, amountSat: 75_000, tag: 0xE1);
+        var large = await SeedUtxoAsync(factory, client, amountSat: 250_000, tag: 0xE2);
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<WalletDbContext>();
+            db.Labels.AddRange(
+                new LabelEntity { EntityType = "Utxo", EntityId = small.ToString(), Text = "coffee" },
+                new LabelEntity { EntityType = "Utxo", EntityId = medium.ToString(), Text = "groceries" },
+                new LabelEntity { EntityType = "Utxo", EntityId = large.ToString(), Text = "savings" });
+            await db.SaveChangesAsync();
+        }
+
+        var body = await client.GetFromJsonAsync<JsonElement>("/api/wallet/utxo-stats-by-label");
+        var labels = body.GetProperty("labels");
+        Assert.Equal(3, labels.GetArrayLength());
+        Assert.Equal("savings", labels[0].GetProperty("label").GetString());
+        Assert.Equal(250_000, labels[0].GetProperty("liveSat").GetInt64());
+        Assert.Equal("groceries", labels[1].GetProperty("label").GetString());
+        Assert.Equal(75_000, labels[1].GetProperty("liveSat").GetInt64());
+        Assert.Equal("coffee", labels[2].GetProperty("label").GetString());
+        Assert.Equal(15_000, labels[2].GetProperty("liveSat").GetInt64());
+    }
+
 }
