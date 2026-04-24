@@ -2431,6 +2431,32 @@ app.MapPost("/api/webhooks/{webhookId}/deliveries/{deliveryId}/redeliver",
     });
 }).WithTags("Webhooks");
 
+// Generate a fresh HMAC secret and atomically replace the old one. The
+// returned secret is the one-time reveal — once the response is consumed
+// the secret is no longer available via GET. Use this when the previous
+// secret may have leaked; deleting + recreating would also drop delivery
+// history, which rotation preserves.
+app.MapPost("/api/webhooks/{webhookId}/rotate-secret", async (int webhookId, WalletDbContext db) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.BadRequest("No wallet found");
+
+    var webhook = await db.PaymentWebhooks.FindAsync(webhookId);
+    if (webhook is null || webhook.WalletId != wallet.Id) return Results.NotFound();
+
+    var newSecret = Convert.ToHexString(
+        System.Security.Cryptography.RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
+    webhook.Secret = newSecret;
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        id = webhook.Id,
+        secret = newSecret,
+        message = "Store the new secret — it won't be shown again. The old secret is invalidated immediately; any receiver still verifying with it will reject subsequent deliveries."
+    });
+}).WithTags("Webhooks");
+
 // Sends a synthetic "Test" event to the webhook URL so the user can verify
 // their receiver is wired up correctly before counting on it for real
 // payment events. Records a delivery like any other attempt so the result

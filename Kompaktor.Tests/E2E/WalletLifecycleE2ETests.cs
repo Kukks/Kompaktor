@@ -4977,6 +4977,55 @@ public class WalletLifecycleE2ETests
     }
 
     [Fact]
+    public async Task Webhook_rotate_secret_returns_new_secret_and_invalidates_old()
+    {
+        // Rotation is a security feature — when a secret leaks, the user needs
+        // a new one without losing delivery history (deleting+recreating would
+        // erase it). Verify: response carries a distinct 64-char hex secret,
+        // and the old-secret HMAC no longer matches what the server would
+        // sign a subsequent delivery with.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var created = await (await client.PostAsJsonAsync("/api/webhooks", new
+        {
+            Url = "https://example.invalid/hook",
+            EventFilter = "*"
+        })).Content.ReadFromJsonAsync<JsonElement>();
+        var webhookId = created.GetProperty("id").GetInt32();
+        var originalSecret = created.GetProperty("secret").GetString()!;
+
+        var rotResp = await client.PostAsync($"/api/webhooks/{webhookId}/rotate-secret", null);
+        Assert.Equal(HttpStatusCode.OK, rotResp.StatusCode);
+        var rotBody = await rotResp.Content.ReadFromJsonAsync<JsonElement>();
+        var newSecret = rotBody.GetProperty("secret").GetString()!;
+
+        Assert.Equal(64, newSecret.Length);
+        Assert.Matches("^[0-9a-f]+$", newSecret);
+        Assert.NotEqual(originalSecret, newSecret);
+
+        // Rotating again yields yet another distinct secret — never reuses
+        // the same one, no accidental caching.
+        var rot2 = await (await client.PostAsync($"/api/webhooks/{webhookId}/rotate-secret", null))
+            .Content.ReadFromJsonAsync<JsonElement>();
+        var thirdSecret = rot2.GetProperty("secret").GetString()!;
+        Assert.NotEqual(newSecret, thirdSecret);
+        Assert.NotEqual(originalSecret, thirdSecret);
+    }
+
+    [Fact]
+    public async Task Webhook_rotate_secret_returns_404_for_unknown_webhook()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.PostAsync("/api/webhooks/999999/rotate-secret", null);
+        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+    }
+
+    [Fact]
     public async Task Webhook_test_endpoint_records_delivery_attempt()
     {
         // POST /api/webhooks/{id}/test sends a synthetic "Test" event so the

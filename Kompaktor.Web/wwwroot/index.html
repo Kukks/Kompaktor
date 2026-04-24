@@ -4176,6 +4176,7 @@
                 <td>${formatDate(w.createdAt)}</td>
                 <td><button class="refresh-btn" onclick="showDeliveries(${w.id})" style="font-size:11px;padding:2px 8px">History</button>
                     <button class="refresh-btn" onclick="testWebhook(${w.id})" style="font-size:11px;padding:2px 8px;margin-left:4px" title="Send a synthetic Test event so you can verify your receiver">Test</button>
+                    <button class="refresh-btn" onclick="rotateWebhookSecret(${w.id})" style="font-size:11px;padding:2px 8px;margin-left:4px" title="Generate a new HMAC secret; invalidates the old one immediately">Rotate</button>
                     <button class="refresh-btn" onclick="toggleWebhookActive(${w.id}, ${!(w.isActive === false)})" style="font-size:11px;padding:2px 8px;margin-left:4px">${w.isActive === false ? 'Resume' : 'Pause'}</button></td>
                 <td><button class="refresh-btn" onclick="deleteWebhook(${w.id})" style="font-size:11px;padding:2px 8px;color:var(--red)">Delete</button></td>
             </tr>`).join('');
@@ -4234,6 +4235,19 @@
                     const detail = data.errorMessage || `HTTP ${data.httpStatusCode}`;
                     showToast(`Test delivery reached receiver but failed: ${detail}`, 'warning');
                 }
+            } catch (err) { showToast('Failed: ' + err.message, 'warning'); }
+        }
+
+        async function rotateWebhookSecret(id) {
+            if (!confirm('Rotate this webhook secret? The old secret stops working immediately — any receiver still using it will reject subsequent deliveries until you update their config.')) return;
+            try {
+                const res = await fetch(`/api/webhooks/${id}/rotate-secret`, { method: 'POST' });
+                if (!res.ok) { showToast('Rotation failed', 'warning'); return; }
+                const data = await res.json();
+                document.getElementById('webhookSecretValue').textContent = data.secret;
+                document.getElementById('webhookSecret').style.display = 'block';
+                showToast('New secret generated — copy it now', 'success');
+                loadWebhooks();
             } catch (err) { showToast('Failed: ' + err.message, 'warning'); }
         }
 
