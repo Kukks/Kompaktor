@@ -7904,6 +7904,94 @@ public class WalletLifecycleE2ETests
     }
 
     [Fact]
+    public async Task UntaggedAddresses_empty_wallet_returns_zero_shape()
+    {
+        // Fresh wallet: no used addresses exist yet (gap-limit pool is all
+        // IsUsed=false), so count/totalReceivedSat/addresses must all collapse
+        // to zero without touching the sum-of-empty path.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var body = await client.GetFromJsonAsync<JsonElement>("/api/wallet/labels/untagged-addresses");
+        Assert.Equal(0, body.GetProperty("count").GetInt32());
+        Assert.Equal(0, body.GetProperty("totalReceivedSat").GetInt64());
+        Assert.Equal(0, body.GetProperty("addresses").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task UntaggedAddresses_excludes_addresses_that_already_carry_an_address_scope_label()
+    {
+        // Seed two UTXOs onto two distinct receive addresses. Put an
+        // Address-scope label on one of them. Only the unlabelled address
+        // should surface. Deliberately skips UTXO-scope labels — we only
+        // count Address-scope per the endpoint's strict-match scope decision.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+        var taggedUtxoId = await SeedUtxoAsync(factory, client, amountSat: 70_000, tag: 0xB0);
+        var bareUtxoId = await SeedUtxoAsync(factory, client, amountSat: 130_000, tag: 0xB1);
+
+        int taggedAddrId, bareAddrId;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<WalletDbContext>();
+            taggedAddrId = (await db.Utxos.FirstAsync(u => u.Id == taggedUtxoId)).AddressId;
+            bareAddrId = (await db.Utxos.FirstAsync(u => u.Id == bareUtxoId)).AddressId;
+            db.Labels.Add(new LabelEntity
+            {
+                EntityType = "Address",
+                EntityId = taggedAddrId.ToString(),
+                Text = "donation-address"
+            });
+            // Put a UTXO-scope label on the bare address's UTXO to prove that
+            // UTXO tags do NOT make the address count as tagged.
+            db.Labels.Add(new LabelEntity
+            {
+                EntityType = "Utxo",
+                EntityId = bareUtxoId.ToString(),
+                Text = "coin-tag-should-not-count"
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var body = await client.GetFromJsonAsync<JsonElement>("/api/wallet/labels/untagged-addresses");
+        Assert.Equal(1, body.GetProperty("count").GetInt32());
+        Assert.Equal(130_000, body.GetProperty("totalReceivedSat").GetInt64());
+        var row = body.GetProperty("addresses")[0];
+        Assert.Equal(bareAddrId, row.GetProperty("id").GetInt32());
+        Assert.Equal(130_000, row.GetProperty("totalReceivedSat").GetInt64());
+        Assert.Equal(1, row.GetProperty("utxoCount").GetInt32());
+        Assert.Equal(1, row.GetProperty("liveUtxoCount").GetInt32());
+    }
+
+    [Fact]
+    public async Task UntaggedAddresses_excludes_change_addresses_even_when_used()
+    {
+        // Manufacture a "used change address" scenario directly in the DB: take
+        // the AddressId owning a seeded UTXO and flip IsChange=true. The
+        // endpoint must still omit it — change is auto-generated and doesn't
+        // need external labels (per the scope decision above the endpoint).
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+        var utxoId = await SeedUtxoAsync(factory, client, amountSat: 55_000, tag: 0xC0);
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<WalletDbContext>();
+            var utxo = await db.Utxos.FirstAsync(u => u.Id == utxoId);
+            var addr = await db.Addresses.FirstAsync(a => a.Id == utxo.AddressId);
+            addr.IsChange = true;
+            await db.SaveChangesAsync();
+        }
+
+        var body = await client.GetFromJsonAsync<JsonElement>("/api/wallet/labels/untagged-addresses");
+        Assert.Equal(0, body.GetProperty("count").GetInt32());
+        Assert.Equal(0, body.GetProperty("addresses").GetArrayLength());
+    }
+
+    [Fact]
     public async Task LabelCoverage_empty_wallet_returns_all_zeros()
     {
         // Fresh wallet with nothing in it should return zero everywhere

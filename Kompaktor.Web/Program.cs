@@ -4942,6 +4942,66 @@ app.MapGet("/api/wallet/labels/untagged-utxos", async (WalletDbContext db) =>
     });
 }).WithTags("Wallet");
 
+// Untagged used addresses: mirror of untagged-utxos but for the address
+// dimension. Scope:
+//   - Used only (matches label-coverage's address rationale — fresh
+//     gap-limit addresses have no external identity worth labelling).
+//   - Excludes change addresses — change is internally generated and
+//     inherits the semantics of the tx that produced it; forcing labels
+//     on change addresses would drown the signal in noise.
+// "Tagged" means strictly an Address-scope Label on this address. We
+// deliberately don't count a UTXO-scope label on one of its UTXOs,
+// because that matches how label-coverage counts and keeps the two
+// endpoints' numbers reconcilable. If the UI wants a laxer view it can
+// combine with /labels/untagged-utxos. Ordered by totalReceivedSat desc
+// so the "biggest privacy gap first" address floats up.
+app.MapGet("/api/wallet/labels/untagged-addresses", async (WalletDbContext db) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.Ok(new { count = 0, totalReceivedSat = 0L, addresses = Array.Empty<object>() });
+
+    var addresses = await db.Addresses
+        .Include(a => a.Account)
+        .Include(a => a.Utxos)
+        .Where(a => a.Account.WalletId == wallet.Id && a.IsUsed && !a.IsChange)
+        .ToListAsync();
+    if (addresses.Count == 0)
+        return Results.Ok(new { count = 0, totalReceivedSat = 0L, addresses = Array.Empty<object>() });
+
+    var taggedAddrIds = (await db.Labels
+            .Where(l => l.EntityType == "Address")
+            .Select(l => l.EntityId)
+            .Distinct()
+            .ToListAsync())
+        .Select(s => int.TryParse(s, out var n) ? n : -1)
+        .Where(n => n > 0)
+        .ToHashSet();
+
+    var untagged = addresses
+        .Where(a => !taggedAddrIds.Contains(a.Id))
+        .Select(a => new
+        {
+            id = a.Id,
+            address = new Script(a.ScriptPubKey).GetDestinationAddress(network)?.ToString(),
+            keyPath = a.KeyPath,
+            isExposed = a.IsExposed,
+            utxoCount = a.Utxos.Count,
+            liveUtxoCount = a.Utxos.Count(u => u.SpentByTxId == null),
+            totalReceivedSat = a.Utxos.Sum(u => u.AmountSat),
+            liveSat = a.Utxos.Where(u => u.SpentByTxId == null).Sum(u => u.AmountSat)
+        })
+        .OrderByDescending(a => a.totalReceivedSat)
+        .ThenBy(a => a.id)
+        .ToList();
+
+    return Results.Ok(new
+    {
+        count = untagged.Count,
+        totalReceivedSat = untagged.Sum(a => a.totalReceivedSat),
+        addresses = untagged
+    });
+}).WithTags("Wallet");
+
 // Label coverage metric: one-shot dashboard summary of how well the wallet is
 // tagged, broken down by entity type. Scope decisions:
 //   - UTXOs: live only (spent UTXOs aren't actionable — you can't re-tag them
