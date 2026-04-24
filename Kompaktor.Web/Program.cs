@@ -1639,6 +1639,114 @@ app.MapPost("/api/wallet/settings", async (WalletDbContext db, HttpContext ctx, 
     });
 }).WithTags("Wallet");
 
+// Profile recommendation: inspects current wallet state (UTXO shape, prior
+// mixing history, external-source taint, payment workflow) and suggests
+// which mixing preset fits best. The decision rules are deterministic — no
+// ML, just signal thresholds — so the caller can reason about why it picked
+// what it did from the `reasons` array.
+//
+// Priority order (first match wins): establish privacy first > flush KYC
+// taint > consolidate fragmentation > payment-heavy flow > steady state.
+app.MapGet("/api/wallet/profile-recommendation", async (WalletDbContext db) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.BadRequest("No wallet found");
+
+    // includeFrozen: true — frozen UTXOs still count toward fragmentation
+    // and taint signals; freezing only blocks auto-selection, not the
+    // underlying state the recommendation is assessing.
+    var selector = new WalletCoinSelector(db);
+    var scored = await selector.GetScoredUtxosAsync(wallet.Id, includeFrozen: true);
+
+    var totalUtxos = scored.Count;
+    var unmixedUtxos = scored.Count(s => s.Score.CoinJoinCount == 0);
+    const long SmallUtxoThresholdSat = 100_000;
+    var smallUtxos = scored.Count(s => s.Utxo.AmountSat < SmallUtxoThresholdSat);
+
+    // External-source taint via label clustering. Count UTXOs (selected or
+    // not) that land in any cluster flagged as externally-sourced.
+    var utxosForCluster = scored.Select(s => s.Utxo).ToList();
+    var allLabels = await db.Labels
+        .Where(l => l.EntityType == "Utxo" || l.EntityType == "Address")
+        .ToListAsync();
+    var allCoinjoins = await db.CoinJoinRecords.ToListAsync();
+    var clusters = new LabelClusterAnalyzer()
+        .AnalyzeClusters(utxosForCluster, allLabels, allCoinjoins);
+    var taintedIds = clusters
+        .Where(c => c.HasExternalSource)
+        .SelectMany(c => c.UtxoIds)
+        .ToHashSet();
+    var externallyTaintedUtxos = scored.Count(s => taintedIds.Contains(s.Utxo.Id));
+
+    var completedRounds = await db.CoinJoinRecords.CountAsync(r => r.Status == "Completed");
+    // SQLite EF provider cannot translate DateTimeOffset comparisons
+    // reliably, so we pull the wallet's outbound payments and count in
+    // memory. This is cheap — one wallet's payment history is small.
+    var outboundPayments = await db.PendingPayments
+        .Where(p => p.WalletId == wallet.Id && p.Direction == "Outbound")
+        .ToListAsync();
+    var pendingOutboundPayments = outboundPayments.Count(p =>
+        p.Status == "Pending" || p.Status == "Reserved" || p.Status == "Committed");
+    var thirtyDaysAgo = DateTimeOffset.UtcNow.AddDays(-30);
+    var recentOutboundPayments = outboundPayments.Count(p => p.CreatedAt >= thirtyDaysAgo);
+
+    string recommended;
+    var reasons = new List<string>();
+
+    if (completedRounds == 0 && unmixedUtxos > 0)
+    {
+        recommended = "PrivacyFocused";
+        reasons.Add($"Wallet has never mixed and has {unmixedUtxos} unmixed UTXO(s) — establish privacy first");
+    }
+    else if (externallyTaintedUtxos > 0 && unmixedUtxos > 0)
+    {
+        recommended = "PrivacyFocused";
+        reasons.Add($"{externallyTaintedUtxos} UTXO(s) traceable to external source (Exchange/KYC/P2P) — mix out of KYC clusters");
+    }
+    else if (totalUtxos >= 30 || smallUtxos >= 20)
+    {
+        recommended = "Consolidator";
+        reasons.Add($"{totalUtxos} UTXO(s) ({smallUtxos} under {SmallUtxoThresholdSat:N0} sat) — fragmentation drives fee overhead, consolidate");
+    }
+    else if (pendingOutboundPayments > 0 || recentOutboundPayments >= 3)
+    {
+        recommended = "Payments";
+        reasons.Add($"{pendingOutboundPayments} pending + {recentOutboundPayments} recent outbound payment(s) — prioritise interactive payment slots");
+    }
+    else
+    {
+        recommended = "Balanced";
+        reasons.Add("Wallet state is steady — Balanced gives even coverage of mixing, consolidation, and payments");
+    }
+
+    if (recommended == wallet.MixingProfile)
+        reasons.Add($"Current profile '{wallet.MixingProfile}' already matches — no change needed");
+
+    var alternatives = MixingProfileCatalog.All
+        .Where(p => p.Name != recommended)
+        .Select(p => new { name = p.Name, description = p.Description })
+        .ToList();
+
+    return Results.Ok(new
+    {
+        recommended,
+        current = wallet.MixingProfile,
+        reasons,
+        signals = new
+        {
+            totalUtxos,
+            unmixedUtxos,
+            smallUtxos,
+            smallUtxoThresholdSat = SmallUtxoThresholdSat,
+            externallyTaintedUtxos,
+            completedRounds,
+            pendingOutboundPayments,
+            recentOutboundPayments
+        },
+        alternatives
+    });
+}).WithTags("Wallet");
+
 // Probes whether a SOCKS5 proxy (usually a Tor daemon) is reachable on the
 // given host/port. Performs the no-auth SOCKS5 greeting so we can tell a
 // live proxy from "port happens to be open on some other service."

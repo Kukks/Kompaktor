@@ -6662,4 +6662,81 @@ public class WalletLifecycleE2ETests
         Assert.True(row.GetProperty("cluster").GetProperty("hasExternalSource").GetBoolean());
     }
 
+    [Fact]
+    public async Task ProfileRecommendation_empty_wallet_recommends_balanced()
+    {
+        // No UTXOs → no rule fires — the final else-branch returns Balanced
+        // so the UI can surface a neutral default instead of blanking out.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.GetFromJsonAsync<JsonElement>("/api/wallet/profile-recommendation");
+
+        Assert.Equal("Balanced", resp.GetProperty("recommended").GetString());
+        Assert.Equal(0, resp.GetProperty("signals").GetProperty("totalUtxos").GetInt32());
+        Assert.Equal(0, resp.GetProperty("signals").GetProperty("unmixedUtxos").GetInt32());
+        // Three alternatives (the three other catalog entries).
+        Assert.Equal(3, resp.GetProperty("alternatives").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task ProfileRecommendation_unmixed_utxos_recommends_privacy_focused()
+    {
+        // Rule 1: zero completed rounds AND ≥1 unmixed UTXO — establish
+        // privacy first before any other consideration.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+        await SeedUtxoAsync(factory, client, amountSat: 200_000, tag: 0xA0);
+
+        var resp = await client.GetFromJsonAsync<JsonElement>("/api/wallet/profile-recommendation");
+
+        Assert.Equal("PrivacyFocused", resp.GetProperty("recommended").GetString());
+        Assert.Equal(1, resp.GetProperty("signals").GetProperty("unmixedUtxos").GetInt32());
+        Assert.Equal(0, resp.GetProperty("signals").GetProperty("completedRounds").GetInt32());
+        var reasons = resp.GetProperty("reasons").EnumerateArray().Select(r => r.GetString()).ToList();
+        Assert.Contains(reasons, r => r!.Contains("never mixed"));
+    }
+
+    [Fact]
+    public async Task ProfileRecommendation_external_source_utxo_populates_taint_signal()
+    {
+        // An "Exchange:"-tagged UTXO must lift externallyTaintedUtxos above
+        // zero in the signals object, regardless of which rule lands first —
+        // the UI relies on this signal for the taint badge on the panel.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+        var id = await SeedUtxoAsync(factory, client, amountSat: 500_000, tag: 0xA1);
+        await client.PostAsJsonAsync($"/api/coin-control/label/{id}",
+            new { Text = "Exchange: Kraken" });
+
+        var resp = await client.GetFromJsonAsync<JsonElement>("/api/wallet/profile-recommendation");
+
+        Assert.Equal("PrivacyFocused", resp.GetProperty("recommended").GetString());
+        Assert.Equal(1, resp.GetProperty("signals").GetProperty("externallyTaintedUtxos").GetInt32());
+    }
+
+    [Fact]
+    public async Task ProfileRecommendation_current_matches_recommended_adds_reason()
+    {
+        // When the persisted profile already matches the recommendation, the
+        // endpoint appends an "already matches — no change needed" reason so
+        // the UI can suppress the "apply" CTA.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+        await client.PostAsJsonAsync("/api/wallet/settings",
+            new { MixingProfile = "PrivacyFocused" });
+        await SeedUtxoAsync(factory, client, amountSat: 150_000, tag: 0xA2);
+
+        var resp = await client.GetFromJsonAsync<JsonElement>("/api/wallet/profile-recommendation");
+
+        Assert.Equal("PrivacyFocused", resp.GetProperty("recommended").GetString());
+        Assert.Equal("PrivacyFocused", resp.GetProperty("current").GetString());
+        var reasons = resp.GetProperty("reasons").EnumerateArray().Select(r => r.GetString()).ToList();
+        Assert.Contains(reasons, r => r!.Contains("already matches"));
+    }
+
 }
