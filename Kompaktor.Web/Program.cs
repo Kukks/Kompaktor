@@ -352,6 +352,66 @@ app.MapGet("/api/dashboard/utxos", async (WalletDbContext db) =>
     return Results.Ok(result);
 }).WithTags("Dashboard");
 
+// UTXO size distribution bucketed on a log scale that mirrors how users
+// think about Bitcoin amounts (dust → small → medium → large → savings).
+// Surfaces the signal Consolidator profile reacts to — "do I have 30 tiny
+// UTXOs I should consolidate?" — without making the UI iterate the top-100
+// /api/dashboard/utxos list and re-bucket client-side. Also reports mixed
+// vs unmixed totals so the dashboard can headline a one-liner like
+// "42 UTXOs (12 mixed, 30 need mixing)".
+app.MapGet("/api/dashboard/utxo-histogram", async (WalletDbContext db) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.Ok(new
+    {
+        totalUtxos = 0,
+        totalAmountSat = 0L,
+        mixedCount = 0,
+        unmixedCount = 0,
+        frozenCount = 0,
+        buckets = Array.Empty<object>()
+    });
+
+    var selector = new Kompaktor.Scoring.WalletCoinSelector(db);
+    var scored = await selector.GetScoredUtxosAsync(wallet.Id, includeFrozen: true);
+
+    var bucketDefs = new (string Label, long MinSat, long MaxSat)[]
+    {
+        ("<1k",       0,          1_000),
+        ("1k-10k",    1_000,      10_000),
+        ("10k-100k",  10_000,     100_000),
+        ("100k-1M",   100_000,    1_000_000),
+        ("1M-10M",    1_000_000,  10_000_000),
+        ("10M+",      10_000_000, long.MaxValue)
+    };
+
+    var buckets = bucketDefs.Select(b =>
+    {
+        var matching = scored
+            .Where(s => s.Utxo.AmountSat >= b.MinSat && s.Utxo.AmountSat < b.MaxSat)
+            .ToList();
+        return new
+        {
+            label = b.Label,
+            minSat = b.MinSat,
+            maxSat = b.MaxSat == long.MaxValue ? (long?)null : b.MaxSat,
+            count = matching.Count,
+            totalSat = matching.Sum(s => s.Utxo.AmountSat),
+            mixedCount = matching.Count(s => s.Score.CoinJoinCount > 0)
+        };
+    }).ToArray();
+
+    return Results.Ok(new
+    {
+        totalUtxos = scored.Count,
+        totalAmountSat = scored.Sum(s => s.Utxo.AmountSat),
+        mixedCount = scored.Count(s => s.Score.CoinJoinCount > 0),
+        unmixedCount = scored.Count(s => s.Score.CoinJoinCount == 0),
+        frozenCount = scored.Count(s => s.Utxo.IsFrozen),
+        buckets
+    });
+}).WithTags("Dashboard");
+
 app.MapGet("/api/dashboard/privacy-summary", async (WalletDbContext db) =>
 {
     var wallet = await db.Wallets.FirstOrDefaultAsync();

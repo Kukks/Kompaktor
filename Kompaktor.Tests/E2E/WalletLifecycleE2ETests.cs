@@ -7241,4 +7241,62 @@ public class WalletLifecycleE2ETests
         Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
     }
 
+    [Fact]
+    public async Task UtxoHistogram_empty_wallet_returns_zero_totals_with_six_buckets()
+    {
+        // Wallet exists but no UTXOs — totals must be 0 and the bucket array
+        // still holds all six slots (each with count=0/totalSat=0) so the UI
+        // can render a stable axis without special-casing "no UTXOs yet".
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var body = await client.GetFromJsonAsync<JsonElement>("/api/dashboard/utxo-histogram");
+        Assert.Equal(0, body.GetProperty("totalUtxos").GetInt32());
+        Assert.Equal(0, body.GetProperty("totalAmountSat").GetInt64());
+        Assert.Equal(0, body.GetProperty("mixedCount").GetInt32());
+        Assert.Equal(0, body.GetProperty("unmixedCount").GetInt32());
+        Assert.Equal(0, body.GetProperty("frozenCount").GetInt32());
+        var buckets = body.GetProperty("buckets");
+        Assert.Equal(6, buckets.GetArrayLength());
+        foreach (var b in buckets.EnumerateArray())
+        {
+            Assert.Equal(0, b.GetProperty("count").GetInt32());
+            Assert.Equal(0, b.GetProperty("totalSat").GetInt64());
+            Assert.Equal(0, b.GetProperty("mixedCount").GetInt32());
+        }
+    }
+
+    [Fact]
+    public async Task UtxoHistogram_buckets_utxos_by_log_scale_amounts()
+    {
+        // Seed one small (42k → "10k-100k") and one large (2M → "1M-10M")
+        // UTXO. Both must show up in the right bucket with count=1; the
+        // remaining buckets stay at zero. Proves the boundaries catch edges
+        // (100k is EXCLUSIVE to 10k-100k per the [min, max) contract).
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+        await SeedUtxoAsync(factory, client, amountSat: 42_000, tag: 0xA0);
+        await SeedUtxoAsync(factory, client, amountSat: 2_000_000, tag: 0xA1);
+
+        var body = await client.GetFromJsonAsync<JsonElement>("/api/dashboard/utxo-histogram");
+        Assert.Equal(2, body.GetProperty("totalUtxos").GetInt32());
+        Assert.Equal(2_042_000, body.GetProperty("totalAmountSat").GetInt64());
+        Assert.Equal(2, body.GetProperty("unmixedCount").GetInt32());
+        Assert.Equal(0, body.GetProperty("mixedCount").GetInt32());
+
+        var buckets = body.GetProperty("buckets").EnumerateArray()
+            .ToDictionary(b => b.GetProperty("label").GetString()!, b => b);
+        Assert.Equal(1, buckets["10k-100k"].GetProperty("count").GetInt32());
+        Assert.Equal(42_000, buckets["10k-100k"].GetProperty("totalSat").GetInt64());
+        Assert.Equal(1, buckets["1M-10M"].GetProperty("count").GetInt32());
+        Assert.Equal(2_000_000, buckets["1M-10M"].GetProperty("totalSat").GetInt64());
+        // Other buckets must stay at zero — no fallthrough.
+        Assert.Equal(0, buckets["<1k"].GetProperty("count").GetInt32());
+        Assert.Equal(0, buckets["1k-10k"].GetProperty("count").GetInt32());
+        Assert.Equal(0, buckets["100k-1M"].GetProperty("count").GetInt32());
+        Assert.Equal(0, buckets["10M+"].GetProperty("count").GetInt32());
+    }
+
 }
