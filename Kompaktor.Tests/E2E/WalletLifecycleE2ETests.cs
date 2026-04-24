@@ -7899,6 +7899,109 @@ public class WalletLifecycleE2ETests
     }
 
     [Fact]
+    public async Task AddressReuseReport_empty_wallet_returns_zero_summary()
+    {
+        // No wallet + empty wallet both return the full zeroed shape so the
+        // dashboard can render a consistent card even before onboarding.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var body = await client.GetFromJsonAsync<JsonElement>("/api/wallet/address-reuse-report");
+        Assert.Equal(0, body.GetProperty("reusedAddressCount").GetInt32());
+        Assert.Equal(0, body.GetProperty("totalExposedUtxos").GetInt32());
+        Assert.Equal(0, body.GetProperty("totalLiveExposedSat").GetInt64());
+        Assert.Equal(0, body.GetProperty("addresses").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task AddressReuseReport_excludes_addresses_with_single_utxo()
+    {
+        // An address with exactly one received UTXO is not reused — must not
+        // appear in the report. Seed one UTXO per fresh address and expect
+        // an empty list.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+        await SeedUtxoAsync(factory, client, amountSat: 50_000, tag: 0xD0);
+        await SeedUtxoAsync(factory, client, amountSat: 75_000, tag: 0xD1);
+
+        var body = await client.GetFromJsonAsync<JsonElement>("/api/wallet/address-reuse-report");
+        Assert.Equal(0, body.GetProperty("reusedAddressCount").GetInt32());
+        Assert.Equal(0, body.GetProperty("addresses").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task AddressReuseReport_surfaces_addresses_receiving_multiple_utxos()
+    {
+        // Craft a reused-address scenario by inserting two UTXOs pointing at
+        // the same AddressId directly via the DB. SeedUtxoAsync always pulls
+        // a fresh receive address, which is exactly the shape we want to
+        // avoid here. Then assert the report surfaces that one address, with
+        // both UTXOs tallied, and excludes a non-reused singleton seeded via
+        // the normal path.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        // One "clean" UTXO on its own address — must NOT appear in the report.
+        var cleanUtxoId = await SeedUtxoAsync(factory, client, amountSat: 100_000, tag: 0xE0);
+
+        int reusedAddressId;
+        string reusedBech32;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<WalletDbContext>();
+            // Pick a different address than the clean UTXO's address.
+            var clean = await db.Utxos.FindAsync(cleanUtxoId);
+            var addr = await db.Addresses
+                .Include(a => a.Account)
+                .Where(a => a.Id != clean!.AddressId && !a.IsChange)
+                .OrderBy(a => a.Id)
+                .FirstAsync();
+            reusedAddressId = addr.Id;
+            reusedBech32 = new Script(addr.ScriptPubKey)
+                .GetDestinationAddress(Network.RegTest)!.ToString();
+
+            // Two UTXOs on the same address = reuse.
+            db.Utxos.Add(new UtxoEntity
+            {
+                TxId = "aa" + new string('0', 62),
+                OutputIndex = 0,
+                AddressId = reusedAddressId,
+                AmountSat = 30_000,
+                ScriptPubKey = addr.ScriptPubKey,
+                ConfirmedHeight = 100
+            });
+            db.Utxos.Add(new UtxoEntity
+            {
+                TxId = "bb" + new string('0', 62),
+                OutputIndex = 0,
+                AddressId = reusedAddressId,
+                AmountSat = 45_000,
+                ScriptPubKey = addr.ScriptPubKey,
+                ConfirmedHeight = 101
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var body = await client.GetFromJsonAsync<JsonElement>("/api/wallet/address-reuse-report");
+        Assert.Equal(1, body.GetProperty("reusedAddressCount").GetInt32());
+        Assert.Equal(2, body.GetProperty("totalExposedUtxos").GetInt32());
+        Assert.Equal(75_000, body.GetProperty("totalLiveExposedSat").GetInt64());
+
+        var addresses = body.GetProperty("addresses");
+        Assert.Equal(1, addresses.GetArrayLength());
+        var row = addresses[0];
+        Assert.Equal(reusedAddressId, row.GetProperty("addressId").GetInt32());
+        Assert.Equal(reusedBech32, row.GetProperty("address").GetString());
+        Assert.Equal(2, row.GetProperty("utxoCount").GetInt32());
+        Assert.Equal(2, row.GetProperty("liveUtxoCount").GetInt32());
+        Assert.Equal(75_000, row.GetProperty("liveSat").GetInt64());
+        Assert.Equal(75_000, row.GetProperty("totalReceivedSat").GetInt64());
+    }
+
+    [Fact]
     public async Task FreezeByLabel_rejects_empty_text()
     {
         // Same rationale as delete-by-text — empty text would be a silent

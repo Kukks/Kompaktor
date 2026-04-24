@@ -4954,6 +4954,70 @@ app.MapGet("/api/wallet/label-coverage", async (WalletDbContext db) =>
     });
 }).WithTags("Wallet");
 
+// Address reuse report: identify wallet-owned addresses that have received
+// funds more than once. Address reuse is one of the most impactful privacy
+// leaks on-chain — it makes cluster analysis trivial — so the user should
+// be able to see at a glance which addresses to avoid reusing and which
+// UTXOs to mix or consolidate.
+//
+// An address is "reused" when it has ≥2 received UTXOs (spent or live
+// doesn't matter here — the chain-observable link is permanent). We report
+// per-address counts plus a wallet-level summary so a dashboard card can
+// render "N reused addresses, X sat at risk" without two queries.
+//
+// `liveSat` vs `totalReceivedSat`: total is the lifetime amount that ever
+// touched the address (informational — shows the scale of the exposure);
+// live is what's still actionable — the spend-and-remix target.
+app.MapGet("/api/wallet/address-reuse-report", async (WalletDbContext db) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null)
+        return Results.Ok(new
+        {
+            reusedAddressCount = 0,
+            totalExposedUtxos = 0,
+            totalLiveExposedSat = 0L,
+            totalLifetimeExposedSat = 0L,
+            addresses = Array.Empty<object>()
+        });
+
+    // Pull owned addresses WITH their UTXOs in one hop. EF's Include keeps us
+    // from N+1-ing the per-address counts. Only reused addresses (>1 UTXO)
+    // carry any signal here — filter after materializing.
+    var all = await db.Addresses
+        .Include(a => a.Account)
+        .Include(a => a.Utxos)
+        .Where(a => a.Account.WalletId == wallet.Id)
+        .ToListAsync();
+
+    var reused = all
+        .Where(a => a.Utxos.Count > 1)
+        .Select(a => new
+        {
+            addressId = a.Id,
+            address = new Script(a.ScriptPubKey).GetDestinationAddress(network)?.ToString(),
+            isChange = a.IsChange,
+            isExposed = a.IsExposed,
+            keyPath = a.KeyPath,
+            utxoCount = a.Utxos.Count,
+            liveUtxoCount = a.Utxos.Count(u => u.SpentByTxId == null),
+            totalReceivedSat = a.Utxos.Sum(u => u.AmountSat),
+            liveSat = a.Utxos.Where(u => u.SpentByTxId == null).Sum(u => u.AmountSat)
+        })
+        .OrderByDescending(r => r.utxoCount)
+        .ThenByDescending(r => r.liveSat)
+        .ToList();
+
+    return Results.Ok(new
+    {
+        reusedAddressCount = reused.Count,
+        totalExposedUtxos = reused.Sum(r => r.utxoCount),
+        totalLiveExposedSat = reused.Sum(r => r.liveSat),
+        totalLifetimeExposedSat = reused.Sum(r => r.totalReceivedSat),
+        addresses = reused
+    });
+}).WithTags("Wallet");
+
 // Bulk label delete: drop every row with text == `text` across the
 // wallet's owned UTXO/Address/Transaction labels and AddressBook entries.
 // Sister endpoint to /api/wallet/labels/rename for the "retire a tag"
