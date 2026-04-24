@@ -2012,6 +2012,100 @@ app.MapGet("/api/wallet/mixing-readiness", async (WalletDbContext db, MixingMana
     });
 }).WithTags("Wallet");
 
+// Mixing progress: histogram of the wallet's live confirmed balance bucketed
+// by CoinJoin depth (how many rounds each UTXO has been through, counting
+// direct output + walked ancestor chain). Complements /api/mixing/statistics
+// — that endpoint describes *history* (rounds attempted, success rate); this
+// one describes the *current state* of the spendable balance.
+//
+// Buckets:
+//   unmixed    (CoinJoinCount == 0)  — no privacy gain yet
+//   round1     (== 1)
+//   round2     (== 2)
+//   round3Plus (>= 3)
+//
+// Per-bucket: count, totalSat, percentOfCount, percentOfSat. The two
+// percentages differ when big UTXOs are concentrated in one bucket — the
+// sat percentage is usually the more important privacy-hygiene number.
+//
+// Also returns `weightedAverageDepth` = sum(sat * depth) / totalSat, a single
+// headline number for dashboard cards.
+app.MapGet("/api/wallet/mixing-progress", async (WalletDbContext db) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null)
+        return Results.Ok(new
+        {
+            totalUtxos = 0,
+            totalSat = 0L,
+            weightedAverageDepth = 0.0,
+            buckets = new[]
+            {
+                new { name = "unmixed",    count = 0, totalSat = 0L, percentOfCount = 0.0, percentOfSat = 0.0 },
+                new { name = "round1",     count = 0, totalSat = 0L, percentOfCount = 0.0, percentOfSat = 0.0 },
+                new { name = "round2",     count = 0, totalSat = 0L, percentOfCount = 0.0, percentOfSat = 0.0 },
+                new { name = "round3Plus", count = 0, totalSat = 0L, percentOfCount = 0.0, percentOfSat = 0.0 }
+            }
+        });
+
+    var selector = new WalletCoinSelector(db);
+    // includeFrozen: true — frozen UTXOs still count toward the snapshot.
+    // A user looking at "how mixed is my wallet" wants the full picture,
+    // not just what the mixer is about to touch.
+    var scored = await selector.GetScoredUtxosAsync(wallet.Id, includeFrozen: true);
+
+    static (string Name, int Min, int? Max) BucketFor(int depth) => depth switch
+    {
+        0 => ("unmixed", 0, 0),
+        1 => ("round1", 1, 1),
+        2 => ("round2", 2, 2),
+        _ => ("round3Plus", 3, null)
+    };
+
+    var grouped = scored
+        .GroupBy(s => BucketFor(s.Score.CoinJoinCount).Name)
+        .ToDictionary(g => g.Key, g => (Count: g.Count(), Sat: g.Sum(s => s.Utxo.AmountSat)));
+
+    var totalCount = scored.Count;
+    var totalSat = scored.Sum(s => s.Utxo.AmountSat);
+
+    static double Pct(long n, long d) => d == 0 ? 0.0 : Math.Round(100.0 * n / d, 2);
+
+    object MakeBucket(string name)
+    {
+        var (count, sat) = grouped.TryGetValue(name, out var v) ? v : (0, 0L);
+        return new
+        {
+            name,
+            count,
+            totalSat = sat,
+            percentOfCount = Pct(count, totalCount),
+            percentOfSat = Pct(sat, totalSat)
+        };
+    }
+
+    // Weighted by sat — 1 BTC in round 3 contributes more than 1000 sat in
+    // round 3, which matches the user's mental model of "how mixed is my
+    // money" (vs. "how many of my UTXOs are mixed").
+    var weightedAverageDepth = totalSat == 0
+        ? 0.0
+        : Math.Round((double)scored.Sum(s => s.Utxo.AmountSat * s.Score.CoinJoinCount) / totalSat, 2);
+
+    return Results.Ok(new
+    {
+        totalUtxos = totalCount,
+        totalSat,
+        weightedAverageDepth,
+        buckets = new[]
+        {
+            MakeBucket("unmixed"),
+            MakeBucket("round1"),
+            MakeBucket("round2"),
+            MakeBucket("round3Plus")
+        }
+    });
+}).WithTags("Wallet");
+
 // Decodes a profile spec into the list of behavior traits the mixer will run
 // for that preset, each with a plain-language purpose string. Lets the UI
 // show "if you pick X, your wallet will run A, B, C and here's what each

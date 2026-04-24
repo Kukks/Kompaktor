@@ -6916,6 +6916,104 @@ public class WalletLifecycleE2ETests
     }
 
     [Fact]
+    public async Task MixingProgress_empty_wallet_returns_full_zero_shape()
+    {
+        // Dashboard must be able to render before onboarding — all four
+        // buckets present, weightedAverageDepth=0.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var body = await client.GetFromJsonAsync<JsonElement>("/api/wallet/mixing-progress");
+        Assert.Equal(0, body.GetProperty("totalUtxos").GetInt32());
+        Assert.Equal(0, body.GetProperty("totalSat").GetInt64());
+        Assert.Equal(0.0, body.GetProperty("weightedAverageDepth").GetDouble());
+
+        var buckets = body.GetProperty("buckets").EnumerateArray()
+            .Select(b => b.GetProperty("name").GetString()).ToArray();
+        Assert.Equal(new[] { "unmixed", "round1", "round2", "round3Plus" }, buckets);
+    }
+
+    [Fact]
+    public async Task MixingProgress_unmixed_utxos_all_land_in_unmixed_bucket()
+    {
+        // No coinjoin participations recorded → every UTXO is depth 0.
+        // unmixed bucket totals the full balance; other buckets are zero.
+        // weightedAverageDepth must also be 0 (sum of sat*0 / sat).
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+        await SeedUtxoAsync(factory, client, amountSat: 50_000, tag: 0x91);
+        await SeedUtxoAsync(factory, client, amountSat: 250_000, tag: 0x92);
+
+        var body = await client.GetFromJsonAsync<JsonElement>("/api/wallet/mixing-progress");
+        Assert.Equal(2, body.GetProperty("totalUtxos").GetInt32());
+        Assert.Equal(300_000, body.GetProperty("totalSat").GetInt64());
+        Assert.Equal(0.0, body.GetProperty("weightedAverageDepth").GetDouble());
+
+        var buckets = body.GetProperty("buckets").EnumerateArray().ToList();
+        var unmixed = buckets.First(b => b.GetProperty("name").GetString() == "unmixed");
+        Assert.Equal(2, unmixed.GetProperty("count").GetInt32());
+        Assert.Equal(300_000, unmixed.GetProperty("totalSat").GetInt64());
+        Assert.Equal(100.0, unmixed.GetProperty("percentOfSat").GetDouble());
+        foreach (var other in buckets.Where(b => b.GetProperty("name").GetString() != "unmixed"))
+            Assert.Equal(0, other.GetProperty("count").GetInt32());
+    }
+
+    [Fact]
+    public async Task MixingProgress_buckets_reflect_coinjoin_participation_depth()
+    {
+        // Seed two UTXOs. Record a completed coinjoin round with participant
+        // count 5, and tag one UTXO as its Output. The scorer will pick up
+        // CoinJoinCount=1 for that UTXO → it lands in round1. The other
+        // remains depth 0 → unmixed. weightedAverageDepth must equal
+        // (0 * 60k + 1 * 40k) / 100k = 0.4.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+        var mixedId = await SeedUtxoAsync(factory, client, amountSat: 40_000, tag: 0x93);
+        await SeedUtxoAsync(factory, client, amountSat: 60_000, tag: 0x94);
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<WalletDbContext>();
+            var round = new CoinJoinRecordEntity
+            {
+                RoundId = "synthetic-round-1",
+                Status = "Completed",
+                OurInputCount = 0,
+                TotalInputCount = 5,
+                OurOutputCount = 1,
+                TotalOutputCount = 5,
+                ParticipantCount = 5,
+                OutputValuesSat = new[] { 40_000L }
+            };
+            db.CoinJoinRecords.Add(round);
+            await db.SaveChangesAsync();
+            db.Set<CoinJoinParticipationEntity>().Add(new CoinJoinParticipationEntity
+            {
+                CoinJoinRecordId = round.Id,
+                UtxoId = mixedId,
+                Role = "Output"
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var body = await client.GetFromJsonAsync<JsonElement>("/api/wallet/mixing-progress");
+        Assert.Equal(0.4, body.GetProperty("weightedAverageDepth").GetDouble());
+        Assert.Equal(100_000, body.GetProperty("totalSat").GetInt64());
+
+        var buckets = body.GetProperty("buckets").EnumerateArray().ToList();
+        var unmixed = buckets.First(b => b.GetProperty("name").GetString() == "unmixed");
+        var round1 = buckets.First(b => b.GetProperty("name").GetString() == "round1");
+        Assert.Equal(1, unmixed.GetProperty("count").GetInt32());
+        Assert.Equal(60_000, unmixed.GetProperty("totalSat").GetInt64());
+        Assert.Equal(1, round1.GetProperty("count").GetInt32());
+        Assert.Equal(40_000, round1.GetProperty("totalSat").GetInt64());
+        Assert.Equal(40.0, round1.GetProperty("percentOfSat").GetDouble());
+    }
+
+    [Fact]
     public async Task PaymentsBatchRetry_flips_failed_back_to_pending()
     {
         // Seed a payment, cancel it (→ Failed), then batch-retry. Status
