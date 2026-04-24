@@ -1199,6 +1199,46 @@ app.MapPost("/api/coin-control/freeze-exposed", async (WalletDbContext db, Dashb
     return Results.Ok(new { frozen = candidates.Count });
 }).WithTags("CoinControl");
 
+// Companion to freeze-exposed, but keyed on LABEL taint rather than address
+// exposure: freezes every live UTXO in a cluster flagged hasExternalSource
+// (any label with an "Exchange:" / "KYC:" / "P2P:" prefix). Coin selection
+// will then keep those quarantined until they're mixed and the label is
+// cleared. Idempotent — only touches still-unspent, not-already-frozen rows.
+app.MapPost("/api/coin-control/freeze-external-source", async (WalletDbContext db, DashboardEventBus bus) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.Ok(new { frozen = 0 });
+
+    var utxos = await db.Utxos
+        .Include(u => u.Address)
+        .ThenInclude(a => a.Account)
+        .Where(u => u.Address.Account.WalletId == wallet.Id)
+        .Where(u => u.SpentByTxId == null)
+        .ToListAsync();
+
+    if (utxos.Count == 0) return Results.Ok(new { frozen = 0 });
+
+    var labels = await db.Labels
+        .Where(l => l.EntityType == "Utxo" || l.EntityType == "Address")
+        .ToListAsync();
+    var coinjoins = await db.CoinJoinRecords.ToListAsync();
+
+    var clusters = new Kompaktor.Scoring.LabelClusterAnalyzer()
+        .AnalyzeClusters(utxos, labels, coinjoins);
+    var taintedIds = clusters
+        .Where(c => c.HasExternalSource)
+        .SelectMany(c => c.UtxoIds)
+        .ToHashSet();
+
+    var candidates = utxos.Where(u => !u.IsFrozen && taintedIds.Contains(u.Id)).ToList();
+    foreach (var utxo in candidates)
+        utxo.IsFrozen = true;
+
+    await db.SaveChangesAsync();
+    if (candidates.Count > 0) bus.Publish("utxos");
+    return Results.Ok(new { frozen = candidates.Count });
+}).WithTags("CoinControl");
+
 // Labels: add label to a UTXO
 app.MapPost("/api/coin-control/label/{utxoId}", async (int utxoId, WalletDbContext db, HttpContext ctx, DashboardEventBus bus) =>
 {

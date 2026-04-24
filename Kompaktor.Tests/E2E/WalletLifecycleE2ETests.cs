@@ -6446,6 +6446,74 @@ public class WalletLifecycleE2ETests
     }
 
     [Fact]
+    public async Task FreezeExternalSource_quarantines_exchange_tainted_utxos()
+    {
+        // The one-click quarantine for externally-sourced coins: freeze every
+        // UTXO whose cluster carries an Exchange/KYC/P2P-prefixed label.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var tainted = await SeedUtxoAsync(factory, client, amountSat: 100_000, tag: 0xFB);
+        var clean = await SeedUtxoAsync(factory, client, amountSat: 50_000, tag: 0xFC);
+        await client.PostAsJsonAsync($"/api/coin-control/label/{tainted}",
+            new { Text = "Exchange: Kraken" });
+        await client.PostAsJsonAsync($"/api/coin-control/label/{clean}",
+            new { Text = "Vacation" });
+
+        var resp = await client.PostAsync("/api/coin-control/freeze-external-source", null);
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var body = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(1, body.GetProperty("frozen").GetInt32());
+
+        // Tainted UTXO is frozen; clean one is not.
+        var utxos = await client.GetFromJsonAsync<JsonElement>("/api/dashboard/utxos");
+        var byId = utxos.EnumerateArray().ToDictionary(u => u.GetProperty("id").GetInt32());
+        Assert.True(byId[tainted].GetProperty("isFrozen").GetBoolean());
+        Assert.False(byId[clean].GetProperty("isFrozen").GetBoolean());
+    }
+
+    [Fact]
+    public async Task FreezeExternalSource_is_idempotent()
+    {
+        // Callable repeatedly without error — a second call freezes 0 more.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var id = await SeedUtxoAsync(factory, client, amountSat: 80_000, tag: 0xFD);
+        await client.PostAsJsonAsync($"/api/coin-control/label/{id}",
+            new { Text = "KYC: Coinbase" });
+
+        var first = (await (await client.PostAsync(
+            "/api/coin-control/freeze-external-source", null))
+            .Content.ReadFromJsonAsync<JsonElement>())
+            .GetProperty("frozen").GetInt32();
+        Assert.Equal(1, first);
+
+        var second = (await (await client.PostAsync(
+            "/api/coin-control/freeze-external-source", null))
+            .Content.ReadFromJsonAsync<JsonElement>())
+            .GetProperty("frozen").GetInt32();
+        Assert.Equal(0, second);
+    }
+
+    [Fact]
+    public async Task FreezeExternalSource_no_op_on_empty_wallet()
+    {
+        // Safe to call before any UTXO exists — the endpoint mustn't 500 or
+        // assume the wallet has coins.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.PostAsync("/api/coin-control/freeze-external-source", null);
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var body = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(0, body.GetProperty("frozen").GetInt32());
+    }
+
+    [Fact]
     public async Task DashboardUtxos_cluster_flags_external_source_on_exchange_prefix()
     {
         // An "Exchange:" / "KYC:" / "P2P:" label taints the cluster — the UI
