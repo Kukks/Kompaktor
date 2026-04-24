@@ -4231,10 +4231,10 @@
                 return;
             }
             body.innerHTML = webhooks.map(w => `<tr${w.isActive === false ? ' style="opacity:0.5"' : ''}>
-                <td style="max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${w.url}">
+                <td style="max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer" title="${w.url} — click to edit" onclick="editWebhookUrl(${w.id}, ${JSON.stringify(w.url)})">
                     ${w.isActive === false ? '<span style="color:var(--yellow);font-size:10px;margin-right:6px">PAUSED</span>' : ''}${w.url}
                 </td>
-                <td>${w.eventFilter === '*' ? 'All' : w.eventFilter}</td>
+                <td style="cursor:pointer" title="Click to edit event filter" onclick="editWebhookFilter(${w.id}, ${JSON.stringify(w.eventFilter)})">${w.eventFilter === '*' ? 'All' : w.eventFilter}</td>
                 <td>${formatDate(w.createdAt)}</td>
                 <td><button class="refresh-btn" onclick="showDeliveries(${w.id})" style="font-size:11px;padding:2px 8px">History</button>
                     <button class="refresh-btn" onclick="testWebhook(${w.id})" style="font-size:11px;padding:2px 8px;margin-left:4px" title="Send a synthetic Test event so you can verify your receiver">Test</button>
@@ -4297,6 +4297,50 @@
                     const detail = data.errorMessage || `HTTP ${data.httpStatusCode}`;
                     showToast(`Test delivery reached receiver but failed: ${detail}`, 'warning');
                 }
+            } catch (err) { showToast('Failed: ' + err.message, 'warning'); }
+        }
+
+        async function editWebhookUrl(id, currentUrl) {
+            const next = prompt('New webhook URL (http or https):', currentUrl || '');
+            if (next === null) return;
+            const trimmed = (next || '').trim();
+            if (trimmed === '' || trimmed === currentUrl) return;
+            try {
+                const res = await fetch(`/api/webhooks/${id}`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url: trimmed })
+                });
+                if (!res.ok) {
+                    const msg = await res.text().catch(() => 'Update failed');
+                    showToast(msg || 'Update failed', 'warning');
+                    return;
+                }
+                showToast('Webhook URL updated', 'success');
+                loadWebhooks();
+            } catch (err) { showToast('Failed: ' + err.message, 'warning'); }
+        }
+
+        async function editWebhookFilter(id, currentFilter) {
+            const next = prompt(
+                'Event filter — use * for all, or comma-separated event types (e.g. "Completed,Failed"):',
+                currentFilter || '*');
+            if (next === null) return;
+            const trimmed = (next || '').trim();
+            if (trimmed === '' || trimmed === currentFilter) return;
+            try {
+                const res = await fetch(`/api/webhooks/${id}`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ eventFilter: trimmed })
+                });
+                if (!res.ok) {
+                    const msg = await res.text().catch(() => 'Update failed');
+                    showToast(msg || 'Update failed', 'warning');
+                    return;
+                }
+                showToast('Event filter updated', 'success');
+                loadWebhooks();
             } catch (err) { showToast('Failed: ' + err.message, 'warning'); }
         }
 

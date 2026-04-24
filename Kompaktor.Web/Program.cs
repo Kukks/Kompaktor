@@ -2394,6 +2394,26 @@ app.MapPatch("/api/webhooks/{webhookId}", async (int webhookId, WalletDbContext 
     if (body.IsActive is bool active)
         webhook.IsActive = active;
 
+    if (body.Url is { } url)
+    {
+        // Validate before saving. Accepting garbage would leave a row that
+        // fails every delivery attempt, polluting the history with noise.
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var parsed)
+            || (parsed.Scheme != Uri.UriSchemeHttp && parsed.Scheme != Uri.UriSchemeHttps))
+            return Results.BadRequest("Url must be http or https");
+        webhook.Url = url;
+    }
+
+    if (body.EventFilter is { } filter)
+    {
+        var trimmed = filter.Trim();
+        // Empty string is meaningless for a filter. "*" or a comma list
+        // is how MatchesFilter is implemented.
+        if (trimmed.Length == 0)
+            return Results.BadRequest("EventFilter cannot be empty; use \"*\" to match all events");
+        webhook.EventFilter = trimmed;
+    }
+
     await db.SaveChangesAsync();
     return Results.Ok(new
     {
@@ -3426,7 +3446,7 @@ record CreatePaymentRequest(string Destination, long AmountSat, bool Interactive
 record BatchSendRequest(string Destination, long AmountSat, bool Interactive = true, bool Urgent = false, string? Label = null, int? ExpiryMinutes = null, DateTimeOffset? ScheduledAt = null, int? MaxRetries = null);
 record CreateReceiveRequest(long AmountSat, string? Label = null, int? ExpiryMinutes = null);
 record WebhookCreateRequest(string Url, string? EventFilter = null);
-record WebhookUpdateRequest(bool? IsActive = null);
+record WebhookUpdateRequest(bool? IsActive = null, string? Url = null, string? EventFilter = null);
 record VerifyBackupRequest(string Passphrase, VerifyBackupAnswer[] Answers);
 record VerifyBackupAnswer(int Position, string Word);
 record FeeBumpRequest(string TxId, long NewFeeRateSatPerVb);

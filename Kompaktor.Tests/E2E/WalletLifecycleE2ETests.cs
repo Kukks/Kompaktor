@@ -3983,6 +3983,87 @@ public class WalletLifecycleE2ETests
     }
 
     [Fact]
+    public async Task Webhook_patch_updates_url_for_receiver_migration()
+    {
+        // Receiver moved to a new host — updating the URL in-place keeps the
+        // webhook id and delivery history intact (delete+recreate would mint
+        // a new id and force downstream reconciliation).
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var create = await (await client.PostAsJsonAsync("/api/webhooks",
+            new { Url = "https://old.example/hook" }))
+            .Content.ReadFromJsonAsync<JsonElement>();
+        var webhookId = create.GetProperty("id").GetInt32();
+
+        var patch = await client.PatchAsync($"/api/webhooks/{webhookId}",
+            JsonContent.Create(new { url = "https://new.example/hook" }));
+        patch.EnsureSuccessStatusCode();
+        var body = await patch.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("https://new.example/hook", body.GetProperty("url").GetString());
+    }
+
+    [Fact]
+    public async Task Webhook_patch_rejects_non_http_url()
+    {
+        // javascript: and file: would never deliver — reject at the edge
+        // so rows that can never fire don't accumulate history noise.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var create = await (await client.PostAsJsonAsync("/api/webhooks",
+            new { Url = "https://ok.example/hook" }))
+            .Content.ReadFromJsonAsync<JsonElement>();
+        var webhookId = create.GetProperty("id").GetInt32();
+
+        var patch = await client.PatchAsync($"/api/webhooks/{webhookId}",
+            JsonContent.Create(new { url = "javascript:alert(1)" }));
+        Assert.Equal(HttpStatusCode.BadRequest, patch.StatusCode);
+    }
+
+    [Fact]
+    public async Task Webhook_patch_updates_event_filter()
+    {
+        // Operator wants only failures routed to this receiver — updating the
+        // filter should take effect immediately; deliveries stay unaffected.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var create = await (await client.PostAsJsonAsync("/api/webhooks",
+            new { Url = "https://example.com/hook", EventFilter = "*" }))
+            .Content.ReadFromJsonAsync<JsonElement>();
+        var webhookId = create.GetProperty("id").GetInt32();
+
+        var patch = await client.PatchAsync($"/api/webhooks/{webhookId}",
+            JsonContent.Create(new { eventFilter = "Failed" }));
+        patch.EnsureSuccessStatusCode();
+        var body = await patch.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("Failed", body.GetProperty("eventFilter").GetString());
+    }
+
+    [Fact]
+    public async Task Webhook_patch_rejects_empty_event_filter()
+    {
+        // Empty filter is a footgun: it would match nothing, silently muting
+        // the webhook without a trace in the UI. Force an explicit "*".
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var create = await (await client.PostAsJsonAsync("/api/webhooks",
+            new { Url = "https://example.com/hook" }))
+            .Content.ReadFromJsonAsync<JsonElement>();
+        var webhookId = create.GetProperty("id").GetInt32();
+
+        var patch = await client.PatchAsync($"/api/webhooks/{webhookId}",
+            JsonContent.Create(new { eventFilter = "   " }));
+        Assert.Equal(HttpStatusCode.BadRequest, patch.StatusCode);
+    }
+
+    [Fact]
     public async Task Webhook_redeliver_creates_new_delivery_row()
     {
         // A webhook receiver may have been down when the original event fired.
