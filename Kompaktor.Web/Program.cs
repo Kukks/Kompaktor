@@ -3163,6 +3163,65 @@ app.MapGet("/api/payments/search", async (
     return Results.Ok(new { total, skip, limit, items = payments });
 }).WithTags("Payments");
 
+// Surface payments that have been pending for a while — the "why isn't this
+// going through?" view. Used to feed an at-a-glance alert in the UI so users
+// don't have to scroll the full payment list looking for stragglers.
+// Criteria:
+//   - Status == "Pending" (Reserved/Committed are already in a round)
+//   - Age >= ?ageMinutes (default 30; clamped 1..1440 so a sloppy caller
+//     can't ask for "stuck for 0 minutes" and pick up fresh payments)
+//   - Not past ExpiresAt (expired ones get auto-cancelled elsewhere — if
+//     we haven't yet seen the cancel, we still don't want to prompt the
+//     user to act on them)
+// Sorted oldest first — the most overdue should be addressed first.
+app.MapGet("/api/payments/stuck", async (WalletDbContext db, int ageMinutes = 30) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null)
+        return Results.Ok(new { ageMinutes, count = 0, totalAmountSat = 0L, payments = Array.Empty<object>() });
+
+    ageMinutes = Math.Clamp(ageMinutes, 1, 1440);
+    var cutoff = DateTimeOffset.UtcNow - TimeSpan.FromMinutes(ageMinutes);
+    var now = DateTimeOffset.UtcNow;
+
+    // SQLite can't ORDER or WHERE on DateTimeOffset in EF queries — pull
+    // Pending rows and filter/sort in-memory. Candidate set is already small
+    // (pending payments only), so the memory cost is negligible.
+    var all = await db.PendingPayments
+        .Where(p => p.WalletId == wallet.Id && p.Status == "Pending")
+        .ToListAsync();
+
+    var stuck = all
+        .Where(p => p.CreatedAt <= cutoff)
+        .Where(p => p.ExpiresAt == null || p.ExpiresAt > now)
+        .OrderBy(p => p.CreatedAt)
+        .Select(p => new
+        {
+            p.Id,
+            p.Direction,
+            p.AmountSat,
+            amountBtc = p.AmountSat / 100_000_000.0,
+            p.Destination,
+            p.Label,
+            p.IsInteractive,
+            p.IsUrgent,
+            p.RetryCount,
+            p.MaxRetries,
+            p.CreatedAt,
+            p.ExpiresAt,
+            ageMinutes = (int)Math.Floor((now - p.CreatedAt).TotalMinutes)
+        })
+        .ToList();
+
+    return Results.Ok(new
+    {
+        ageMinutes,
+        count = stuck.Count,
+        totalAmountSat = stuck.Sum(p => p.AmountSat),
+        payments = stuck
+    });
+}).WithTags("Payments");
+
 app.MapPost("/api/payments/send", async (WalletDbContext db, HttpContext ctx, DashboardEventBus bus) =>
 {
     var wallet = await db.Wallets.FirstOrDefaultAsync();

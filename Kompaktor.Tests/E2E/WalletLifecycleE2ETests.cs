@@ -9030,4 +9030,142 @@ public class WalletLifecycleE2ETests
         Assert.Equal(1, frz.GetProperty("unfrozen").GetProperty("count").GetInt32());
     }
 
+    [Fact]
+    public async Task StuckPayments_empty_wallet_returns_default_age_and_zero_count()
+    {
+        // No wallet: must still return the envelope with the default ageMinutes
+        // (30) echoed back. Consumers use it to confirm the filter they applied.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        var body = await client.GetFromJsonAsync<JsonElement>("/api/payments/stuck");
+        Assert.Equal(30, body.GetProperty("ageMinutes").GetInt32());
+        Assert.Equal(0, body.GetProperty("count").GetInt32());
+        Assert.Equal(0, body.GetProperty("totalAmountSat").GetInt64());
+        Assert.Equal(0, body.GetProperty("payments").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task StuckPayments_surfaces_only_pending_older_than_cutoff()
+    {
+        // Seed three pending payments at carefully staggered ages:
+        //   fresh (5m)   — below default 30m cutoff, must NOT surface
+        //   stale (45m)  — above cutoff, must surface
+        //   ancient (2h) — way above cutoff, must surface
+        // Plus a Completed payment that's old — never stuck by definition.
+        // Expect oldest-first ordering (ancient then stale) and ageMinutes
+        // rounded DOWN (floor) to avoid off-by-one flakes at the boundary.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<WalletDbContext>();
+            var wallet = await db.Wallets.FirstAsync();
+            db.PendingPayments.AddRange(
+                new PendingPaymentEntity
+                {
+                    WalletId = wallet.Id, Direction = "Outbound", AmountSat = 10_000,
+                    Destination = "bcrt1qfresh", Status = "Pending",
+                    CreatedAt = DateTimeOffset.UtcNow.AddMinutes(-5),
+                    Label = "fresh"
+                },
+                new PendingPaymentEntity
+                {
+                    WalletId = wallet.Id, Direction = "Outbound", AmountSat = 20_000,
+                    Destination = "bcrt1qstale", Status = "Pending",
+                    CreatedAt = DateTimeOffset.UtcNow.AddMinutes(-45),
+                    Label = "stale"
+                },
+                new PendingPaymentEntity
+                {
+                    WalletId = wallet.Id, Direction = "Outbound", AmountSat = 30_000,
+                    Destination = "bcrt1qancient", Status = "Pending",
+                    CreatedAt = DateTimeOffset.UtcNow.AddHours(-2),
+                    Label = "ancient"
+                },
+                new PendingPaymentEntity
+                {
+                    WalletId = wallet.Id, Direction = "Outbound", AmountSat = 99_999,
+                    Destination = "bcrt1qdone", Status = "Completed",
+                    CreatedAt = DateTimeOffset.UtcNow.AddHours(-3),
+                    Label = "done-not-stuck"
+                });
+            await db.SaveChangesAsync();
+        }
+
+        var body = await client.GetFromJsonAsync<JsonElement>("/api/payments/stuck");
+        Assert.Equal(30, body.GetProperty("ageMinutes").GetInt32());
+        Assert.Equal(2, body.GetProperty("count").GetInt32());
+        Assert.Equal(50_000, body.GetProperty("totalAmountSat").GetInt64());
+        var arr = body.GetProperty("payments").EnumerateArray().ToList();
+        Assert.Equal("ancient", arr[0].GetProperty("label").GetString());
+        Assert.Equal("stale", arr[1].GetProperty("label").GetString());
+        // ageMinutes is floored — 2h will show as 120, 45m as 45 (or 44 if we
+        // cross the minute boundary during the assertion, which is why we
+        // check >= the expected floor).
+        Assert.True(arr[0].GetProperty("ageMinutes").GetInt32() >= 120,
+            $"ancient ageMinutes={arr[0].GetProperty("ageMinutes").GetInt32()}, expected >= 120");
+        Assert.True(arr[1].GetProperty("ageMinutes").GetInt32() >= 45,
+            $"stale ageMinutes={arr[1].GetProperty("ageMinutes").GetInt32()}, expected >= 45");
+    }
+
+    [Fact]
+    public async Task StuckPayments_custom_age_filter_narrows_and_expired_are_excluded()
+    {
+        // Two pending payments at 10m and 20m. With ?ageMinutes=15, only the
+        // older 20m one should surface. Also seed a 30m-old pending that's
+        // past its ExpiresAt — that one is ALREADY handled by the expiry path,
+        // so it shouldn't be in the "act on this" list even though it meets
+        // the age criterion. Clamp test: ageMinutes=0 is clamped to 1
+        // (minimum), so the 10m payment still surfaces there.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<WalletDbContext>();
+            var wallet = await db.Wallets.FirstAsync();
+            db.PendingPayments.AddRange(
+                new PendingPaymentEntity
+                {
+                    WalletId = wallet.Id, Direction = "Outbound", AmountSat = 11,
+                    Destination = "bcrt1qten", Status = "Pending",
+                    CreatedAt = DateTimeOffset.UtcNow.AddMinutes(-10),
+                    Label = "ten-min"
+                },
+                new PendingPaymentEntity
+                {
+                    WalletId = wallet.Id, Direction = "Outbound", AmountSat = 22,
+                    Destination = "bcrt1qtwen", Status = "Pending",
+                    CreatedAt = DateTimeOffset.UtcNow.AddMinutes(-20),
+                    Label = "twenty-min"
+                },
+                new PendingPaymentEntity
+                {
+                    WalletId = wallet.Id, Direction = "Outbound", AmountSat = 33,
+                    Destination = "bcrt1qexp", Status = "Pending",
+                    CreatedAt = DateTimeOffset.UtcNow.AddMinutes(-30),
+                    ExpiresAt = DateTimeOffset.UtcNow.AddMinutes(-5), // already expired
+                    Label = "expired-dont-surface"
+                });
+            await db.SaveChangesAsync();
+        }
+
+        var fifteen = await client.GetFromJsonAsync<JsonElement>(
+            "/api/payments/stuck?ageMinutes=15");
+        Assert.Equal(15, fifteen.GetProperty("ageMinutes").GetInt32());
+        Assert.Equal(1, fifteen.GetProperty("count").GetInt32());
+        var arr15 = fifteen.GetProperty("payments").EnumerateArray().ToList();
+        Assert.Equal("twenty-min", arr15[0].GetProperty("label").GetString());
+
+        // Clamp floor: ?ageMinutes=0 → 1, so the 10m payment also surfaces.
+        var clamped = await client.GetFromJsonAsync<JsonElement>(
+            "/api/payments/stuck?ageMinutes=0");
+        Assert.Equal(1, clamped.GetProperty("ageMinutes").GetInt32());
+        Assert.Equal(2, clamped.GetProperty("count").GetInt32());
+    }
+
 }
