@@ -3270,19 +3270,25 @@ public class WalletLifecycleE2ETests
     /// monitoring=true, or throws after the timeout. Startup races the
     /// hosted service's 1s pre-delay, a FullSync pass, and StartMonitoring —
     /// CI runners are slow enough that 20s wasn't consistently sufficient, so
-    /// the default was bumped to 45s (the service-side polling interval was
-    /// also shrunk from 5s to 500ms to make fresh-wallet pickup fast).
+    /// the default was bumped (the service-side polling interval was also
+    /// shrunk from 5s to 500ms to make fresh-wallet pickup fast). A rare 46s
+    /// overrun was observed on a loaded runner; 90s gives enough headroom
+    /// without letting genuinely-stuck tests hang forever. Reports the last
+    /// observed sync state in the timeout message so a future flake is
+    /// debuggable without re-running.
     /// </summary>
-    private static async Task WaitForMonitoringAsync(HttpClient client, int timeoutSeconds = 45)
+    private static async Task WaitForMonitoringAsync(HttpClient client, int timeoutSeconds = 90)
     {
         var deadline = DateTimeOffset.UtcNow.AddSeconds(timeoutSeconds);
+        JsonElement lastStatus = default;
         while (DateTimeOffset.UtcNow < deadline)
         {
-            var status = await client.GetFromJsonAsync<JsonElement>("/api/wallet/sync-status");
-            if (status.GetProperty("monitoring").GetBoolean()) return;
+            lastStatus = await client.GetFromJsonAsync<JsonElement>("/api/wallet/sync-status");
+            if (lastStatus.GetProperty("monitoring").GetBoolean()) return;
             await Task.Delay(250);
         }
-        throw new TimeoutException("Background sync never reached monitoring=true.");
+        throw new TimeoutException(
+            $"Background sync never reached monitoring=true after {timeoutSeconds}s. Last status: {lastStatus.GetRawText()}");
     }
 
     /// <summary>
