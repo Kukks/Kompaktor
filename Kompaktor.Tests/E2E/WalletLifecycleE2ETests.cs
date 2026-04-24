@@ -7014,6 +7014,136 @@ public class WalletLifecycleE2ETests
     }
 
     [Fact]
+    public async Task CoinAgeReport_empty_wallet_returns_full_zero_shape()
+    {
+        // Fresh wallet with no UTXOs. totalUtxos/totalSat collapse to zero and
+        // every bucket is present with zero counts (the bucket list is a
+        // stable shape for the UI, not a filtered set). chainHeight is
+        // whatever the backend reports — may be null if disconnected, which
+        // is fine; we don't assert on it here.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var body = await client.GetFromJsonAsync<JsonElement>("/api/wallet/coin-age-report");
+        Assert.Equal(0, body.GetProperty("totalUtxos").GetInt32());
+        Assert.Equal(0, body.GetProperty("totalSat").GetInt64());
+        Assert.Equal(0.0, body.GetProperty("weightedAverageAgeBlocks").GetDouble());
+        var bucketNames = body.GetProperty("buckets").EnumerateArray()
+            .Select(b => b.GetProperty("name").GetString()).ToArray();
+        Assert.Equal(new[] { "unconfirmed", "fresh", "recent", "aging", "stale", "unknown" }, bucketNames);
+        Assert.Equal(0, body.GetProperty("utxos").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task CoinAgeReport_buckets_reflect_confirmation_thresholds()
+    {
+        // Inject three synthetic UTXOs at heights chosen to land one per
+        // target bucket under the CURRENT chain tip: fresh (3 confs), recent
+        // (50 confs), stale (2000 confs). We read the tip first and compute
+        // backwards so the test is robust to whatever regtest is at.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var info = await client.GetFromJsonAsync<JsonElement>("/api/blockchain/info");
+        var tip = info.GetProperty("blockHeight").GetInt32();
+        Assert.True(tip >= 2000, $"Regtest tip {tip} too low to seed a 'stale' (>=1008 conf) UTXO");
+
+        int addrId;
+        byte[] scriptPubKey;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<WalletDbContext>();
+            var addr = await db.Addresses.Include(a => a.Account)
+                .OrderBy(a => a.Id).FirstAsync();
+            addrId = addr.Id;
+            scriptPubKey = addr.ScriptPubKey;
+
+            db.Utxos.Add(new UtxoEntity
+            {
+                TxId = "f1" + new string('0', 62), OutputIndex = 0,
+                AddressId = addrId, AmountSat = 10_000,
+                ScriptPubKey = scriptPubKey, ConfirmedHeight = tip - 2   // 3 confs → fresh
+            });
+            db.Utxos.Add(new UtxoEntity
+            {
+                TxId = "f2" + new string('0', 62), OutputIndex = 0,
+                AddressId = addrId, AmountSat = 20_000,
+                ScriptPubKey = scriptPubKey, ConfirmedHeight = tip - 49  // 50 confs → recent
+            });
+            db.Utxos.Add(new UtxoEntity
+            {
+                TxId = "f3" + new string('0', 62), OutputIndex = 0,
+                AddressId = addrId, AmountSat = 30_000,
+                ScriptPubKey = scriptPubKey, ConfirmedHeight = tip - 1999 // 2000 confs → stale
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var body = await client.GetFromJsonAsync<JsonElement>("/api/wallet/coin-age-report");
+        Assert.Equal(3, body.GetProperty("totalUtxos").GetInt32());
+        Assert.Equal(60_000, body.GetProperty("totalSat").GetInt64());
+        var buckets = body.GetProperty("buckets").EnumerateArray()
+            .ToDictionary(b => b.GetProperty("name").GetString()!, b => b);
+        Assert.Equal(1, buckets["fresh"].GetProperty("count").GetInt32());
+        Assert.Equal(10_000, buckets["fresh"].GetProperty("totalSat").GetInt64());
+        Assert.Equal(1, buckets["recent"].GetProperty("count").GetInt32());
+        Assert.Equal(20_000, buckets["recent"].GetProperty("totalSat").GetInt64());
+        Assert.Equal(1, buckets["stale"].GetProperty("count").GetInt32());
+        Assert.Equal(30_000, buckets["stale"].GetProperty("totalSat").GetInt64());
+        Assert.Equal(0, buckets["aging"].GetProperty("count").GetInt32());
+        Assert.Equal(0, buckets["unconfirmed"].GetProperty("count").GetInt32());
+
+        // weighted average: (10k*3 + 20k*50 + 30k*2000) / 60k ≈ 1017.17
+        var wavg = body.GetProperty("weightedAverageAgeBlocks").GetDouble();
+        var expected = Math.Round((10_000d * 3 + 20_000d * 50 + 30_000d * 2000) / 60_000d, 2);
+        Assert.Equal(expected, wavg);
+    }
+
+    [Fact]
+    public async Task CoinAgeReport_unconfirmed_utxo_lands_in_unconfirmed_bucket_and_skips_weighting()
+    {
+        // UTXO with ConfirmedHeight=null → unconfirmed. Must not drag the
+        // weighted average down to zero by being counted as "age 0".
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var info = await client.GetFromJsonAsync<JsonElement>("/api/blockchain/info");
+        var tip = info.GetProperty("blockHeight").GetInt32();
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<WalletDbContext>();
+            var addr = await db.Addresses.OrderBy(a => a.Id).FirstAsync();
+            db.Utxos.Add(new UtxoEntity
+            {
+                TxId = "c1" + new string('0', 62), OutputIndex = 0,
+                AddressId = addr.Id, AmountSat = 50_000,
+                ScriptPubKey = addr.ScriptPubKey, ConfirmedHeight = tip - 99  // 100 confs → recent
+            });
+            db.Utxos.Add(new UtxoEntity
+            {
+                TxId = "c2" + new string('0', 62), OutputIndex = 0,
+                AddressId = addr.Id, AmountSat = 25_000,
+                ScriptPubKey = addr.ScriptPubKey, ConfirmedHeight = null    // unconfirmed
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var body = await client.GetFromJsonAsync<JsonElement>("/api/wallet/coin-age-report");
+        var buckets = body.GetProperty("buckets").EnumerateArray()
+            .ToDictionary(b => b.GetProperty("name").GetString()!, b => b);
+        Assert.Equal(1, buckets["unconfirmed"].GetProperty("count").GetInt32());
+        Assert.Equal(25_000, buckets["unconfirmed"].GetProperty("totalSat").GetInt64());
+        Assert.Equal(1, buckets["recent"].GetProperty("count").GetInt32());
+
+        // weighted average uses ONLY the 50k confirmed coin: 100 confs.
+        Assert.Equal(100.0, body.GetProperty("weightedAverageAgeBlocks").GetDouble());
+    }
+
+    [Fact]
     public async Task PaymentsBatchRetry_flips_failed_back_to_pending()
     {
         // Seed a payment, cancel it (→ Failed), then batch-retry. Status

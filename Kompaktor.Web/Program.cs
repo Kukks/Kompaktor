@@ -2106,6 +2106,124 @@ app.MapGet("/api/wallet/mixing-progress", async (WalletDbContext db) =>
     });
 }).WithTags("Wallet");
 
+// Coin age report: per-UTXO confirmations and age buckets for the live
+// balance, using the current chain tip as the reference. Privacy angle:
+// long-held, never-mixed UTXOs are highly cluster-identifiable — the UI
+// can surface a "these coins have been sitting for N weeks, mix them"
+// nudge off this endpoint.
+//
+// Buckets (by confirmation count, anchored to Bitcoin's ~10-min target):
+//   unconfirmed (0 confs)                  — still in the mempool
+//   fresh       (1..5 confs, <1h)          — confirming
+//   recent      (6..143 confs, 1h..1d)     — newly usable
+//   aging       (144..1007 confs, 1d..1wk) — consider mixing
+//   stale       (≥1008 confs, ≥1wk)        — mixing recommended
+//
+// When the chain backend is disconnected we return height=null AND null
+// per-UTXO confirmations (rather than failing the whole request); every
+// UTXO lands in the 'unknown' bucket so the UI can render a warning row
+// instead of a broken card. The weightedAverageAgeBlocks number omits
+// unconfirmed/unknown coins from both numerator and denominator.
+app.MapGet("/api/wallet/coin-age-report", async (WalletDbContext db, IBlockchainBackend chain) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null)
+        return Results.Ok(new
+        {
+            chainHeight = (int?)null,
+            totalUtxos = 0,
+            totalSat = 0L,
+            weightedAverageAgeBlocks = 0.0,
+            buckets = Array.Empty<object>(),
+            utxos = Array.Empty<object>()
+        });
+
+    int? chainHeight = null;
+    try { chainHeight = await chain.GetBlockHeightAsync(); }
+    catch { /* disconnected — reported as chainHeight=null */ }
+
+    var utxos = await db.Utxos
+        .Include(u => u.Address).ThenInclude(a => a.Account)
+        .Where(u => u.Address.Account.WalletId == wallet.Id)
+        .Where(u => u.SpentByTxId == null)
+        .ToListAsync();
+
+    // Classify by age in confirmations. Returns (bucketName, ageBlocks?,
+    // confirmations?). ageBlocks==confirmations-1 only differs for our
+    // "blocks since first confirmation" intuition — we use confirmations
+    // directly for bucketing and report both.
+    static string ClassifyByConfirmations(int? confirmations)
+    {
+        if (confirmations is null) return "unknown";
+        if (confirmations <= 0) return "unconfirmed";
+        if (confirmations < 6) return "fresh";
+        if (confirmations < 144) return "recent";
+        if (confirmations < 1008) return "aging";
+        return "stale";
+    }
+
+    var rows = utxos.Select(u =>
+    {
+        int? confirmations = null;
+        if (u.ConfirmedHeight is not null && chainHeight is not null)
+            confirmations = Math.Max(0, chainHeight.Value - u.ConfirmedHeight.Value + 1);
+        else if (u.ConfirmedHeight is null)
+            confirmations = 0;
+        var bucket = ClassifyByConfirmations(confirmations);
+        return new
+        {
+            id = u.Id,
+            txId = u.TxId,
+            outputIndex = u.OutputIndex,
+            amountSat = u.AmountSat,
+            address = new Script(u.Address.ScriptPubKey).GetDestinationAddress(network)?.ToString(),
+            confirmedHeight = u.ConfirmedHeight,
+            confirmations,
+            bucket,
+            isFrozen = u.IsFrozen,
+            isCoinJoinOutput = u.IsCoinJoinOutput
+        };
+    }).ToList();
+
+    var totalSat = rows.Sum(r => r.amountSat);
+    var totalCount = rows.Count;
+
+    // Weighted average age in confirmations. Only confirmed coins count
+    // — unconfirmed have age 0 by construction and would depress the
+    // signal, 'unknown' coins can't be placed on the timeline at all.
+    var weightable = rows.Where(r => r.confirmations is > 0).ToList();
+    var weightedAverageAgeBlocks = weightable.Sum(r => r.amountSat) switch
+    {
+        0 => 0.0,
+        var w => Math.Round(
+            weightable.Sum(r => (double)r.amountSat * (r.confirmations ?? 0)) / w, 2)
+    };
+
+    string[] bucketOrder = ["unconfirmed", "fresh", "recent", "aging", "stale", "unknown"];
+    var buckets = bucketOrder.Select(name =>
+    {
+        var matches = rows.Where(r => r.bucket == name).ToList();
+        return new
+        {
+            name,
+            count = matches.Count,
+            totalSat = matches.Sum(r => r.amountSat),
+            percentOfCount = totalCount == 0 ? 0.0 : Math.Round(100.0 * matches.Count / totalCount, 2),
+            percentOfSat = totalSat == 0 ? 0.0 : Math.Round(100.0 * matches.Sum(r => r.amountSat) / totalSat, 2)
+        };
+    }).ToArray();
+
+    return Results.Ok(new
+    {
+        chainHeight,
+        totalUtxos = totalCount,
+        totalSat,
+        weightedAverageAgeBlocks,
+        buckets,
+        utxos = rows.OrderByDescending(r => r.confirmations ?? -1).ThenByDescending(r => r.amountSat)
+    });
+}).WithTags("Wallet");
+
 // Decodes a profile spec into the list of behavior traits the mixer will run
 // for that preset, each with a plain-language purpose string. Lets the UI
 // show "if you pick X, your wallet will run A, B, C and here's what each
