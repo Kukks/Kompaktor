@@ -5725,4 +5725,236 @@ public class WalletLifecycleE2ETests
         Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
     }
 
+    [Fact]
+    public async Task AddressLabel_attaches_to_owned_receive_address()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var receive = await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address");
+        var addr = receive.GetProperty("address").GetString()!;
+
+        var resp = await client.PostAsJsonAsync(
+            $"/api/wallet/addresses/{addr}/label", new { Text = "Exchange deposit" });
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var body = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("Exchange deposit", body.GetProperty("text").GetString());
+        Assert.True(body.GetProperty("id").GetInt32() > 0);
+    }
+
+    [Fact]
+    public async Task AddressLabel_trims_whitespace_in_label_text()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var receive = await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address");
+        var addr = receive.GetProperty("address").GetString()!;
+
+        var resp = await client.PostAsJsonAsync(
+            $"/api/wallet/addresses/{addr}/label", new { Text = "  Donations  " });
+        var body = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("Donations", body.GetProperty("text").GetString());
+    }
+
+    [Fact]
+    public async Task AddressLabel_rejects_empty_text()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var receive = await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address");
+        var addr = receive.GetProperty("address").GetString()!;
+
+        var resp = await client.PostAsJsonAsync(
+            $"/api/wallet/addresses/{addr}/label", new { Text = "   " });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task AddressLabel_rejects_non_owned_address()
+    {
+        // A freshly generated external key isn't in the wallet's address table.
+        // The endpoint should refuse rather than create labels against arbitrary
+        // strings — the whole point is "label MY addresses".
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var foreign = new Key().PubKey.GetAddress(ScriptPubKeyType.Segwit, Network.RegTest).ToString();
+
+        var resp = await client.PostAsJsonAsync(
+            $"/api/wallet/addresses/{foreign}/label", new { Text = "Nope" });
+        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task AddressLabel_rejects_invalid_address_format()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.PostAsJsonAsync(
+            "/api/wallet/addresses/not-an-address/label", new { Text = "x" });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task AddressLabel_get_returns_all_labels_for_address()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var receive = await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address");
+        var addr = receive.GetProperty("address").GetString()!;
+
+        await client.PostAsJsonAsync($"/api/wallet/addresses/{addr}/label", new { Text = "A" });
+        await client.PostAsJsonAsync($"/api/wallet/addresses/{addr}/label", new { Text = "B" });
+
+        var listed = await client.GetFromJsonAsync<JsonElement>(
+            $"/api/wallet/addresses/{addr}/labels");
+        Assert.Equal(addr, listed.GetProperty("address").GetString());
+        var texts = listed.GetProperty("labels").EnumerateArray()
+            .Select(l => l.GetProperty("text").GetString())
+            .ToList();
+        Assert.Contains("A", texts);
+        Assert.Contains("B", texts);
+    }
+
+    [Fact]
+    public async Task AddressLabel_get_returns_empty_for_owned_but_unlabelled()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var receive = await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address");
+        var addr = receive.GetProperty("address").GetString()!;
+
+        var listed = await client.GetFromJsonAsync<JsonElement>(
+            $"/api/wallet/addresses/{addr}/labels");
+        Assert.Equal(0, listed.GetProperty("labels").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task AddressLabel_delete_removes_label()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var receive = await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address");
+        var addr = receive.GetProperty("address").GetString()!;
+
+        var created = await client.PostAsJsonAsync(
+            $"/api/wallet/addresses/{addr}/label", new { Text = "tmp" });
+        var createdBody = await created.Content.ReadFromJsonAsync<JsonElement>();
+        var labelId = createdBody.GetProperty("id").GetInt32();
+
+        var del = await client.DeleteAsync($"/api/wallet/addresses/{addr}/label/{labelId}");
+        Assert.Equal(HttpStatusCode.OK, del.StatusCode);
+
+        var listed = await client.GetFromJsonAsync<JsonElement>(
+            $"/api/wallet/addresses/{addr}/labels");
+        Assert.Equal(0, listed.GetProperty("labels").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task AddressLabel_delete_rejects_label_id_from_different_address()
+    {
+        // Deleting label X from address A must fail if the label actually belongs
+        // to address B — otherwise a malicious or buggy caller could sweep labels
+        // across the wallet using any owned address as cover.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var addrA = (await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address"))
+            .GetProperty("address").GetString()!;
+        var addrB = (await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address?type=p2wpkh"))
+            .GetProperty("address").GetString()!;
+
+        var createdA = await client.PostAsJsonAsync(
+            $"/api/wallet/addresses/{addrA}/label", new { Text = "for-A" });
+        var labelIdA = (await createdA.Content.ReadFromJsonAsync<JsonElement>())
+            .GetProperty("id").GetInt32();
+
+        // Attempt to delete A's label via B's URL — must 404.
+        if (addrA != addrB)
+        {
+            var bogus = await client.DeleteAsync(
+                $"/api/wallet/addresses/{addrB}/label/{labelIdA}");
+            Assert.Equal(HttpStatusCode.NotFound, bogus.StatusCode);
+
+            // Confirm A still has the label after the failed cross-address delete.
+            var listed = await client.GetFromJsonAsync<JsonElement>(
+                $"/api/wallet/addresses/{addrA}/labels");
+            Assert.Equal(1, listed.GetProperty("labels").GetArrayLength());
+        }
+    }
+
+    [Fact]
+    public async Task Bip329_export_emits_owned_address_labels_as_addr_lines()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var receive = await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address");
+        var addr = receive.GetProperty("address").GetString()!;
+        await client.PostAsJsonAsync(
+            $"/api/wallet/addresses/{addr}/label", new { Text = "Payroll" });
+
+        var body = await (await client.GetAsync("/api/wallet/labels/bip329"))
+            .Content.ReadAsStringAsync();
+        var addrLines = body.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Select(l => JsonSerializer.Deserialize<JsonElement>(l))
+            .Where(e => e.GetProperty("type").GetString() == "addr")
+            .ToList();
+
+        var payroll = addrLines.SingleOrDefault(e => e.GetProperty("ref").GetString() == addr);
+        Assert.Equal(JsonValueKind.Object, payroll.ValueKind);
+        Assert.Equal("Payroll", payroll.GetProperty("label").GetString());
+    }
+
+    [Fact]
+    public async Task Bip329_import_addr_matching_owned_address_stores_as_address_label()
+    {
+        // When imported addr ref matches an address the wallet already owns,
+        // store it as a LabelEntity(Address) so the read-side privacy code sees
+        // it — not as an AddressBook entry (which is for counterparties).
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var receive = await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address");
+        var owned = receive.GetProperty("address").GetString()!;
+
+        var jsonl = JsonSerializer.Serialize(new { type = "addr", @ref = owned, label = "Imported" });
+        var resp = await client.PostAsync("/api/wallet/labels/bip329",
+            new StringContent(jsonl, System.Text.Encoding.UTF8, "application/jsonl"));
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var body = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(1, body.GetProperty("addrImported").GetInt32());
+
+        // Label must now be queryable via the address-labels GET endpoint —
+        // proves it went to LabelEntity(Address) not AddressBook.
+        var listed = await client.GetFromJsonAsync<JsonElement>(
+            $"/api/wallet/addresses/{owned}/labels");
+        var texts = listed.GetProperty("labels").EnumerateArray()
+            .Select(l => l.GetProperty("text").GetString())
+            .ToList();
+        Assert.Contains("Imported", texts);
+
+        // And the address book should be empty — not the place for owned addrs.
+        var book = await client.GetFromJsonAsync<JsonElement>("/api/address-book");
+        Assert.DoesNotContain(book.EnumerateArray(),
+            e => e.GetProperty("address").GetString() == owned);
+    }
+
 }

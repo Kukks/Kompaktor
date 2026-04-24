@@ -787,6 +787,126 @@ app.MapDelete("/api/dashboard/transactions/{txId}/note/{noteId}", async (
     return Results.Ok(new { deleted = noteId });
 }).WithTags("Dashboard");
 
+// Label an owned receive/change address. Counterparty (non-owned) labels go
+// through /api/address-book. This endpoint is specifically for labelling the
+// wallet's OWN addresses so downstream code (AnonymityScorer, coin selection,
+// cluster analysis) can surface meaningful names like "Exchange deposit" or
+// "Donations" alongside UTXOs. We look up by bitcoin-address string — stable
+// external identifier — then store under the AddressEntity's int PK.
+app.MapPost("/api/wallet/addresses/{address}/label", async (
+    string address, WalletDbContext db, HttpContext ctx, DashboardEventBus bus) =>
+{
+    var body = await ctx.Request.ReadFromJsonAsync<AddressLabelRequest>();
+    if (body is null || string.IsNullOrWhiteSpace(body.Text))
+        return Results.BadRequest("Label text is required");
+
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.BadRequest("No wallet found");
+
+    byte[] scriptBytes;
+    try
+    {
+        scriptBytes = BitcoinAddress.Create(address, network).ScriptPubKey.ToBytes();
+    }
+    catch
+    {
+        return Results.BadRequest("Invalid bitcoin address");
+    }
+
+    var addrEntity = await db.Addresses
+        .Include(a => a.Account)
+        .Where(a => a.Account.WalletId == wallet.Id)
+        .FirstOrDefaultAsync(a => a.ScriptPubKey == scriptBytes);
+    if (addrEntity is null)
+        return Results.NotFound("Address is not owned by this wallet");
+
+    var entity = new LabelEntity
+    {
+        EntityType = "Address",
+        EntityId = addrEntity.Id.ToString(),
+        Text = body.Text.Trim()
+    };
+    db.Labels.Add(entity);
+    await db.SaveChangesAsync();
+    bus.Publish("addresses");
+
+    return Results.Ok(new { entity.Id, entity.Text, address });
+}).WithTags("Wallet");
+
+// List all labels attached to a specific owned address. Returns an empty
+// array if the address is owned but unlabelled (so callers can distinguish
+// "no labels" from "not found / not ours").
+app.MapGet("/api/wallet/addresses/{address}/labels", async (
+    string address, WalletDbContext db) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.BadRequest("No wallet found");
+
+    byte[] scriptBytes;
+    try
+    {
+        scriptBytes = BitcoinAddress.Create(address, network).ScriptPubKey.ToBytes();
+    }
+    catch
+    {
+        return Results.BadRequest("Invalid bitcoin address");
+    }
+
+    var addrEntity = await db.Addresses
+        .Include(a => a.Account)
+        .Where(a => a.Account.WalletId == wallet.Id)
+        .FirstOrDefaultAsync(a => a.ScriptPubKey == scriptBytes);
+    if (addrEntity is null)
+        return Results.NotFound("Address is not owned by this wallet");
+
+    var addrId = addrEntity.Id.ToString();
+    var labels = await db.Labels
+        .Where(l => l.EntityType == "Address" && l.EntityId == addrId)
+        .OrderBy(l => l.Id)
+        .Select(l => new { l.Id, l.Text, l.CreatedAt })
+        .ToListAsync();
+
+    return Results.Ok(new { address, labels });
+}).WithTags("Wallet");
+
+// Remove a label from an owned address. The labelId is validated to actually
+// belong to that address so a stale labelId from a different entity can't
+// accidentally delete the wrong row.
+app.MapDelete("/api/wallet/addresses/{address}/label/{labelId}", async (
+    string address, int labelId, WalletDbContext db, DashboardEventBus bus) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.BadRequest("No wallet found");
+
+    byte[] scriptBytes;
+    try
+    {
+        scriptBytes = BitcoinAddress.Create(address, network).ScriptPubKey.ToBytes();
+    }
+    catch
+    {
+        return Results.BadRequest("Invalid bitcoin address");
+    }
+
+    var addrEntity = await db.Addresses
+        .Include(a => a.Account)
+        .Where(a => a.Account.WalletId == wallet.Id)
+        .FirstOrDefaultAsync(a => a.ScriptPubKey == scriptBytes);
+    if (addrEntity is null)
+        return Results.NotFound("Address is not owned by this wallet");
+
+    var label = await db.Labels.FindAsync(labelId);
+    if (label is null
+        || label.EntityType != "Address"
+        || label.EntityId != addrEntity.Id.ToString())
+        return Results.NotFound("Label not found on this address");
+
+    db.Labels.Remove(label);
+    await db.SaveChangesAsync();
+    bus.Publish("addresses");
+    return Results.Ok(new { deleted = labelId });
+}).WithTags("Wallet");
+
 // Coin control: freeze/unfreeze UTXOs
 app.MapPost("/api/coin-control/freeze/{utxoId}", async (int utxoId, WalletDbContext db, DashboardEventBus bus) =>
 {
@@ -3293,6 +3413,44 @@ app.MapGet("/api/wallet/labels/bip329", async (WalletDbContext db) =>
         }
     }
 
+    // addr (owned): labels the user attached to their own receive/change
+    // addresses via /api/wallet/addresses/{address}/label. Internal EntityId
+    // is the AddressEntity int PK, so we join back to Addresses → derive the
+    // bitcoin-address string from ScriptPubKey for BIP329's addr ref format.
+    // Merged into the same "addr" type as the address book — BIP329 has no
+    // distinction between owned and counterparty addresses.
+    var ownedAddrLabels = await db.Labels
+        .Where(l => l.EntityType == "Address")
+        .ToListAsync();
+    if (ownedAddrLabels.Count > 0)
+    {
+        var addrIds = ownedAddrLabels
+            .Select(l => int.TryParse(l.EntityId, out var id) ? id : 0)
+            .Where(id => id > 0)
+            .Distinct()
+            .ToList();
+        var ownedAddrs = await db.Addresses
+            .Include(a => a.Account)
+            .Where(a => a.Account.WalletId == wallet.Id && addrIds.Contains(a.Id))
+            .ToListAsync();
+        var addrById = ownedAddrs.ToDictionary(a => a.Id, a =>
+        {
+            try { return new Script(a.ScriptPubKey).GetDestinationAddress(network)?.ToString(); }
+            catch { return null; }
+        });
+        foreach (var group in ownedAddrLabels.GroupBy(l => l.EntityId))
+        {
+            if (!int.TryParse(group.Key, out var addrId)) continue;
+            if (!addrById.TryGetValue(addrId, out var addrStr) || string.IsNullOrEmpty(addrStr)) continue;
+            lines.Add(JsonSerializer.Serialize(new
+            {
+                type = "addr",
+                @ref = addrStr,
+                label = string.Join(" | ", group.Select(l => l.Text))
+            }, jsonOpts));
+        }
+    }
+
     // xpub: one line per account-level xpub. The label is the account's purpose
     // so the consuming wallet can tell P2TR from P2WPKH at a glance.
     var accounts = await db.Accounts
@@ -3374,8 +3532,34 @@ app.MapPost("/api/wallet/labels/bip329", async (WalletDbContext db, HttpContext 
         {
             case "addr":
             {
-                try { BitcoinAddress.Create(refVal, network); }
+                byte[] scriptBytes;
+                try { scriptBytes = BitcoinAddress.Create(refVal, network).ScriptPubKey.ToBytes(); }
                 catch { skipped++; continue; }
+
+                // Owned addresses get a LabelEntity(Address) so read-side
+                // privacy logic sees them. Counterparty addresses go into
+                // the address book. BIP329 makes no distinction so we
+                // disambiguate ourselves at import time.
+                var owned = await db.Addresses
+                    .Include(a => a.Account)
+                    .Where(a => a.Account.WalletId == wallet.Id)
+                    .FirstOrDefaultAsync(a => a.ScriptPubKey == scriptBytes);
+                if (owned is not null)
+                {
+                    var ownedIdStr = owned.Id.ToString();
+                    var existsOwned = await db.Labels.AnyAsync(l =>
+                        l.EntityType == "Address" && l.EntityId == ownedIdStr && l.Text == label);
+                    if (existsOwned) { skipped++; continue; }
+                    db.Labels.Add(new LabelEntity
+                    {
+                        EntityType = "Address",
+                        EntityId = ownedIdStr,
+                        Text = label
+                    });
+                    addrAdded++;
+                    break;
+                }
+
                 var exists = await db.AddressBook.AnyAsync(a =>
                     a.WalletId == wallet.Id && a.Address == refVal);
                 if (exists) { skipped++; continue; }
@@ -3703,6 +3887,7 @@ record CreateWalletRequest(string Passphrase, string? Name = null, int? WordCoun
 record MixingStartRequest(string Passphrase, string? CoordinatorUrl = null, string? TorSocksHost = null, int? TorSocksPort = null, bool AllowUnconfirmedCoinjoinReuse = false, string? Profile = null);
 record AddressBookRequest(string Label, string Address);
 record TransactionNoteRequest(string Text);
+record AddressLabelRequest(string Text);
 record SendRequest(string Destination, long AmountSat, long FeeRateSatPerVb = 2, string Strategy = "PrivacyFirst", string Passphrase = "", string[]? SelectedOutpoints = null);
 record BroadcastPsbtRequest(string SignedPsbt);
 record CreatePaymentRequest(string Destination, long AmountSat, bool Interactive = true, bool Urgent = false, string? Label = null, int? ExpiryMinutes = null, DateTimeOffset? ScheduledAt = null, int? MaxRetries = null);
