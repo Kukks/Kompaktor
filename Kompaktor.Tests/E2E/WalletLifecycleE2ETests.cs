@@ -6363,6 +6363,89 @@ public class WalletLifecycleE2ETests
     }
 
     [Fact]
+    public async Task PlanSend_warns_on_co_spend_across_labelled_clusters()
+    {
+        // Co-spending UTXOs from two user-defined clusters creates a
+        // chain-observable link between what the user has deliberately kept
+        // separate. The preview must surface this before the user signs — it's
+        // the natural complement to the cluster annotations we put on the
+        // dashboard UTXO rows.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var a = await SeedUtxoAsync(factory, client, amountSat: 200_000, tag: 0xF7);
+        var b = await SeedUtxoAsync(factory, client, amountSat: 150_000, tag: 0xF8);
+        await client.PostAsJsonAsync($"/api/coin-control/label/{a}", new { Text = "Rent" });
+        await client.PostAsJsonAsync($"/api/coin-control/label/{b}", new { Text = "Vacation" });
+
+        var utxos = await client.GetFromJsonAsync<JsonElement>("/api/dashboard/utxos");
+        var byId = utxos.EnumerateArray().ToDictionary(u => u.GetProperty("id").GetInt32());
+        var outpoints = new[] { a, b }
+            .Select(id => $"{byId[id].GetProperty("txId").GetString()}:{byId[id].GetProperty("outputIndex").GetInt32()}")
+            .ToArray();
+
+        var dest = (await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address"))
+            .GetProperty("address").GetString()!;
+
+        var resp = await client.PostAsJsonAsync("/api/dashboard/plan-send", new
+        {
+            Destination = dest,
+            AmountSat = 200_000,
+            FeeRateSatPerVb = 2,
+            Strategy = "PrivacyFirst",
+            SelectedOutpoints = outpoints
+        });
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var plan = await resp.Content.ReadFromJsonAsync<JsonElement>();
+
+        var warnings = plan.GetProperty("warnings").EnumerateArray()
+            .Select(w => w.GetString() ?? "").ToList();
+        Assert.Contains(warnings, w =>
+            w.Contains("labelled clusters", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task PlanSend_no_cluster_warning_when_spending_from_one_cluster()
+    {
+        // Spending two UTXOs that share a label is in-compartment — no new
+        // link is revealed. The cross-cluster warning should NOT fire.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var a = await SeedUtxoAsync(factory, client, amountSat: 200_000, tag: 0xF9);
+        var b = await SeedUtxoAsync(factory, client, amountSat: 150_000, tag: 0xFA);
+        await client.PostAsJsonAsync($"/api/coin-control/label/{a}", new { Text = "Savings" });
+        await client.PostAsJsonAsync($"/api/coin-control/label/{b}", new { Text = "Savings" });
+
+        var utxos = await client.GetFromJsonAsync<JsonElement>("/api/dashboard/utxos");
+        var byId = utxos.EnumerateArray().ToDictionary(u => u.GetProperty("id").GetInt32());
+        var outpoints = new[] { a, b }
+            .Select(id => $"{byId[id].GetProperty("txId").GetString()}:{byId[id].GetProperty("outputIndex").GetInt32()}")
+            .ToArray();
+
+        var dest = (await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address"))
+            .GetProperty("address").GetString()!;
+
+        var resp = await client.PostAsJsonAsync("/api/dashboard/plan-send", new
+        {
+            Destination = dest,
+            AmountSat = 200_000,
+            FeeRateSatPerVb = 2,
+            Strategy = "PrivacyFirst",
+            SelectedOutpoints = outpoints
+        });
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var plan = await resp.Content.ReadFromJsonAsync<JsonElement>();
+
+        var warnings = plan.GetProperty("warnings").EnumerateArray()
+            .Select(w => w.GetString() ?? "").ToList();
+        Assert.DoesNotContain(warnings, w =>
+            w.Contains("labelled clusters", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
     public async Task DashboardUtxos_cluster_flags_external_source_on_exchange_prefix()
     {
         // An "Exchange:" / "KYC:" / "P2P:" label taints the cluster — the UI

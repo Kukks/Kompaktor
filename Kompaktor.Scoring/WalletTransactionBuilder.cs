@@ -120,6 +120,37 @@ public class WalletTransactionBuilder
                 warnings.Add("Script type mismatch between inputs and destination — change output may be identifiable by type");
         }
 
+        // Privacy warning: co-spending across labelled clusters. Each cluster
+        // is a user-defined privacy compartment — spending from two of them in
+        // one tx creates a chain-observable link ("both of these belong to one
+        // wallet"). Only labelled clusters count: an unlabelled singleton has
+        // no external identity to leak. The separate exposed/unexposed warning
+        // above covers a different axis (coordinator-observed reuse) — this one
+        // catches the user's own deliberate tagging being cross-contaminated.
+        var allUtxos = await _db.Utxos
+            .Include(u => u.Address)
+            .ThenInclude(a => a.Account)
+            .Where(u => u.Address.Account.WalletId == walletId)
+            .Where(u => u.SpentByTxId == null)
+            .ToListAsync(ct);
+        var allLabels = await _db.Labels
+            .Where(l => l.EntityType == "Utxo" || l.EntityType == "Address")
+            .ToListAsync(ct);
+        var allCoinjoins = await _db.CoinJoinRecords.ToListAsync(ct);
+        var clusters = new LabelClusterAnalyzer()
+            .AnalyzeClusters(allUtxos, allLabels, allCoinjoins);
+
+        var selectedIds = selection.Selected.Select(s => s.Utxo.Id).ToHashSet();
+        var touched = clusters
+            .Where(c => c.Labels.Count > 0 && c.UtxoIds.Any(id => selectedIds.Contains(id)))
+            .ToList();
+        if (touched.Count > 1)
+        {
+            var names = string.Join(" | ", touched.Select(c => string.Join(",", c.Labels)));
+            warnings.Add(
+                $"Co-spending across {touched.Count} labelled clusters ({names}) — creates a chain-observable link between your privacy compartments");
+        }
+
         return new TransactionPlan(
             tx,
             coins,
