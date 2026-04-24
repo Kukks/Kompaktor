@@ -863,11 +863,12 @@
                             <th>Block</th>
                             <th>UTXOs</th>
                             <th>Status</th>
+                            <th>Notes</th>
                             <th>Action</th>
                         </tr>
                     </thead>
                     <tbody id="txBody">
-                        <tr><td colspan="6" class="empty">Loading...</td></tr>
+                        <tr><td colspan="7" class="empty">Loading...</td></tr>
                     </tbody>
                 </table>
             </section>
@@ -1926,21 +1927,64 @@
             const txs = await fetchJson('/api/dashboard/transactions');
             const body = document.getElementById('txBody');
             if (!txs || txs.length === 0) {
-                body.innerHTML = '<tr><td colspan="6" class="empty">No transactions</td></tr>';
+                body.innerHTML = '<tr><td colspan="7" class="empty">No transactions</td></tr>';
                 return;
             }
             body.innerHTML = txs.map(t => {
                 const isUnconfirmed = !t.confirmedHeight;
                 const bumpBtn = isUnconfirmed ? `<button class="refresh-btn" style="font-size:11px;padding:2px 8px" onclick="showFeeBump('${esc(t.txId)}')">Fee Bump</button>` : '-';
+                const notes = Array.isArray(t.notes) ? t.notes : [];
+                const notesHtml = notes.map(n =>
+                    `<span style="display:inline-block;background:var(--bg-elevated);border:1px solid var(--border);border-radius:4px;padding:2px 6px;margin:1px 2px;font-size:11px">${esc(n.text)} <a href="#" onclick="deleteTransactionNote('${esc(t.txId)}',${n.id});return false" style="color:var(--text-muted);text-decoration:none;margin-left:4px" title="Delete note">&times;</a></span>`
+                ).join('');
+                const addBtn = `<button class="refresh-btn" style="font-size:11px;padding:2px 8px;margin-left:4px" onclick="addTransactionNote('${esc(t.txId)}')">+ Note</button>`;
                 return `<tr>
                 <td class="truncate">${txLink(t.txId)}</td>
                 <td>${t.amountBtc.toFixed(8)}</td>
                 <td>${t.confirmedHeight ?? '<span style="color:var(--yellow)">pending</span>'}</td>
                 <td>${t.utxoCount}</td>
                 <td><span class="status-badge ${t.isSpent ? 'status-failed' : 'status-completed'}">${t.isSpent ? 'Spent' : 'Received'}</span></td>
+                <td style="max-width:260px">${notesHtml}${addBtn}</td>
                 <td>${bumpBtn}</td>
             </tr>`;
             }).join('');
+        }
+
+        async function addTransactionNote(txId) {
+            const text = prompt('Add a note for this transaction (private, stored locally):');
+            if (!text || !text.trim()) return;
+            try {
+                const res = await fetch(`/api/dashboard/transactions/${encodeURIComponent(txId)}/note`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text: text.trim() })
+                });
+                if (!res.ok) {
+                    const err = await res.text();
+                    showToast('Could not add note: ' + err, 'error');
+                    return;
+                }
+                showToast('Note added', 'success');
+                await loadTransactions();
+            } catch (err) {
+                showToast('Add note failed: ' + err.message, 'error');
+            }
+        }
+
+        async function deleteTransactionNote(txId, noteId) {
+            if (!confirm('Delete this note?')) return;
+            try {
+                const res = await fetch(`/api/dashboard/transactions/${encodeURIComponent(txId)}/note/${noteId}`, {
+                    method: 'DELETE'
+                });
+                if (!res.ok) {
+                    showToast('Could not delete note', 'error');
+                    return;
+                }
+                await loadTransactions();
+            } catch (err) {
+                showToast('Delete note failed: ' + err.message, 'error');
+            }
         }
 
         async function showFeeBump(txId) {
@@ -3484,6 +3528,12 @@
                 loadPaymentStats();
                 logEvent('payments');
                 notifyTab('payments');
+            });
+
+            source.addEventListener('transactions', () => {
+                loadTransactions();
+                logEvent('transactions');
+                notifyTab('overview');
             });
 
             source.addEventListener('privacy', () => {

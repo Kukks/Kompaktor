@@ -572,6 +572,16 @@ app.MapGet("/api/dashboard/transactions", async (
         .Take(pageSize)
         .ToListAsync();
 
+    // Bulk-fetch notes for the visible page in one round-trip so the list can
+    // render them inline — avoids N+1 and a per-row drill-down for the user.
+    var pageTxIds = txGroups.Select(g => g.TxId).ToList();
+    var notesByTxId = (await db.Labels
+            .Where(l => l.EntityType == "Transaction" && pageTxIds.Contains(l.EntityId))
+            .Select(l => new { l.Id, l.EntityId, l.Text })
+            .ToListAsync())
+        .GroupBy(l => l.EntityId)
+        .ToDictionary(g => g.Key, g => g.Select(l => new { id = l.Id, text = l.Text }).ToArray());
+
     return Results.Ok(txGroups.Select(g => new
     {
         txId = g.TxId,
@@ -580,7 +590,8 @@ app.MapGet("/api/dashboard/transactions", async (
         confirmedHeight = g.MaxHeight,
         isSpent = g.AnySpent,
         utxoCount = g.UtxoCount,
-        type = g.AnySpent ? "spent" : "received"
+        type = g.AnySpent ? "spent" : "received",
+        notes = notesByTxId.TryGetValue(g.TxId, out var n) ? n : []
     }));
 }).WithTags("Dashboard");
 

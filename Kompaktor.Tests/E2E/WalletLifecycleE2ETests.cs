@@ -4924,4 +4924,89 @@ public class WalletLifecycleE2ETests
         var qrBadResp = await client.GetAsync("/api/wallet/receive-qr?type=junk");
         Assert.Equal(HttpStatusCode.BadRequest, qrBadResp.StatusCode);
     }
+
+    [Fact]
+    public async Task Transaction_note_add_and_delete_round_trip()
+    {
+        // Notes live on LabelEntity with EntityType="Transaction". The list
+        // endpoint must surface them inline so the UI can render without a
+        // per-row drill-down — this test pins that contract.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        await SeedUtxoAsync(factory, client, amountSat: 100_000, tag: 0xC1);
+
+        // Any UTXO's txid is a tx the wallet 'touches', so the note POST
+        // guard will accept it.
+        var utxos = await client.GetFromJsonAsync<JsonElement>("/api/dashboard/utxos");
+        var txId = utxos.EnumerateArray().First().GetProperty("txId").GetString()!;
+
+        // Baseline: list shows no notes for this tx.
+        var baseline = await client.GetFromJsonAsync<JsonElement>("/api/dashboard/transactions");
+        var baselineRow = baseline.EnumerateArray()
+            .First(t => t.GetProperty("txId").GetString() == txId);
+        Assert.Empty(baselineRow.GetProperty("notes").EnumerateArray());
+
+        // Add a note.
+        var addResp = await client.PostAsJsonAsync(
+            $"/api/dashboard/transactions/{txId}/note", new { Text = "rent payment — April" });
+        Assert.Equal(HttpStatusCode.OK, addResp.StatusCode);
+        var added = await addResp.Content.ReadFromJsonAsync<JsonElement>();
+        var noteId = added.GetProperty("id").GetInt32();
+        Assert.Equal("rent payment — April", added.GetProperty("text").GetString());
+
+        // List now includes the note inline.
+        var withNote = await client.GetFromJsonAsync<JsonElement>("/api/dashboard/transactions");
+        var withNoteRow = withNote.EnumerateArray()
+            .First(t => t.GetProperty("txId").GetString() == txId);
+        var notes = withNoteRow.GetProperty("notes").EnumerateArray().ToList();
+        Assert.Single(notes);
+        Assert.Equal(noteId, notes[0].GetProperty("id").GetInt32());
+        Assert.Equal("rent payment — April", notes[0].GetProperty("text").GetString());
+
+        // Delete it.
+        var delResp = await client.DeleteAsync($"/api/dashboard/transactions/{txId}/note/{noteId}");
+        Assert.Equal(HttpStatusCode.OK, delResp.StatusCode);
+
+        // Gone.
+        var after = await client.GetFromJsonAsync<JsonElement>("/api/dashboard/transactions");
+        var afterRow = after.EnumerateArray()
+            .First(t => t.GetProperty("txId").GetString() == txId);
+        Assert.Empty(afterRow.GetProperty("notes").EnumerateArray());
+    }
+
+    [Fact]
+    public async Task Transaction_note_multiple_notes_all_surface_in_list()
+    {
+        // Users can pile on multiple observations ("client X invoice",
+        // "paid via coinjoin") — list must bring them all back, not just the
+        // first.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        await SeedUtxoAsync(factory, client, amountSat: 50_000, tag: 0xC2);
+        var utxos = await client.GetFromJsonAsync<JsonElement>("/api/dashboard/utxos");
+        var txId = utxos.EnumerateArray().First().GetProperty("txId").GetString()!;
+
+        var labels = new[] { "first note", "second note", "third note" };
+        foreach (var text in labels)
+        {
+            var r = await client.PostAsJsonAsync(
+                $"/api/dashboard/transactions/{txId}/note", new { Text = text });
+            Assert.Equal(HttpStatusCode.OK, r.StatusCode);
+        }
+
+        var list = await client.GetFromJsonAsync<JsonElement>("/api/dashboard/transactions");
+        var row = list.EnumerateArray()
+            .First(t => t.GetProperty("txId").GetString() == txId);
+        var notes = row.GetProperty("notes").EnumerateArray()
+            .Select(n => n.GetProperty("text").GetString())
+            .ToList();
+        Assert.Equal(3, notes.Count);
+        foreach (var text in labels)
+            Assert.Contains(text, notes);
+    }
+
 }
