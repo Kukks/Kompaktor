@@ -1747,9 +1747,11 @@ public class WalletLifecycleE2ETests
         var addr = (await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address"))
             .GetProperty("address").GetString()!;
 
-        // Schedule ~2s in the future. The project's global JSON config encodes
-        // DateTimeOffset as unix-seconds, so we send an integer to match.
-        var dueAtUnix = DateTimeOffset.UtcNow.AddSeconds(2).ToUnixTimeSeconds();
+        // Schedule far in the future so the dormant window is deterministic.
+        // We force activation via an explicit endpoint below rather than waiting
+        // on wall-clock elapse — that keeps the test stable on slow CI runners
+        // where polling-on-side-effects has proved flaky.
+        var dueAtUnix = DateTimeOffset.UtcNow.AddHours(1).ToUnixTimeSeconds();
 
         var createResp = await client.PostAsJsonAsync("/api/payments/send", new
         {
@@ -1764,14 +1766,58 @@ public class WalletLifecycleE2ETests
         Assert.Equal("Scheduled", created.GetProperty("status").GetString());
         Assert.True(created.TryGetProperty("scheduledAt", out var sched) && sched.ValueKind != JsonValueKind.Null);
 
-        // Until the scheduled time elapses, the manager must still report it dormant.
+        // Status-read alone must not activate a dormant payment — its ScheduledAt
+        // is still an hour away. This confirms the dormant guard holds.
         var early = await client.GetFromJsonAsync<JsonElement>($"/api/payments/{paymentId}/status");
         Assert.Equal("Scheduled", early.GetProperty("status").GetString());
 
-        // Poll /api/payments (which drives ActivateScheduledPaymentsAsync) until
-        // the payment flips to Pending.
-        var activated = await WaitForPaymentStatusAsync(client, paymentId, "Pending", timeoutSeconds: 12);
+        // Explicit activation: the user (or test) says "run it now".
+        var activateResp = await client.PostAsync($"/api/payments/{paymentId}/activate", null);
+        Assert.Equal(HttpStatusCode.OK, activateResp.StatusCode);
+        var activated = await activateResp.Content.ReadFromJsonAsync<JsonElement>();
         Assert.Equal("Pending", activated.GetProperty("status").GetString());
+
+        // DB state must match: status flipped and ScheduledAt cleared.
+        var after = await client.GetFromJsonAsync<JsonElement>($"/api/payments/{paymentId}/status");
+        Assert.Equal("Pending", after.GetProperty("status").GetString());
+        Assert.Equal(JsonValueKind.Null, after.GetProperty("scheduledAt").ValueKind);
+    }
+
+    [Fact]
+    public async Task Scheduled_payment_activate_rejects_non_scheduled_payment()
+    {
+        // A Pending payment isn't dormant, so "activate" should refuse to run.
+        // Keeps the endpoint from accidentally re-triggering payments in other
+        // lifecycle states (e.g. Committed) where it would race the manager.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+        var addr = (await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address"))
+            .GetProperty("address").GetString()!;
+
+        var createResp = await client.PostAsJsonAsync("/api/payments/send", new
+        {
+            Destination = addr,
+            AmountSat = 12_345L
+        });
+        var paymentId = (await createResp.Content.ReadFromJsonAsync<JsonElement>())
+            .GetProperty("id").GetString()!;
+
+        var activateResp = await client.PostAsync($"/api/payments/{paymentId}/activate", null);
+        Assert.Equal(HttpStatusCode.BadRequest, activateResp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Scheduled_payment_activate_returns_not_found_for_missing_id()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.PostAsync("/api/payments/does-not-exist/activate", null);
+        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
     }
 
     [Fact]

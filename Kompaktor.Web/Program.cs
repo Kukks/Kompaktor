@@ -2154,6 +2154,39 @@ app.MapPost("/api/payments/{paymentId}/retry", async (string paymentId, WalletDb
     return Results.Ok(new { paymentId, status = "pending", retryCount = 0 });
 }).WithTags("Payments");
 
+// Force-activate a Scheduled payment immediately, bypassing its ScheduledAt.
+// The dormant/active flip normally happens as a side-effect of the payment
+// list sweep; this endpoint lets the user say "run it now" explicitly — and
+// gives tests a deterministic trigger instead of polling.
+app.MapPost("/api/payments/{paymentId}/activate", async (
+    string paymentId, WalletDbContext db, DashboardEventBus bus) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.BadRequest("No wallet found");
+
+    var entity = await db.PendingPayments.FindAsync(paymentId);
+    if (entity is null || entity.WalletId != wallet.Id) return Results.NotFound();
+
+    if (entity.Status != "Scheduled")
+        return Results.BadRequest(
+            $"Only Scheduled payments can be activated (current status: {entity.Status})");
+
+    entity.Status = "Pending";
+    entity.ScheduledAt = null;
+    await db.SaveChangesAsync();
+
+    bus.Publish("payments");
+
+    try
+    {
+        var webhookSvc = new PaymentWebhookService(db, wallet.Id);
+        await webhookSvc.DeliverAsync(entity, "Activated");
+    }
+    catch { }
+
+    return Results.Ok(new { paymentId, status = "Pending" });
+}).WithTags("Payments");
+
 // Rename/clear a payment's label after the fact. Label is user-private
 // display text — editing it never affects protocol behavior. Allowed at
 // any status because the user might classify historical payments for
