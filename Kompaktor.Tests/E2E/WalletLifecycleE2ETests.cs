@@ -6905,6 +6905,48 @@ public class WalletLifecycleE2ETests
     }
 
     [Fact]
+    public async Task PaymentsBatchRetry_flips_failed_back_to_pending()
+    {
+        // Seed a payment, cancel it (→ Failed), then batch-retry. Status
+        // must return to Pending and the response must count what moved.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+        var receive = await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address");
+        var addr = receive.GetProperty("address").GetString()!;
+
+        var createResp = await client.PostAsJsonAsync("/api/payments/send", new
+        {
+            Destination = addr, AmountSat = 1000, Label = "retry-me"
+        });
+        var created = await createResp.Content.ReadFromJsonAsync<JsonElement>();
+        var id = created.GetProperty("id").GetString()!;
+        await client.DeleteAsync($"/api/payments/{id}");
+
+        var resp = await client.PostAsync("/api/payments/batch-retry", null);
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var body = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(1, body.GetProperty("retried").GetInt32());
+
+        var status = await client.GetFromJsonAsync<JsonElement>($"/api/payments/{id}/status");
+        Assert.Equal("Pending", status.GetProperty("status").GetString());
+    }
+
+    [Fact]
+    public async Task PaymentsBatchRetry_no_op_when_nothing_failed()
+    {
+        // Fresh wallet, no payments. Endpoint must return retried=0 and
+        // quietly skip the webhook fan-out and event publish.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.PostAsync("/api/payments/batch-retry", null);
+        var body = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(0, body.GetProperty("retried").GetInt32());
+    }
+
+    [Fact]
     public async Task PaymentsBulkCancel_cancels_all_pending_outbound()
     {
         // Seed three outbound payments. Bulk-cancel must flip all three to

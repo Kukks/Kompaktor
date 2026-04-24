@@ -2820,6 +2820,39 @@ app.MapPost("/api/payments/receive", async (WalletDbContext db, HttpContext ctx,
     }
 }).WithTags("Payments");
 
+// Bulk retry: flips every Failed outbound payment back to Pending and
+// resets RetryCount so the retry budget is fresh. Symmetric counterpart
+// to bulk-cancel. Intended for "I fixed the thing that was failing them,
+// give them all another shot" workflows (restored coordinator, fresh
+// funding, etc). Fires one ManuallyRetried webhook per row so receivers
+// can notice the reset and consumers reuse the single-retry handler.
+app.MapPost("/api/payments/batch-retry", async (WalletDbContext db, DashboardEventBus bus) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.BadRequest("No wallet found");
+
+    var failed = await db.PendingPayments
+        .Where(p => p.WalletId == wallet.Id && p.Direction == "Outbound" && p.Status == "Failed")
+        .ToListAsync();
+
+    foreach (var entity in failed)
+    {
+        entity.Status = "Pending";
+        entity.RetryCount = 0;
+    }
+    await db.SaveChangesAsync();
+
+    if (failed.Count > 0)
+    {
+        bus.Publish("payments");
+        var webhookSvc = new PaymentWebhookService(db, wallet.Id);
+        foreach (var entity in failed)
+            _ = webhookSvc.DeliverAsync(entity, "ManuallyRetried");
+    }
+
+    return Results.Ok(new { retried = failed.Count });
+}).WithTags("Payments");
+
 // Bulk cancel: loops over every cancellable outbound payment on the wallet
 // and flips it to Failed. Skips rows that are already Completed or Committed
 // (those are irreversible). Fires one webhook per cancelled payment so each
