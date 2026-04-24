@@ -6816,6 +6816,90 @@ public class WalletLifecycleE2ETests
     }
 
     [Fact]
+    public async Task BehaviorTraitsDiff_requires_to_parameter()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.GetAsync("/api/wallet/behavior-traits-diff");
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+
+        var unknown = await client.GetAsync("/api/wallet/behavior-traits-diff?to=Bogus");
+        Assert.Equal(HttpStatusCode.BadRequest, unknown.StatusCode);
+    }
+
+    [Fact]
+    public async Task BehaviorTraitsDiff_identical_profiles_report_no_change()
+    {
+        // from=Balanced, to=Balanced: the diff must collapse to an empty shape
+        // with changed=false. UI uses this to disable the "confirm switch" CTA.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var body = await client.GetFromJsonAsync<JsonElement>(
+            "/api/wallet/behavior-traits-diff?from=Balanced&to=Balanced");
+        Assert.Equal("Balanced", body.GetProperty("from").GetString());
+        Assert.Equal("Balanced", body.GetProperty("to").GetString());
+        Assert.False(body.GetProperty("changed").GetBoolean());
+        Assert.Equal(0, body.GetProperty("changes").GetArrayLength());
+        Assert.Equal(0, body.GetProperty("addedTraits").GetArrayLength());
+        Assert.Equal(0, body.GetProperty("removedTraits").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task BehaviorTraitsDiff_balanced_to_consolidator_reports_specific_changes()
+    {
+        // Balanced (10/30/interactive=true) → Consolidator (25/30/interactive=false):
+        // Only ConsolidationThreshold and InteractivePaymentsEnabled differ, so
+        // changes has exactly two rows. InteractivePayments flips OFF so the
+        // two interactive traits go to removedTraits. SelfSendDelay unchanged
+        // (both 30) → not in changes.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var body = await client.GetFromJsonAsync<JsonElement>(
+            "/api/wallet/behavior-traits-diff?from=Balanced&to=Consolidator");
+        Assert.True(body.GetProperty("changed").GetBoolean());
+
+        var changes = body.GetProperty("changes").EnumerateArray()
+            .ToDictionary(c => c.GetProperty("attribute").GetString()!, c => c);
+        Assert.Equal(2, changes.Count);
+        Assert.Equal(10, changes["ConsolidationThreshold"].GetProperty("from").GetInt32());
+        Assert.Equal(25, changes["ConsolidationThreshold"].GetProperty("to").GetInt32());
+        Assert.True(changes["InteractivePaymentsEnabled"].GetProperty("from").GetBoolean());
+        Assert.False(changes["InteractivePaymentsEnabled"].GetProperty("to").GetBoolean());
+        Assert.False(changes.ContainsKey("SelfSendDelaySeconds"));
+
+        var removed = body.GetProperty("removedTraits").EnumerateArray()
+            .Select(t => t.GetProperty("name").GetString()).ToList();
+        Assert.Contains("InteractivePaymentSenderBehaviorTrait", removed);
+        Assert.Contains("InteractivePaymentReceiverBehaviorTrait", removed);
+        Assert.Equal(0, body.GetProperty("addedTraits").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task BehaviorTraitsDiff_falls_back_from_wallet_profile_when_from_omitted()
+    {
+        // Persist PrivacyFocused then ask for diff without `from`. Server
+        // should use the persisted profile as the from-side. To=Consolidator.
+        // PrivacyFocused (5/60/true) → Consolidator (25/30/false) differs
+        // in all three attributes.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+        await client.PostAsJsonAsync("/api/wallet/settings", new { MixingProfile = "PrivacyFocused" });
+
+        var body = await client.GetFromJsonAsync<JsonElement>(
+            "/api/wallet/behavior-traits-diff?to=Consolidator");
+        Assert.Equal("PrivacyFocused", body.GetProperty("from").GetString());
+        Assert.Equal("Consolidator", body.GetProperty("to").GetString());
+        Assert.Equal(3, body.GetProperty("changes").GetArrayLength());
+    }
+
+    [Fact]
     public async Task UnfreezeAll_clears_frozen_state_on_every_utxo()
     {
         // Seed two UTXOs, freeze both, then fire the panic button. Both

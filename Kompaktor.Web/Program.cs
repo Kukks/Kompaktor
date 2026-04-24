@@ -2285,6 +2285,107 @@ app.MapGet("/api/wallet/behavior-traits/{profileName?}", async (string? profileN
     });
 }).WithTags("Wallet");
 
+// Behavior-trait diff between two profiles. Drives the "if you switch from
+// X to Y, here is what changes" confirmation screen. Returns both the raw
+// attribute deltas (for a numerical compare view) AND the trait set diff
+// (which coinjoin behaviors flip on/off). Query defaults: from=wallet's
+// currently persisted profile, to=required.
+//
+// Invariants:
+//   - Every spec field with a different value produces exactly one `changes`
+//     row with a plain-language impact string.
+//   - Traits that exist in both but with different config (e.g. consolidation
+//     threshold) do NOT appear in added/removed — they appear in `changes`
+//     only. Added/removed are strictly trait-existence flips.
+//   - Identical profiles → empty arrays, changed=false. The UI should
+//     disable the confirm button in that case.
+app.MapGet("/api/wallet/behavior-traits-diff", (HttpContext ctx, WalletDbContext db) =>
+{
+    // Wrap in a local task so we can await EF in a synchronous delegate.
+    return DiffAsync();
+    async Task<IResult> DiffAsync()
+    {
+        var wallet = await db.Wallets.FirstOrDefaultAsync();
+        if (wallet is null) return Results.BadRequest("No wallet found");
+
+        var toName = ctx.Request.Query["to"].ToString();
+        if (string.IsNullOrWhiteSpace(toName))
+            return Results.BadRequest("`to` query parameter required");
+        if (!MixingProfileCatalog.IsValid(toName))
+            return Results.BadRequest($"Unknown profile '{toName}'. Allowed: {string.Join(", ", MixingProfileCatalog.Names)}");
+
+        var fromNameRaw = ctx.Request.Query["from"].ToString();
+        var fromName = !string.IsNullOrWhiteSpace(fromNameRaw) && MixingProfileCatalog.IsValid(fromNameRaw)
+            ? fromNameRaw
+            : wallet.MixingProfile;
+
+        var from = MixingProfileCatalog.Get(fromName);
+        var to = MixingProfileCatalog.Get(toName);
+
+        var changes = new List<object>();
+        if (from.ConsolidationThreshold != to.ConsolidationThreshold)
+            changes.Add(new
+            {
+                attribute = "ConsolidationThreshold",
+                from = from.ConsolidationThreshold,
+                to = to.ConsolidationThreshold,
+                impact = to.ConsolidationThreshold < from.ConsolidationThreshold
+                    ? "Smaller batches per round — more rounds, more unlinkability, slower throughput"
+                    : "Larger batches per round — fewer rounds, fewer larger UTXOs, less unlinkability"
+            });
+        if (from.SelfSendDelaySeconds != to.SelfSendDelaySeconds)
+            changes.Add(new
+            {
+                attribute = "SelfSendDelaySeconds",
+                from = from.SelfSendDelaySeconds,
+                to = to.SelfSendDelaySeconds,
+                impact = to.SelfSendDelaySeconds > from.SelfSendDelaySeconds
+                    ? "Change outputs take longer to re-enter mixing — harder to link change back to parent round"
+                    : "Change outputs re-enter mixing sooner — faster reuse but easier to correlate"
+            });
+        if (from.InteractivePaymentsEnabled != to.InteractivePaymentsEnabled)
+            changes.Add(new
+            {
+                attribute = "InteractivePaymentsEnabled",
+                from = from.InteractivePaymentsEnabled,
+                to = to.InteractivePaymentsEnabled,
+                impact = to.InteractivePaymentsEnabled
+                    ? "Coinjoin rounds will now accept your queued outgoing payments and incoming peer payments"
+                    : "Interactive payments disabled — queued outgoing peer-to-peer transfers will not use coinjoin rounds"
+            });
+
+        var added = new List<object>();
+        var removed = new List<object>();
+        if (from.InteractivePaymentsEnabled != to.InteractivePaymentsEnabled)
+        {
+            object sender = new { name = "InteractivePaymentSenderBehaviorTrait", purpose = "Opts queued outgoing payments into coinjoin rounds via peer credential transfer" };
+            object receiver = new { name = "InteractivePaymentReceiverBehaviorTrait", purpose = "Accepts incoming interactive payments from peers during coinjoin rounds" };
+            if (to.InteractivePaymentsEnabled)
+            {
+                added.Add(sender);
+                added.Add(receiver);
+            }
+            else
+            {
+                removed.Add(sender);
+                removed.Add(receiver);
+            }
+        }
+
+        return Results.Ok(new
+        {
+            from = from.Name,
+            to = to.Name,
+            changed = changes.Count > 0 || added.Count > 0 || removed.Count > 0,
+            fromDescription = from.Description,
+            toDescription = to.Description,
+            changes,
+            addedTraits = added,
+            removedTraits = removed
+        });
+    }
+}).WithTags("Wallet");
+
 // Probes whether a SOCKS5 proxy (usually a Tor daemon) is reachable on the
 // given host/port. Performs the no-auth SOCKS5 greeting so we can tell a
 // live proxy from "port happens to be open on some other service."
