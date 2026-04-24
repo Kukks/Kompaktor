@@ -2167,19 +2167,58 @@ app.MapPatch("/api/payments/{paymentId}", async (
     var entity = await db.PendingPayments.FindAsync(paymentId);
     if (entity is null || entity.WalletId != wallet.Id) return Results.NotFound();
 
-    var body = await ctx.Request.ReadFromJsonAsync<PaymentPatchRequest>();
-    if (body is null) return Results.BadRequest("Request body required");
+    // Read raw JSON so we can distinguish "field omitted" (no-op) from
+    // "field present with null" (clear). C# record binding collapses the two.
+    JsonElement body;
+    try { body = await ctx.Request.ReadFromJsonAsync<JsonElement>(); }
+    catch { return Results.BadRequest("Request body required"); }
+    if (body.ValueKind != JsonValueKind.Object)
+        return Results.BadRequest("Request body required");
 
-    // Omitting Label leaves it untouched; passing null/empty clears it.
-    if (body.Label is not null)
-        entity.Label = string.IsNullOrWhiteSpace(body.Label) ? null : body.Label.Trim();
+    var touchesTiming = body.TryGetProperty("scheduledAt", out _)
+                        || body.TryGetProperty("expiresAt", out _);
+    if (touchesTiming && entity.Status is "Completed" or "Failed")
+        return Results.BadRequest($"Cannot modify timing on {entity.Status.ToLowerInvariant()} payment");
+
+    if (body.TryGetProperty("label", out var labelEl))
+    {
+        var text = labelEl.ValueKind == JsonValueKind.String ? labelEl.GetString() : null;
+        entity.Label = string.IsNullOrWhiteSpace(text) ? null : text.Trim();
+    }
+
+    if (body.TryGetProperty("scheduledAt", out var schedEl))
+    {
+        entity.ScheduledAt = schedEl.ValueKind switch
+        {
+            JsonValueKind.Null => null,
+            JsonValueKind.Number => DateTimeOffset.FromUnixTimeSeconds(schedEl.GetInt64()),
+            _ => throw new BadHttpRequestException("scheduledAt must be unix seconds or null")
+        };
+        // Keep status in sync with the new schedule time. A schedule pushed
+        // into the future dormants the payment; a null/past schedule wakes it.
+        var now = DateTimeOffset.UtcNow;
+        var isFutureSchedule = entity.ScheduledAt.HasValue && entity.ScheduledAt.Value > now;
+        if (isFutureSchedule && entity.Status == "Pending") entity.Status = "Scheduled";
+        else if (!isFutureSchedule && entity.Status == "Scheduled") entity.Status = "Pending";
+    }
+
+    if (body.TryGetProperty("expiresAt", out var expEl))
+    {
+        entity.ExpiresAt = expEl.ValueKind switch
+        {
+            JsonValueKind.Null => null,
+            JsonValueKind.Number => DateTimeOffset.FromUnixTimeSeconds(expEl.GetInt64()),
+            _ => throw new BadHttpRequestException("expiresAt must be unix seconds or null")
+        };
+    }
 
     await db.SaveChangesAsync();
     bus.Publish("payments");
 
     return Results.Ok(new
     {
-        entity.Id, entity.Label, entity.Status, entity.AmountSat, entity.Destination
+        entity.Id, entity.Label, entity.Status, entity.AmountSat, entity.Destination,
+        entity.ScheduledAt, entity.ExpiresAt
     });
 }).WithTags("Payments");
 
@@ -3385,7 +3424,6 @@ record SendRequest(string Destination, long AmountSat, long FeeRateSatPerVb = 2,
 record BroadcastPsbtRequest(string SignedPsbt);
 record CreatePaymentRequest(string Destination, long AmountSat, bool Interactive = true, bool Urgent = false, string? Label = null, int? ExpiryMinutes = null, DateTimeOffset? ScheduledAt = null, int? MaxRetries = null);
 record BatchSendRequest(string Destination, long AmountSat, bool Interactive = true, bool Urgent = false, string? Label = null, int? ExpiryMinutes = null, DateTimeOffset? ScheduledAt = null, int? MaxRetries = null);
-record PaymentPatchRequest(string? Label = null);
 record CreateReceiveRequest(long AmountSat, string? Label = null, int? ExpiryMinutes = null);
 record WebhookCreateRequest(string Url, string? EventFilter = null);
 record WebhookUpdateRequest(bool? IsActive = null);

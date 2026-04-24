@@ -5191,6 +5191,156 @@ public class WalletLifecycleE2ETests
     }
 
     [Fact]
+    public async Task Payment_patch_extends_expiry_on_pending_payment()
+    {
+        // A pending payment nearing expiry should be extendable in-place —
+        // without cancel+recreate, which would mint a new id and break any
+        // webhook receiver tracking that payment.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var recv = await client.PostAsJsonAsync("/api/payments/receive",
+            new { AmountSat = 12_000L, Label = "short-expiry", ExpiryMinutes = 10 });
+        var paymentId = (await recv.Content.ReadFromJsonAsync<JsonElement>())
+            .GetProperty("id").GetString()!;
+
+        var newExpiry = DateTimeOffset.UtcNow.AddHours(6).ToUnixTimeSeconds();
+        var patch = await client.PatchAsJsonAsync(
+            $"/api/payments/{paymentId}", new { expiresAt = newExpiry });
+        patch.EnsureSuccessStatusCode();
+        var patched = await patch.Content.ReadFromJsonAsync<JsonElement>();
+
+        // Dates serialize as unix seconds (custom converter) — match that contract.
+        Assert.Equal(newExpiry, patched.GetProperty("expiresAt").GetInt64());
+    }
+
+    [Fact]
+    public async Task Payment_patch_clears_expiry_when_null()
+    {
+        // Setting expiresAt=null removes the expiry entirely; payment then
+        // lives indefinitely until manually cancelled.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var recv = await client.PostAsJsonAsync("/api/payments/receive",
+            new { AmountSat = 12_000L, ExpiryMinutes = 30 });
+        var paymentId = (await recv.Content.ReadFromJsonAsync<JsonElement>())
+            .GetProperty("id").GetString()!;
+
+        // Sanity: expiry was set
+        var before = await client.GetFromJsonAsync<JsonElement>($"/api/payments/{paymentId}/status");
+        Assert.NotEqual(JsonValueKind.Null, before.GetProperty("expiresAt").ValueKind);
+
+        var patch = await client.PatchAsJsonAsync(
+            $"/api/payments/{paymentId}",
+            JsonSerializer.Deserialize<JsonElement>("{\"expiresAt\":null}"));
+        patch.EnsureSuccessStatusCode();
+
+        var after = await client.GetFromJsonAsync<JsonElement>($"/api/payments/{paymentId}/status");
+        Assert.Equal(JsonValueKind.Null, after.GetProperty("expiresAt").ValueKind);
+    }
+
+    [Fact]
+    public async Task Payment_patch_reschedules_pending_to_scheduled()
+    {
+        // Pushing scheduledAt to the future on a Pending payment should
+        // dormant it — status flips to Scheduled so it's skipped by the
+        // mixing loop until the new activation time.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var send = await client.PostAsJsonAsync("/api/payments/send", new
+        {
+            Destination = new Key().PubKey
+                .GetAddress(ScriptPubKeyType.Segwit, NBitcoin.Network.RegTest).ToString(),
+            AmountSat = 15_000L,
+            Interactive = false
+        });
+        var paymentId = (await send.Content.ReadFromJsonAsync<JsonElement>())
+            .GetProperty("id").GetString()!;
+
+        var future = DateTimeOffset.UtcNow.AddHours(2).ToUnixTimeSeconds();
+        var patch = await client.PatchAsJsonAsync(
+            $"/api/payments/{paymentId}", new { scheduledAt = future });
+        patch.EnsureSuccessStatusCode();
+        var patched = await patch.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("Scheduled", patched.GetProperty("status").GetString());
+    }
+
+    [Fact]
+    public async Task Payment_patch_activates_scheduled_when_time_cleared()
+    {
+        // Removing the schedule on a dormant payment should wake it —
+        // status flips back to Pending so the mixing loop can pick it up.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var future = DateTimeOffset.UtcNow.AddHours(2).ToUnixTimeSeconds();
+        var send = await client.PostAsJsonAsync("/api/payments/send", new
+        {
+            Destination = new Key().PubKey
+                .GetAddress(ScriptPubKeyType.Segwit, NBitcoin.Network.RegTest).ToString(),
+            AmountSat = 15_000L,
+            Interactive = false,
+            ScheduledAt = future
+        });
+        var paymentId = (await send.Content.ReadFromJsonAsync<JsonElement>())
+            .GetProperty("id").GetString()!;
+
+        // Sanity: born Scheduled
+        var before = await client.GetFromJsonAsync<JsonElement>($"/api/payments/{paymentId}/status");
+        Assert.Equal("Scheduled", before.GetProperty("status").GetString());
+
+        var patch = await client.PatchAsJsonAsync(
+            $"/api/payments/{paymentId}",
+            JsonSerializer.Deserialize<JsonElement>("{\"scheduledAt\":null}"));
+        patch.EnsureSuccessStatusCode();
+        var patched = await patch.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("Pending", patched.GetProperty("status").GetString());
+    }
+
+    [Fact]
+    public async Task Payment_patch_rejects_timing_changes_on_completed_payment()
+    {
+        // Completed payments are immutable — the user has already shipped
+        // a webhook "Completed" event referencing the payment's final state;
+        // letting the timing drift would desynchronize receiver expectations.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        // Create a payment, then force it Completed via direct db write
+        var recv = await client.PostAsJsonAsync("/api/payments/receive",
+            new { AmountSat = 12_000L });
+        var paymentId = (await recv.Content.ReadFromJsonAsync<JsonElement>())
+            .GetProperty("id").GetString()!;
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider
+                .GetRequiredService<Kompaktor.Wallet.Data.WalletDbContext>();
+            var p = await db.PendingPayments.FindAsync(paymentId);
+            p!.Status = "Completed";
+            await db.SaveChangesAsync();
+        }
+
+        var newExpiry = DateTimeOffset.UtcNow.AddHours(1).ToUnixTimeSeconds();
+        var patch = await client.PatchAsJsonAsync(
+            $"/api/payments/{paymentId}", new { expiresAt = newExpiry });
+        Assert.Equal(HttpStatusCode.BadRequest, patch.StatusCode);
+
+        // Label-only PATCH on a completed payment still works (the response
+        // contract we established before adding timing fields).
+        var labelPatch = await client.PatchAsJsonAsync(
+            $"/api/payments/{paymentId}", new { label = "retroactive note" });
+        labelPatch.EnsureSuccessStatusCode();
+    }
+
+    [Fact]
     public async Task Transaction_note_multiple_notes_all_surface_in_list()
     {
         // Users can pile on multiple observations ("client X invoice",

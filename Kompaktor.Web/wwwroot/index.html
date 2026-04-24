@@ -3082,9 +3082,13 @@
                 if (p.expiresAt && (p.status === 'Pending' || p.status === 'Reserved')) {
                     const expires = new Date(p.expiresAt);
                     const remaining = Math.max(0, Math.round((expires - Date.now()) / 60000));
-                    expiryHtml = remaining > 0
-                        ? ` <span style="font-size:10px;color:var(--text-muted)" title="Expires ${expires.toLocaleString()}">${remaining}m left</span>`
-                        : ' <span style="font-size:10px;color:var(--red)">expired</span>';
+                    const label = remaining > 0 ? `${remaining}m left` : 'expired';
+                    const color = remaining > 0 ? 'var(--text-muted)' : 'var(--red)';
+                    expiryHtml = ` <span style="font-size:10px;color:${color};cursor:pointer;text-decoration:underline dotted" onclick="extendPaymentExpiry('${esc(p.id)}', ${p.expiresAt ? JSON.stringify(p.expiresAt) : 'null'})" title="Click to extend or clear expiry. Currently: ${expires.toLocaleString()}">${label}</span>`;
+                }
+                if (p.status === 'Scheduled' && p.scheduledAt) {
+                    const at = new Date(p.scheduledAt);
+                    expiryHtml += ` <span style="font-size:10px;color:var(--yellow);cursor:pointer;text-decoration:underline dotted" onclick="reschedulePayment('${esc(p.id)}', ${JSON.stringify(p.scheduledAt)})" title="Click to reschedule or activate now">runs ${at.toLocaleString()}</span>`;
                 }
                 const hasProof = p.status === 'Completed' && p.proofJson;
                 let proofHtml = '';
@@ -3360,6 +3364,64 @@
             } catch (err) {
                 showToast('Error: ' + err.message, 'warning');
             }
+        }
+
+        async function patchPaymentTiming(paymentId, field, value, successMsg) {
+            const body = {};
+            body[field] = value;
+            try {
+                const res = await fetch(`/api/payments/${encodeURIComponent(paymentId)}`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+                if (!res.ok) {
+                    const msg = await res.text().catch(() => 'Update failed');
+                    showToast(msg || 'Update failed', 'warning');
+                    return;
+                }
+                showToast(successMsg, 'success');
+                await loadPayments();
+            } catch (err) {
+                showToast('Error: ' + err.message, 'warning');
+            }
+        }
+
+        async function extendPaymentExpiry(paymentId, currentIso) {
+            // Prompt for minutes-from-now; empty string means clear expiry.
+            const current = currentIso ? new Date(currentIso) : null;
+            const hint = current
+                ? `Currently expires at ${current.toLocaleString()}.\n\nEnter new expiry (minutes from now), or leave blank to clear:`
+                : 'Enter expiry in minutes from now, or leave blank to clear:';
+            const input = prompt(hint, '60');
+            if (input === null) return;
+            const trimmed = input.trim();
+            if (trimmed === '') {
+                await patchPaymentTiming(paymentId, 'expiresAt', null, 'Expiry cleared');
+                return;
+            }
+            const mins = parseInt(trimmed, 10);
+            if (isNaN(mins) || mins <= 0) { showToast('Enter a positive number of minutes', 'warning'); return; }
+            const unix = Math.floor(Date.now() / 1000) + mins * 60;
+            await patchPaymentTiming(paymentId, 'expiresAt', unix, `Expiry set to ${mins}m from now`);
+        }
+
+        async function reschedulePayment(paymentId, currentIso) {
+            // Prompt for new run time. Empty = activate immediately.
+            const hint = currentIso
+                ? `Currently scheduled for ${new Date(currentIso).toLocaleString()}.\n\nEnter new time (ISO 8601 local, e.g. 2026-05-01T14:30), or leave blank to run now:`
+                : 'Enter new schedule time (ISO 8601 local), or leave blank to run now:';
+            const input = prompt(hint, '');
+            if (input === null) return;
+            const trimmed = input.trim();
+            if (trimmed === '') {
+                await patchPaymentTiming(paymentId, 'scheduledAt', null, 'Payment activated');
+                return;
+            }
+            const dt = new Date(trimmed);
+            if (isNaN(dt.getTime())) { showToast('Could not parse date/time', 'warning'); return; }
+            const unix = Math.floor(dt.getTime() / 1000);
+            await patchPaymentTiming(paymentId, 'scheduledAt', unix, `Rescheduled for ${dt.toLocaleString()}`);
         }
 
         function copyPaymentUri() {
