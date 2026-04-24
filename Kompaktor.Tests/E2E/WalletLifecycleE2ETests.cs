@@ -6739,4 +6739,66 @@ public class WalletLifecycleE2ETests
         Assert.Contains(reasons, r => r!.Contains("already matches"));
     }
 
+    [Fact]
+    public async Task BehaviorTraits_default_profile_returns_four_traits_for_balanced()
+    {
+        // Fresh wallet defaults to Balanced — interactive payments are ON so
+        // the trait list covers consolidation, self-send delay, sender and
+        // receiver — four entries total.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.GetFromJsonAsync<JsonElement>("/api/wallet/behavior-traits");
+
+        Assert.Equal("Balanced", resp.GetProperty("profile").GetString());
+        Assert.Equal(4, resp.GetProperty("traits").GetArrayLength());
+        var traitNames = resp.GetProperty("traits").EnumerateArray()
+            .Select(t => t.GetProperty("name").GetString()).ToList();
+        Assert.Contains("ConsolidationBehaviorTrait", traitNames);
+        Assert.Contains("SelfSendChangeBehaviorTrait", traitNames);
+        Assert.Contains("InteractivePaymentSenderBehaviorTrait", traitNames);
+        Assert.Contains("InteractivePaymentReceiverBehaviorTrait", traitNames);
+    }
+
+    [Fact]
+    public async Task BehaviorTraits_consolidator_profile_drops_interactive_payments()
+    {
+        // Consolidator preset turns interactive payments off (they fight for
+        // the same coinjoin slots as aggressive consolidation), so the trait
+        // list shrinks to just Consolidation + SelfSendChange.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.GetFromJsonAsync<JsonElement>("/api/wallet/behavior-traits/Consolidator");
+
+        Assert.Equal("Consolidator", resp.GetProperty("profile").GetString());
+        Assert.Equal(2, resp.GetProperty("traits").GetArrayLength());
+        var consolidation = resp.GetProperty("traits").EnumerateArray()
+            .Single(t => t.GetProperty("name").GetString() == "ConsolidationBehaviorTrait");
+        // Consolidator bumps the threshold to 25 in the catalog; the endpoint
+        // surfaces that value as the trait's config.
+        Assert.Equal(25, consolidation.GetProperty("config").GetProperty("inputsPerRound").GetInt32());
+    }
+
+    [Fact]
+    public async Task BehaviorTraits_unknown_profile_falls_back_to_current()
+    {
+        // Garbage profile name — the endpoint should ignore it and resolve
+        // against the persisted wallet profile instead of 404ing. Caller
+        // still sees the original name echoed back as requestedProfile.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+        await client.PostAsJsonAsync("/api/wallet/settings",
+            new { MixingProfile = "PrivacyFocused" });
+
+        var resp = await client.GetFromJsonAsync<JsonElement>("/api/wallet/behavior-traits/DoesNotExist");
+
+        Assert.Equal("PrivacyFocused", resp.GetProperty("profile").GetString());
+        Assert.Equal("DoesNotExist", resp.GetProperty("requestedProfile").GetString());
+        Assert.Equal("PrivacyFocused", resp.GetProperty("currentProfile").GetString());
+    }
+
 }

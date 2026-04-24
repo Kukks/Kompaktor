@@ -1747,6 +1747,67 @@ app.MapGet("/api/wallet/profile-recommendation", async (WalletDbContext db) =>
     });
 }).WithTags("Wallet");
 
+// Decodes a profile spec into the list of behavior traits the mixer will run
+// for that preset, each with a plain-language purpose string. Lets the UI
+// show "if you pick X, your wallet will run A, B, C and here's what each
+// does" without the UI having to know the mapping. Unknown/empty profile
+// falls back to the wallet's persisted choice (then to Balanced via Get()).
+app.MapGet("/api/wallet/behavior-traits/{profileName?}", async (string? profileName, WalletDbContext db) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.BadRequest("No wallet found");
+
+    // Caller-supplied name wins when valid; otherwise fall back to what the
+    // wallet actually persisted. MixingProfileCatalog.Get() further defaults
+    // to "Balanced" if that string is unknown — so the endpoint can never
+    // 404 on "valid wallet + weird name".
+    var resolvedName = !string.IsNullOrWhiteSpace(profileName) && MixingProfileCatalog.IsValid(profileName)
+        ? profileName
+        : wallet.MixingProfile;
+    var spec = MixingProfileCatalog.Get(resolvedName);
+
+    var traits = new List<object>
+    {
+        new
+        {
+            name = "ConsolidationBehaviorTrait",
+            purpose = "Caps how many of your UTXOs the mixer queues per coinjoin round",
+            config = new { inputsPerRound = spec.ConsolidationThreshold }
+        },
+        new
+        {
+            name = "SelfSendChangeBehaviorTrait",
+            purpose = "Delays re-mixing of coinjoin change so it does not immediately reattach to the parent round",
+            config = new { delaySeconds = spec.SelfSendDelaySeconds }
+        }
+    };
+
+    if (spec.InteractivePaymentsEnabled)
+    {
+        traits.Add(new
+        {
+            name = "InteractivePaymentSenderBehaviorTrait",
+            purpose = "Opts queued outgoing payments into coinjoin rounds via peer credential transfer",
+            config = new { }
+        });
+        traits.Add(new
+        {
+            name = "InteractivePaymentReceiverBehaviorTrait",
+            purpose = "Accepts incoming interactive payments from peers during coinjoin rounds",
+            config = new { }
+        });
+    }
+
+    return Results.Ok(new
+    {
+        profile = spec.Name,
+        description = spec.Description,
+        requestedProfile = profileName,
+        currentProfile = wallet.MixingProfile,
+        traits
+    });
+}).WithTags("Wallet");
+
 // Probes whether a SOCKS5 proxy (usually a Tor daemon) is reachable on the
 // given host/port. Performs the no-auth SOCKS5 greeting so we can tell a
 // live proxy from "port happens to be open on some other service."
