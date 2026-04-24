@@ -7535,6 +7535,75 @@ public class WalletLifecycleE2ETests
     }
 
     [Fact]
+    public async Task FreezeByLabel_rejects_empty_text()
+    {
+        // Same rationale as delete-by-text — empty text would be a silent
+        // no-op; 400 makes the mistake visible to the caller.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.PostAsJsonAsync(
+            "/api/coin-control/freeze-by-label", new { text = "" });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task FreezeByLabel_returns_zero_when_no_matching_tag_exists()
+    {
+        // Missing tag → valid 0 result (the caller may have just cleared it).
+        // Body must echo the queried text so the caller can confirm.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+        await SeedUtxoAsync(factory, client, amountSat: 50_000, tag: 0xC0);
+
+        var resp = await client.PostAsJsonAsync(
+            "/api/coin-control/freeze-by-label", new { text = "nonexistent" });
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var body = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(0, body.GetProperty("frozen").GetInt32());
+        Assert.Equal("nonexistent", body.GetProperty("text").GetString());
+    }
+
+    [Fact]
+    public async Task FreezeByLabel_freezes_only_utxos_carrying_matching_label()
+    {
+        // Tag utxo A with "experimental", tag utxo B with "savings", and
+        // leave utxo C untagged. Freezing by "experimental" must flip A
+        // only; B and C must stay unfrozen.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+        var idExperimental = await SeedUtxoAsync(factory, client, amountSat: 30_000, tag: 0xC1);
+        var idSavings = await SeedUtxoAsync(factory, client, amountSat: 40_000, tag: 0xC2);
+        var idUntagged = await SeedUtxoAsync(factory, client, amountSat: 50_000, tag: 0xC3);
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<WalletDbContext>();
+            db.Labels.AddRange(
+                new LabelEntity { EntityType = "Utxo", EntityId = idExperimental.ToString(), Text = "experimental" },
+                new LabelEntity { EntityType = "Utxo", EntityId = idSavings.ToString(), Text = "savings" }
+            );
+            await db.SaveChangesAsync();
+        }
+
+        var resp = await client.PostAsJsonAsync(
+            "/api/coin-control/freeze-by-label", new { text = "experimental" });
+        var body = await resp.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(1, body.GetProperty("frozen").GetInt32());
+
+        var utxos = (await client.GetFromJsonAsync<JsonElement>(
+                "/api/dashboard/utxos?includeFrozen=true"))
+            .EnumerateArray()
+            .ToDictionary(u => u.GetProperty("id").GetInt32(), u => u);
+        Assert.True(utxos[idExperimental].GetProperty("isFrozen").GetBoolean());
+        Assert.False(utxos[idSavings].GetProperty("isFrozen").GetBoolean());
+        Assert.False(utxos[idUntagged].GetProperty("isFrozen").GetBoolean());
+    }
+
+    [Fact]
     public async Task LabelDeleteByText_rejects_empty_text()
     {
         // Empty text would otherwise match nothing and return 0 silently —

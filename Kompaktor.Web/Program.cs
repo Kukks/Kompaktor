@@ -1372,6 +1372,56 @@ app.MapPost("/api/coin-control/freeze-below-threshold",
     return Results.Ok(new { frozen = candidates.Count, thresholdSat = threshold });
 }).WithTags("CoinControl");
 
+// Tag-based freeze. Locks every live UTXO that currently carries a Utxo-type
+// label matching `text`. Idempotent — already-frozen rows are skipped. The
+// compartmentalization use case: mark a group of UTXOs with "experimental"
+// or "savings" via /api/coin-control/label, then one call freezes the whole
+// group so they can't be accidentally consumed in a hot-wallet spend.
+// Only Utxo-scope labels are considered; Address-scope and Transaction-scope
+// labels are separate taxonomies that don't map cleanly to "this specific
+// UTXO is tagged" semantics.
+app.MapPost("/api/coin-control/freeze-by-label",
+    async (WalletDbContext db, HttpContext ctx, DashboardEventBus bus) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.BadRequest("No wallet found");
+
+    var body = await ctx.Request.ReadFromJsonAsync<JsonElement>();
+    if (body.ValueKind != JsonValueKind.Object
+        || !body.TryGetProperty("text", out var textEl)
+        || textEl.ValueKind != JsonValueKind.String)
+        return Results.BadRequest("text required");
+    var text = textEl.GetString()!.Trim();
+    if (text.Length == 0) return Results.BadRequest("text cannot be empty");
+
+    // Resolve "which UTXO ids are tagged with this text?" server-side so we
+    // don't pull every label row over the wire; the label table can grow.
+    var taggedUtxoIds = await db.Labels
+        .Where(l => l.EntityType == "Utxo" && l.Text == text)
+        .Select(l => l.EntityId)
+        .ToListAsync();
+    if (taggedUtxoIds.Count == 0)
+        return Results.Ok(new { frozen = 0, text });
+
+    var taggedInts = taggedUtxoIds
+        .Select(s => int.TryParse(s, out var n) ? n : -1)
+        .Where(n => n > 0)
+        .ToHashSet();
+
+    var candidates = await db.Utxos
+        .Include(u => u.Address).ThenInclude(a => a.Account)
+        .Where(u => u.Address.Account.WalletId == wallet.Id)
+        .Where(u => u.SpentByTxId == null && !u.IsFrozen)
+        .Where(u => taggedInts.Contains(u.Id))
+        .ToListAsync();
+
+    foreach (var utxo in candidates) utxo.IsFrozen = true;
+    await db.SaveChangesAsync();
+    if (candidates.Count > 0) bus.Publish("utxos");
+
+    return Results.Ok(new { frozen = candidates.Count, text });
+}).WithTags("CoinControl");
+
 // Labels: add label to a UTXO
 app.MapPost("/api/coin-control/label/{utxoId}", async (int utxoId, WalletDbContext db, HttpContext ctx, DashboardEventBus bus) =>
 {
