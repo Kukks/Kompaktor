@@ -4704,6 +4704,112 @@ app.MapGet("/api/wallet/labels/untagged-utxos", async (WalletDbContext db) =>
     });
 }).WithTags("Wallet");
 
+// Label coverage metric: one-shot dashboard summary of how well the wallet is
+// tagged, broken down by entity type. Scope decisions:
+//   - UTXOs: live only (spent UTXOs aren't actionable — you can't re-tag them
+//     to improve future privacy decisions).
+//   - Addresses: used only. Fresh receive addresses sitting untagged is not a
+//     privacy-hygiene problem; the metric would be drowned in noise from the
+//     gap-limit pool. Once an address has been used it has an external
+//     identity worth labeling.
+//   - Transactions: all wallet-owned tx IDs (every confirmed tx the wallet
+//     participated in). Retroactive tagging is the whole point here.
+// The response is flat enough to render as three progress bars without any
+// post-processing in the UI.
+app.MapGet("/api/wallet/label-coverage", async (WalletDbContext db) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null)
+        return Results.Ok(new
+        {
+            utxo = new { total = 0, tagged = 0, untagged = 0, taggedPercent = 0.0, untaggedSat = 0L, totalSat = 0L },
+            address = new { total = 0, tagged = 0, untagged = 0, taggedPercent = 0.0 },
+            transaction = new { total = 0, tagged = 0, untagged = 0, taggedPercent = 0.0 },
+            uniqueLabels = 0
+        });
+
+    var liveUtxos = await db.Utxos
+        .Include(u => u.Address).ThenInclude(a => a.Account)
+        .Where(u => u.Address.Account.WalletId == wallet.Id)
+        .Where(u => u.SpentByTxId == null)
+        .Select(u => new { u.Id, u.AmountSat })
+        .ToListAsync();
+    var usedAddrIds = await db.Addresses
+        .Include(a => a.Account)
+        .Where(a => a.Account.WalletId == wallet.Id && a.IsUsed)
+        .Select(a => a.Id)
+        .ToListAsync();
+    var walletTxIds = await db.Utxos
+        .Include(u => u.Address).ThenInclude(a => a.Account)
+        .Where(u => u.Address.Account.WalletId == wallet.Id)
+        .Select(u => u.TxId)
+        .Distinct()
+        .ToListAsync();
+
+    var utxoIdSet = liveUtxos.Select(u => u.Id.ToString()).ToHashSet();
+    var addrIdSet = usedAddrIds.Select(id => id.ToString()).ToHashSet();
+    var txIdSet = walletTxIds.ToHashSet();
+
+    var taggedUtxoIds = new HashSet<string>();
+    var taggedAddrIds = new HashSet<string>();
+    var taggedTxIds = new HashSet<string>();
+    var uniqueLabels = new HashSet<string>(StringComparer.Ordinal);
+    var allLabels = await db.Labels.ToListAsync();
+    foreach (var l in allLabels)
+    {
+        switch (l.EntityType)
+        {
+            case "Utxo" when utxoIdSet.Contains(l.EntityId):
+                taggedUtxoIds.Add(l.EntityId);
+                uniqueLabels.Add(l.Text);
+                break;
+            case "Address" when addrIdSet.Contains(l.EntityId):
+                taggedAddrIds.Add(l.EntityId);
+                uniqueLabels.Add(l.Text);
+                break;
+            case "Transaction" when txIdSet.Contains(l.EntityId):
+                taggedTxIds.Add(l.EntityId);
+                uniqueLabels.Add(l.Text);
+                break;
+        }
+    }
+
+    static double Pct(int n, int d) => d == 0 ? 0.0 : Math.Round(100.0 * n / d, 2);
+
+    var utxoUntaggedSat = liveUtxos
+        .Where(u => !taggedUtxoIds.Contains(u.Id.ToString()))
+        .Sum(u => u.AmountSat);
+    var utxoTotalSat = liveUtxos.Sum(u => u.AmountSat);
+
+    return Results.Ok(new
+    {
+        utxo = new
+        {
+            total = liveUtxos.Count,
+            tagged = taggedUtxoIds.Count,
+            untagged = liveUtxos.Count - taggedUtxoIds.Count,
+            taggedPercent = Pct(taggedUtxoIds.Count, liveUtxos.Count),
+            untaggedSat = utxoUntaggedSat,
+            totalSat = utxoTotalSat
+        },
+        address = new
+        {
+            total = usedAddrIds.Count,
+            tagged = taggedAddrIds.Count,
+            untagged = usedAddrIds.Count - taggedAddrIds.Count,
+            taggedPercent = Pct(taggedAddrIds.Count, usedAddrIds.Count)
+        },
+        transaction = new
+        {
+            total = walletTxIds.Count,
+            tagged = taggedTxIds.Count,
+            untagged = walletTxIds.Count - taggedTxIds.Count,
+            taggedPercent = Pct(taggedTxIds.Count, walletTxIds.Count)
+        },
+        uniqueLabels = uniqueLabels.Count
+    });
+}).WithTags("Wallet");
+
 // Bulk label delete: drop every row with text == `text` across the
 // wallet's owned UTXO/Address/Transaction labels and AddressBook entries.
 // Sister endpoint to /api/wallet/labels/rename for the "retire a tag"

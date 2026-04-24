@@ -7588,6 +7588,99 @@ public class WalletLifecycleE2ETests
     }
 
     [Fact]
+    public async Task LabelCoverage_empty_wallet_returns_all_zeros()
+    {
+        // Fresh wallet with nothing in it should return zero everywhere
+        // without hitting the divide-by-zero path (taggedPercent = 0).
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var body = await client.GetFromJsonAsync<JsonElement>("/api/wallet/label-coverage");
+        Assert.Equal(0, body.GetProperty("utxo").GetProperty("total").GetInt32());
+        Assert.Equal(0.0, body.GetProperty("utxo").GetProperty("taggedPercent").GetDouble());
+        Assert.Equal(0, body.GetProperty("address").GetProperty("total").GetInt32());
+        Assert.Equal(0.0, body.GetProperty("address").GetProperty("taggedPercent").GetDouble());
+        Assert.Equal(0, body.GetProperty("transaction").GetProperty("total").GetInt32());
+        Assert.Equal(0.0, body.GetProperty("transaction").GetProperty("taggedPercent").GetDouble());
+        Assert.Equal(0, body.GetProperty("uniqueLabels").GetInt32());
+    }
+
+    [Fact]
+    public async Task LabelCoverage_reports_utxo_ratio_and_untagged_sats()
+    {
+        // Three UTXOs; tag one. Expect 33.33% coverage, untaggedSat sums the
+        // other two, and totalSat sums all three. uniqueLabels counts the
+        // single tag text we set.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+        var a = await SeedUtxoAsync(factory, client, amountSat: 30_000, tag: 0xA0);
+        await SeedUtxoAsync(factory, client, amountSat: 40_000, tag: 0xA1);
+        await SeedUtxoAsync(factory, client, amountSat: 50_000, tag: 0xA2);
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<WalletDbContext>();
+            db.Labels.Add(new LabelEntity
+            {
+                EntityType = "Utxo",
+                EntityId = a.ToString(),
+                Text = "exchange-1"
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var body = await client.GetFromJsonAsync<JsonElement>("/api/wallet/label-coverage");
+        var utxo = body.GetProperty("utxo");
+        Assert.Equal(3, utxo.GetProperty("total").GetInt32());
+        Assert.Equal(1, utxo.GetProperty("tagged").GetInt32());
+        Assert.Equal(2, utxo.GetProperty("untagged").GetInt32());
+        Assert.Equal(33.33, utxo.GetProperty("taggedPercent").GetDouble());
+        Assert.Equal(90_000, utxo.GetProperty("untaggedSat").GetInt64());
+        Assert.Equal(120_000, utxo.GetProperty("totalSat").GetInt64());
+        Assert.Equal(1, body.GetProperty("uniqueLabels").GetInt32());
+    }
+
+    [Fact]
+    public async Task LabelCoverage_counts_across_all_three_entity_types()
+    {
+        // Seed one UTXO (which marks its address as used and drops a tx row),
+        // then tag each of: the UTXO, its address, and its confirming tx with
+        // the SAME text. Expect 100% coverage in all three buckets and
+        // uniqueLabels=1 (the text is deduped across entity types).
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+        var utxoId = await SeedUtxoAsync(factory, client, amountSat: 75_000, tag: 0xB0);
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<WalletDbContext>();
+            var u = await db.Utxos.FindAsync(utxoId);
+            db.Labels.Add(new LabelEntity
+            {
+                EntityType = "Utxo", EntityId = utxoId.ToString(), Text = "payday"
+            });
+            db.Labels.Add(new LabelEntity
+            {
+                EntityType = "Address", EntityId = u!.AddressId.ToString(), Text = "payday"
+            });
+            db.Labels.Add(new LabelEntity
+            {
+                EntityType = "Transaction", EntityId = u.TxId, Text = "payday"
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var body = await client.GetFromJsonAsync<JsonElement>("/api/wallet/label-coverage");
+        Assert.Equal(100.0, body.GetProperty("utxo").GetProperty("taggedPercent").GetDouble());
+        Assert.Equal(100.0, body.GetProperty("address").GetProperty("taggedPercent").GetDouble());
+        Assert.Equal(100.0, body.GetProperty("transaction").GetProperty("taggedPercent").GetDouble());
+        Assert.Equal(1, body.GetProperty("uniqueLabels").GetInt32());
+    }
+
+    [Fact]
     public async Task FreezeByLabel_rejects_empty_text()
     {
         // Same rationale as delete-by-text — empty text would be a silent
