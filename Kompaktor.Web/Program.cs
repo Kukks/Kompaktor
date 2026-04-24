@@ -5113,6 +5113,34 @@ _ = Task.Run(async () =>
 });
 
 // Health check
+// Version/build info for support + "what am I running?" diagnostics. Reads
+// the assembly informational version (set at build time) so bug reports can
+// be tied back to a commit/tag without the user guessing. Kept intentionally
+// tiny — no DB, no side effects — so it's safe to expose unauthenticated and
+// safe to call frequently.
+app.MapGet("/api/version", () =>
+{
+    var asm = System.Reflection.Assembly.GetExecutingAssembly();
+    var informational = asm
+        .GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
+        .Cast<System.Reflection.AssemblyInformationalVersionAttribute>()
+        .FirstOrDefault()?.InformationalVersion;
+    var fileVersion = asm
+        .GetCustomAttributes(typeof(System.Reflection.AssemblyFileVersionAttribute), false)
+        .Cast<System.Reflection.AssemblyFileVersionAttribute>()
+        .FirstOrDefault()?.Version;
+
+    return Results.Ok(new
+    {
+        version = informational ?? fileVersion ?? "0.0.0",
+        fileVersion = fileVersion ?? "0.0.0",
+        runtime = System.Environment.Version.ToString(),
+        os = System.Runtime.InteropServices.RuntimeInformation.OSDescription,
+        framework = System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription,
+        network = network.Name
+    });
+}).WithTags("Meta");
+
 app.MapGet("/health", (KompaktorRoundManager manager) =>
 {
     var rounds = manager.GetActiveRounds();

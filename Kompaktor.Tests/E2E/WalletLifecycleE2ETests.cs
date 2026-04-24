@@ -7535,6 +7535,24 @@ public class WalletLifecycleE2ETests
     }
 
     [Fact]
+    public async Task Version_endpoint_returns_build_and_runtime_info()
+    {
+        // Pins the shape of the diagnostics contract. Support workflows read
+        // version + runtime from here, so renaming a field silently would
+        // break the tools that consume it. No wallet required.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+
+        var body = await client.GetFromJsonAsync<JsonElement>("/api/version");
+        var version = body.GetProperty("version").GetString();
+        Assert.False(string.IsNullOrWhiteSpace(version));
+        Assert.False(string.IsNullOrWhiteSpace(body.GetProperty("runtime").GetString()));
+        Assert.False(string.IsNullOrWhiteSpace(body.GetProperty("framework").GetString()));
+        Assert.False(string.IsNullOrWhiteSpace(body.GetProperty("os").GetString()));
+        Assert.Equal("RegTest", body.GetProperty("network").GetString());
+    }
+
+    [Fact]
     public async Task LabelRename_rejects_identical_from_and_to()
     {
         // from == to is a user error — guard against it so the caller gets a
