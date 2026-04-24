@@ -4364,6 +4364,85 @@ app.MapGet("/api/wallet/labels", async (WalletDbContext db) =>
     return Results.Ok(new { totalDistinct = sorted.Count, labels = sorted });
 }).WithTags("Wallet");
 
+// Autocomplete for label inputs: case-insensitive substring match across every
+// distinct label text the wallet has used. Returns top-N by usage. The goal is
+// to keep users from accidentally creating near-duplicates ("Exchange" vs
+// "exchange" vs "Exchange:Kraken"). Matching is substring — not just prefix —
+// because common prefixes like "Exchange:" are where near-duplicates live, so
+// typing "Krak" should surface "Exchange:Kraken".
+app.MapGet("/api/wallet/labels/search", async (WalletDbContext db, HttpContext ctx) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.Ok(Array.Empty<object>());
+
+    var q = (ctx.Request.Query["q"].FirstOrDefault() ?? "").Trim();
+    var limitStr = ctx.Request.Query["limit"].FirstOrDefault();
+    var limit = int.TryParse(limitStr, out var l) && l is > 0 and <= 100 ? l : 10;
+
+    // Reuse the same ownership-scoping approach as /api/wallet/labels. The
+    // label table stays small enough that in-memory filtering is fine.
+    var allLabels = await db.Labels.ToListAsync();
+    var addressBook = await db.AddressBook
+        .Where(a => a.WalletId == wallet.Id)
+        .ToListAsync();
+
+    var ownedUtxoIds = (await db.Utxos
+            .Include(u => u.Address).ThenInclude(a => a.Account)
+            .Where(u => u.Address.Account.WalletId == wallet.Id)
+            .Select(u => u.Id).ToListAsync())
+        .Select(id => id.ToString()).ToHashSet();
+    var ownedAddrIds = (await db.Addresses
+            .Include(a => a.Account)
+            .Where(a => a.Account.WalletId == wallet.Id)
+            .Select(a => a.Id).ToListAsync())
+        .Select(id => id.ToString()).ToHashSet();
+    var walletTxIds = (await db.Utxos
+            .Include(u => u.Address).ThenInclude(a => a.Account)
+            .Where(u => u.Address.Account.WalletId == wallet.Id)
+            .Select(u => u.TxId).Distinct().ToListAsync())
+        .ToHashSet();
+
+    var totals = new Dictionary<string, int>(StringComparer.Ordinal);
+    void Add(string text)
+    {
+        totals[text] = totals.TryGetValue(text, out var n) ? n + 1 : 1;
+    }
+
+    foreach (var lab in allLabels)
+    {
+        var owned = lab.EntityType switch
+        {
+            "Utxo" => ownedUtxoIds.Contains(lab.EntityId),
+            "Address" => ownedAddrIds.Contains(lab.EntityId),
+            "Transaction" => walletTxIds.Contains(lab.EntityId),
+            _ => false
+        };
+        if (owned) Add(lab.Text);
+    }
+    foreach (var a in addressBook) Add(a.Label);
+
+    IEnumerable<KeyValuePair<string, int>> filtered = totals;
+    if (q.Length > 0)
+        filtered = totals.Where(kv => kv.Key.Contains(q, StringComparison.OrdinalIgnoreCase));
+
+    // Rank: prefix matches first (more intuitive for "start typing" UX), then
+    // by usage count — so popular exact prefixes beat rarely-used substrings.
+    var result = filtered
+        .Select(kv => new
+        {
+            text = kv.Key,
+            total = kv.Value,
+            isPrefixMatch = q.Length > 0 && kv.Key.StartsWith(q, StringComparison.OrdinalIgnoreCase)
+        })
+        .OrderByDescending(x => x.isPrefixMatch)
+        .ThenByDescending(x => x.total)
+        .ThenBy(x => x.text, StringComparer.Ordinal)
+        .Take(limit)
+        .ToList();
+
+    return Results.Ok(result);
+}).WithTags("Wallet");
+
 //   - xpub    : account-level extended public keys
 // The endpoint is watch-only — no key material, no proofs — so it's safe to
 // share the export with other wallets or a paper backup of label history.

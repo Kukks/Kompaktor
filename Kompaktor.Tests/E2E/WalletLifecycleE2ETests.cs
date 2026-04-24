@@ -7460,4 +7460,78 @@ public class WalletLifecycleE2ETests
         Assert.Equal(bobId, rows[2].GetProperty("addressBookEntryId").GetInt32());
     }
 
+    [Fact]
+    public async Task LabelSearch_empty_wallet_returns_no_suggestions()
+    {
+        // No labels applied anywhere → the endpoint returns an empty array
+        // regardless of query. Must not 500 or return null.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var body = await client.GetFromJsonAsync<JsonElement>("/api/wallet/labels/search?q=any");
+        Assert.Equal(0, body.GetArrayLength());
+    }
+
+    [Fact]
+    public async Task LabelSearch_ranks_prefix_matches_above_substring_matches()
+    {
+        // Seed three address-book entries so we control the label corpus
+        // without plumbing UTXOs: "Exchange:Kraken" (prefix match for "Exch"),
+        // "MyExchangeAccount" (substring match only), and "Savings" (no match).
+        // Expected order for q="Exch": prefix first, then substring. "Savings"
+        // must not appear at all.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<WalletDbContext>();
+            var wallet = await db.Wallets.FirstAsync();
+            db.AddressBook.AddRange(
+                new AddressBookEntry { WalletId = wallet.Id, Label = "Exchange:Kraken", Address = "bcrt1q1" },
+                new AddressBookEntry { WalletId = wallet.Id, Label = "MyExchangeAccount", Address = "bcrt1q2" },
+                new AddressBookEntry { WalletId = wallet.Id, Label = "Savings", Address = "bcrt1q3" }
+            );
+            await db.SaveChangesAsync();
+        }
+
+        var body = await client.GetFromJsonAsync<JsonElement>("/api/wallet/labels/search?q=Exch");
+        Assert.Equal(2, body.GetArrayLength());
+        var rows = body.EnumerateArray().ToArray();
+        Assert.Equal("Exchange:Kraken", rows[0].GetProperty("text").GetString());
+        Assert.True(rows[0].GetProperty("isPrefixMatch").GetBoolean());
+        Assert.Equal("MyExchangeAccount", rows[1].GetProperty("text").GetString());
+        Assert.False(rows[1].GetProperty("isPrefixMatch").GetBoolean());
+    }
+
+    [Fact]
+    public async Task LabelSearch_is_case_insensitive_and_respects_limit()
+    {
+        // Query "krak" (lowercase) should still match "Exchange:Kraken"
+        // (title case). Limit=1 must truncate to a single result even when
+        // multiple candidates exist.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<WalletDbContext>();
+            var wallet = await db.Wallets.FirstAsync();
+            db.AddressBook.AddRange(
+                new AddressBookEntry { WalletId = wallet.Id, Label = "Exchange:Kraken", Address = "bcrt1qa" },
+                new AddressBookEntry { WalletId = wallet.Id, Label = "Kraken-paper", Address = "bcrt1qb" }
+            );
+            await db.SaveChangesAsync();
+        }
+
+        var caseBody = await client.GetFromJsonAsync<JsonElement>("/api/wallet/labels/search?q=krak");
+        Assert.Equal(2, caseBody.GetArrayLength());
+
+        var limitBody = await client.GetFromJsonAsync<JsonElement>("/api/wallet/labels/search?q=krak&limit=1");
+        Assert.Equal(1, limitBody.GetArrayLength());
+    }
+
 }
