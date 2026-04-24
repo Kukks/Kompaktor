@@ -4653,6 +4653,57 @@ app.MapPost("/api/wallet/labels/rename", async (WalletDbContext db, HttpContext 
     });
 }).WithTags("Wallet");
 
+// Untagged live UTXOs: lists every unspent, owned UTXO that has zero
+// Utxo-scope labels. Drives the "label coverage" view — users can see what
+// they haven't tagged yet and tag in bulk, rather than scrolling the full
+// UTXO list and mentally diffing against the labels table. Reports a
+// summary (count + total sat) alongside the list so a dashboard card can
+// render "N untagged coins (X sat)" without a second query.
+app.MapGet("/api/wallet/labels/untagged-utxos", async (WalletDbContext db) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.Ok(new { count = 0, totalSat = 0L, utxos = Array.Empty<object>() });
+
+    var utxos = await db.Utxos
+        .Include(u => u.Address).ThenInclude(a => a.Account)
+        .Where(u => u.Address.Account.WalletId == wallet.Id)
+        .Where(u => u.SpentByTxId == null)
+        .ToListAsync();
+    if (utxos.Count == 0)
+        return Results.Ok(new { count = 0, totalSat = 0L, utxos = Array.Empty<object>() });
+
+    var taggedIds = (await db.Labels
+            .Where(l => l.EntityType == "Utxo")
+            .Select(l => l.EntityId)
+            .Distinct()
+            .ToListAsync())
+        .Select(s => int.TryParse(s, out var n) ? n : -1)
+        .Where(n => n > 0)
+        .ToHashSet();
+
+    var untagged = utxos
+        .Where(u => !taggedIds.Contains(u.Id))
+        .OrderByDescending(u => u.AmountSat)
+        .Select(u => new
+        {
+            id = u.Id,
+            txId = u.TxId,
+            outputIndex = u.OutputIndex,
+            amountSat = u.AmountSat,
+            address = new Script(u.Address.ScriptPubKey).GetDestinationAddress(network)?.ToString(),
+            isFrozen = u.IsFrozen,
+            confirmedHeight = u.ConfirmedHeight
+        })
+        .ToList();
+
+    return Results.Ok(new
+    {
+        count = untagged.Count,
+        totalSat = untagged.Sum(u => u.amountSat),
+        utxos = untagged
+    });
+}).WithTags("Wallet");
+
 // Bulk label delete: drop every row with text == `text` across the
 // wallet's owned UTXO/Address/Transaction labels and AddressBook entries.
 // Sister endpoint to /api/wallet/labels/rename for the "retire a tag"

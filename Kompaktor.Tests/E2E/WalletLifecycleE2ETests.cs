@@ -7535,6 +7535,53 @@ public class WalletLifecycleE2ETests
     }
 
     [Fact]
+    public async Task UntaggedUtxos_reports_zero_on_empty_wallet()
+    {
+        // Fresh wallet with no UTXOs → count=0, totalSat=0, utxos=[].
+        // Must not 500 on the sum-of-empty-collection path.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var body = await client.GetFromJsonAsync<JsonElement>("/api/wallet/labels/untagged-utxos");
+        Assert.Equal(0, body.GetProperty("count").GetInt32());
+        Assert.Equal(0, body.GetProperty("totalSat").GetInt64());
+        Assert.Equal(0, body.GetProperty("utxos").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task UntaggedUtxos_excludes_utxos_that_already_carry_a_label()
+    {
+        // Tag one UTXO and leave another bare. Only the bare one should be
+        // listed. The sum-of-amounts and the count must reflect only the
+        // surviving row, ordered descending by amount.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+        var taggedId = await SeedUtxoAsync(factory, client, amountSat: 80_000, tag: 0xF0);
+        var untaggedId = await SeedUtxoAsync(factory, client, amountSat: 120_000, tag: 0xF1);
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<WalletDbContext>();
+            db.Labels.Add(new LabelEntity
+            {
+                EntityType = "Utxo",
+                EntityId = taggedId.ToString(),
+                Text = "already-tagged"
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var body = await client.GetFromJsonAsync<JsonElement>("/api/wallet/labels/untagged-utxos");
+        Assert.Equal(1, body.GetProperty("count").GetInt32());
+        Assert.Equal(120_000, body.GetProperty("totalSat").GetInt64());
+        var row = body.GetProperty("utxos")[0];
+        Assert.Equal(untaggedId, row.GetProperty("id").GetInt32());
+        Assert.Equal(120_000, row.GetProperty("amountSat").GetInt64());
+    }
+
+    [Fact]
     public async Task FreezeByLabel_rejects_empty_text()
     {
         // Same rationale as delete-by-text — empty text would be a silent
