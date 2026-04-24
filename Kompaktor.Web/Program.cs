@@ -907,6 +907,114 @@ app.MapDelete("/api/wallet/addresses/{address}/label/{labelId}", async (
     return Results.Ok(new { deleted = labelId });
 }).WithTags("Wallet");
 
+// List owned addresses with metadata for the address-management UI.
+// Filters: type (p2tr/p2wpkh), change (true/false), used (true/false),
+// exposed (true/false), hasLabel (true/false). Results are paginated via
+// limit/offset; default limit 200, cap 1000 so we never flush the whole
+// address table into a single response on a wallet with a huge gap limit.
+// Returns computed fields (utxo counts, total received) so the UI doesn't
+// have to re-aggregate them client-side.
+app.MapGet("/api/wallet/addresses", async (
+    WalletDbContext db,
+    string? type = null,
+    bool? change = null,
+    bool? used = null,
+    bool? exposed = null,
+    bool? hasLabel = null,
+    int offset = 0,
+    int limit = 200) =>
+{
+    var wallet = await db.Wallets.FirstOrDefaultAsync();
+    if (wallet is null) return Results.Ok(new { total = 0, items = Array.Empty<object>() });
+
+    int? purposeFilter;
+    try { purposeFilter = ParseAddressType(type); }
+    catch (FormatException ex) { return Results.BadRequest(ex.Message); }
+
+    if (limit is <= 0 or > 1000) limit = 200;
+    if (offset < 0) offset = 0;
+
+    var q = db.Addresses
+        .Include(a => a.Account)
+        .Where(a => a.Account.WalletId == wallet.Id);
+    if (purposeFilter.HasValue) q = q.Where(a => a.Account.Purpose == purposeFilter.Value);
+    if (change.HasValue) q = q.Where(a => a.IsChange == change.Value);
+    if (used.HasValue) q = q.Where(a => a.IsUsed == used.Value);
+    if (exposed.HasValue) q = q.Where(a => a.IsExposed == exposed.Value);
+
+    var total = await q.CountAsync();
+    var page = await q
+        .OrderBy(a => a.Account.Purpose == 86 ? 0 : 1) // Taproot first
+        .ThenBy(a => a.IsChange)                       // external then change
+        .ThenBy(a => a.Id)
+        .Skip(offset)
+        .Take(limit)
+        .ToListAsync();
+
+    if (page.Count == 0)
+        return Results.Ok(new { total, items = Array.Empty<object>() });
+
+    // Aggregate UTXOs and labels in one DB hit each rather than per-row.
+    var ids = page.Select(a => a.Id).ToList();
+    var idStrings = ids.Select(i => i.ToString()).ToList();
+    var utxoStats = await db.Utxos
+        .Where(u => ids.Contains(u.AddressId))
+        .GroupBy(u => u.AddressId)
+        .Select(g => new
+        {
+            AddressId = g.Key,
+            UtxoCount = g.Count(),
+            UnspentCount = g.Count(u => u.SpentByTxId == null),
+            TotalReceivedSat = g.Sum(u => u.AmountSat),
+            UnspentSat = g.Where(u => u.SpentByTxId == null).Sum(u => u.AmountSat)
+        })
+        .ToDictionaryAsync(x => x.AddressId);
+    var labelRows = await db.Labels
+        .Where(l => l.EntityType == "Address" && idStrings.Contains(l.EntityId))
+        .Select(l => new { l.Id, l.EntityId, l.Text })
+        .ToListAsync();
+    var labelsByAddrId = labelRows
+        .GroupBy(l => int.Parse(l.EntityId))
+        .ToDictionary(g => g.Key, g => g.Select(l => new { id = l.Id, text = l.Text }).ToArray());
+    // Typed empty fallback so the anonymous-type shape matches the populated
+    // branch — otherwise the conditional expression can't infer a common type.
+    var emptyLabels = new[] { new { id = 0, text = "" } }.Take(0).ToArray();
+
+    if (hasLabel.HasValue)
+    {
+        page = hasLabel.Value
+            ? page.Where(a => labelsByAddrId.ContainsKey(a.Id)).ToList()
+            : page.Where(a => !labelsByAddrId.ContainsKey(a.Id)).ToList();
+    }
+
+    var items = page.Select(a =>
+    {
+        string? addrStr = null;
+        try { addrStr = new Script(a.ScriptPubKey).GetDestinationAddress(network)?.ToString(); }
+        catch { }
+        utxoStats.TryGetValue(a.Id, out var stats);
+        return new
+        {
+            id = a.Id,
+            address = addrStr,
+            keyPath = a.KeyPath,
+            purpose = a.Account.Purpose,
+            type = a.Account.Purpose == 86 ? "P2TR" : "P2WPKH",
+            isChange = a.IsChange,
+            isUsed = a.IsUsed,
+            isExposed = a.IsExposed,
+            routingGroup = a.RoutingGroup,
+            utxoCount = stats?.UtxoCount ?? 0,
+            unspentCount = stats?.UnspentCount ?? 0,
+            totalReceivedSat = stats?.TotalReceivedSat ?? 0,
+            unspentSat = stats?.UnspentSat ?? 0,
+            labels = labelsByAddrId.TryGetValue(a.Id, out var lbls) ? lbls : emptyLabels
+        };
+    }).ToList();
+
+    return Results.Ok(new { total, offset, limit, items });
+}).WithTags("Wallet");
+
 // Coin control: freeze/unfreeze UTXOs
 app.MapPost("/api/coin-control/freeze/{utxoId}", async (int utxoId, WalletDbContext db, DashboardEventBus bus) =>
 {

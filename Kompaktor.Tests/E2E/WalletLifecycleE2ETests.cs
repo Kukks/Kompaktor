@@ -5923,6 +5923,164 @@ public class WalletLifecycleE2ETests
     }
 
     [Fact]
+    public async Task AddressList_returns_derived_addresses_for_fresh_wallet()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.GetFromJsonAsync<JsonElement>("/api/wallet/addresses");
+        Assert.True(resp.GetProperty("total").GetInt32() > 0);
+        var items = resp.GetProperty("items").EnumerateArray().ToList();
+        Assert.NotEmpty(items);
+        foreach (var item in items)
+        {
+            Assert.False(string.IsNullOrEmpty(item.GetProperty("address").GetString()));
+            Assert.False(string.IsNullOrEmpty(item.GetProperty("keyPath").GetString()));
+            Assert.Contains(item.GetProperty("type").GetString(), new[] { "P2TR", "P2WPKH" });
+        }
+    }
+
+    [Fact]
+    public async Task AddressList_filters_by_type()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var p2tr = await client.GetFromJsonAsync<JsonElement>("/api/wallet/addresses?type=p2tr");
+        var p2wpkh = await client.GetFromJsonAsync<JsonElement>("/api/wallet/addresses?type=p2wpkh");
+
+        Assert.All(p2tr.GetProperty("items").EnumerateArray(),
+            i => Assert.Equal("P2TR", i.GetProperty("type").GetString()));
+        Assert.All(p2wpkh.GetProperty("items").EnumerateArray(),
+            i => Assert.Equal("P2WPKH", i.GetProperty("type").GetString()));
+    }
+
+    [Fact]
+    public async Task AddressList_filters_by_change_flag()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var external = await client.GetFromJsonAsync<JsonElement>("/api/wallet/addresses?change=false");
+        var changeAddrs = await client.GetFromJsonAsync<JsonElement>("/api/wallet/addresses?change=true");
+
+        Assert.All(external.GetProperty("items").EnumerateArray(),
+            i => Assert.False(i.GetProperty("isChange").GetBoolean()));
+        Assert.All(changeAddrs.GetProperty("items").EnumerateArray(),
+            i => Assert.True(i.GetProperty("isChange").GetBoolean()));
+    }
+
+    [Fact]
+    public async Task AddressList_surfaces_labels_inline_on_each_address()
+    {
+        // The address-management UI wants a single round-trip to list addresses
+        // with their labels attached — forcing the UI to N+1 the labels endpoint
+        // would be wasteful. Confirm labels embed correctly.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var receive = await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address");
+        var addr = receive.GetProperty("address").GetString()!;
+        await client.PostAsJsonAsync(
+            $"/api/wallet/addresses/{addr}/label", new { Text = "Hot wallet" });
+
+        var list = await client.GetFromJsonAsync<JsonElement>("/api/wallet/addresses");
+        var match = list.GetProperty("items").EnumerateArray()
+            .Single(i => i.GetProperty("address").GetString() == addr);
+        var labels = match.GetProperty("labels").EnumerateArray().ToList();
+        Assert.Contains(labels, l => l.GetProperty("text").GetString() == "Hot wallet");
+    }
+
+    [Fact]
+    public async Task AddressList_filters_by_hasLabel()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var receive = await client.GetFromJsonAsync<JsonElement>("/api/wallet/receive-address");
+        var labelled = receive.GetProperty("address").GetString()!;
+        await client.PostAsJsonAsync(
+            $"/api/wallet/addresses/{labelled}/label", new { Text = "L" });
+
+        var onlyLabelled = await client.GetFromJsonAsync<JsonElement>(
+            "/api/wallet/addresses?hasLabel=true");
+        var items = onlyLabelled.GetProperty("items").EnumerateArray().ToList();
+        Assert.NotEmpty(items);
+        Assert.All(items, i =>
+            Assert.True(i.GetProperty("labels").GetArrayLength() > 0));
+        Assert.Contains(items, i => i.GetProperty("address").GetString() == labelled);
+
+        var unlabelled = await client.GetFromJsonAsync<JsonElement>(
+            "/api/wallet/addresses?hasLabel=false");
+        Assert.All(unlabelled.GetProperty("items").EnumerateArray(),
+            i => Assert.Equal(0, i.GetProperty("labels").GetArrayLength()));
+    }
+
+    [Fact]
+    public async Task AddressList_computes_utxo_aggregates_after_receive()
+    {
+        // After funding an address with a UTXO, the list endpoint should show
+        // utxoCount=1 and totalReceivedSat equal to the amount — proves the
+        // aggregation join back to the Utxos table works.
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var utxoId = await SeedUtxoAsync(factory, client, amountSat: 77_777, tag: 0xE1);
+        var utxos = await client.GetFromJsonAsync<JsonElement>("/api/dashboard/utxos");
+        var seeded = utxos.EnumerateArray().Single(u => u.GetProperty("id").GetInt32() == utxoId);
+
+        var all = await client.GetFromJsonAsync<JsonElement>("/api/wallet/addresses?used=true");
+        var items = all.GetProperty("items").EnumerateArray().ToList();
+        Assert.NotEmpty(items);
+        // The seeded address now has a utxo; find the one with a non-zero aggregate.
+        var funded = items.FirstOrDefault(i =>
+            i.GetProperty("totalReceivedSat").GetInt64() == 77_777);
+        Assert.NotEqual(JsonValueKind.Undefined, funded.ValueKind);
+        Assert.Equal(1, funded.GetProperty("utxoCount").GetInt32());
+        Assert.Equal(1, funded.GetProperty("unspentCount").GetInt32());
+        Assert.Equal(77_777, funded.GetProperty("unspentSat").GetInt64());
+    }
+
+    [Fact]
+    public async Task AddressList_respects_limit_and_offset_pagination()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var first = await client.GetFromJsonAsync<JsonElement>(
+            "/api/wallet/addresses?limit=5&offset=0");
+        var second = await client.GetFromJsonAsync<JsonElement>(
+            "/api/wallet/addresses?limit=5&offset=5");
+        var firstIds = first.GetProperty("items").EnumerateArray()
+            .Select(i => i.GetProperty("id").GetInt32()).ToList();
+        var secondIds = second.GetProperty("items").EnumerateArray()
+            .Select(i => i.GetProperty("id").GetInt32()).ToList();
+
+        Assert.True(firstIds.Count <= 5);
+        // If there are enough addresses to fill a second page, it must not overlap.
+        if (secondIds.Count > 0)
+            Assert.Empty(firstIds.Intersect(secondIds));
+    }
+
+    [Fact]
+    public async Task AddressList_rejects_unknown_type()
+    {
+        await using var factory = new KompaktorWebFactory();
+        using var client = factory.CreateClient();
+        await client.PostAsJsonAsync("/api/wallet/create", new { Passphrase = "pw" });
+
+        var resp = await client.GetAsync("/api/wallet/addresses?type=p2pkh");
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
     public async Task Bip329_import_addr_matching_owned_address_stores_as_address_label()
     {
         // When imported addr ref matches an address the wallet already owns,
